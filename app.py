@@ -10,6 +10,7 @@ import zipfile
 import io
 from bs4 import BeautifulSoup
 import re
+import sys
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -24,18 +25,22 @@ st.markdown("---")
 
 # --- Funciones de Conexión y Lógica ---
 @st.cache_data(show_spinner=False)
-def load_dropbox_data(token, file_path):
+def load_dropbox_data(token, file_path, app_key, app_secret):
     """
     Lee el archivo CSV desde Dropbox usando un token de actualización.
     El archivo debe estar en la carpeta 'data/' en tu Dropbox.
-    El CSV debe usar el separador '{'.
+    El CSV debe usar el separador especial '{'.
     """
     try:
+        st.info(f"Intentando conectar a Dropbox y leer el archivo: {file_path}")
         dbx = dropbox.Dropbox(
             oauth2_refresh_token=token,
-            app_key=os.getenv("DROPBOX_APP_KEY"),
-            app_secret=os.getenv("DROPBOX_APP_SECRET")
+            app_key=app_key,
+            app_secret=app_secret
         )
+        # Probamos la conexión y obtener info de la cuenta
+        dbx.users_get_current_account()
+        
         metadata, res = dbx.files_download(file_path)
         
         # El contenido se descarga como bytes, lo convertimos a un objeto similar a un archivo
@@ -44,8 +49,11 @@ def load_dropbox_data(token, file_path):
         
         # Lee el CSV usando el separador especial '{'
         df = pd.read_csv(csv_file, sep='{', on_bad_lines='skip')
-        st.success("✔ Archivo de Dropbox cargado exitosamente.")
+        st.success("✔ Conexión a Dropbox y lectura del archivo exitosas.")
         return df
+    except dropbox.exceptions.AuthError as auth_err:
+        st.error(f"❌ Error de autenticación en Dropbox. Revisa tu token y credenciales: {auth_err}")
+        return None
     except Exception as e:
         st.error(f"❌ Error al cargar los datos de Dropbox: {e}")
         return None
@@ -57,13 +65,22 @@ def fetch_email_invoices(email_user, email_password, email_host):
     """
     invoices = []
     try:
+        st.info(f"Intentando conectar al correo: {email_user} en el host: {email_host}")
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
         mail.select("inbox")
         
+        st.success("✔ Conexión al correo exitosa.")
+
         # Busca correos con un archivo adjunto
         status, messages = mail.search(None, '(HAS_ATTACHMENT)')
         message_ids = messages[0].split()
+        
+        if not message_ids:
+            st.warning("No se encontraron correos con archivos adjuntos.")
+            return pd.DataFrame()
+
+        st.info(f"Se encontraron {len(message_ids)} correo(s) con adjuntos.")
         
         for num in message_ids:
             status, data = mail.fetch(num, "(RFC822)")
@@ -105,11 +122,18 @@ def fetch_email_invoices(email_user, email_password, email_host):
                             })
         
         mail.logout()
-        st.success("✔ Facturas del correo electrónico leídas exitosamente.")
-        return pd.DataFrame(invoices)
+        if invoices:
+            st.success("✔ Facturas del correo electrónico procesadas exitosamente.")
+            return pd.DataFrame(invoices)
+        else:
+            st.warning("No se encontraron facturas en los correos con adjuntos.")
+            return pd.DataFrame()
         
+    except imaplib.IMAP4.error as imap_err:
+        st.error(f"❌ Error de autenticación o conexión IMAP. Revisa tu usuario, contraseña de aplicación y host: {imap_err}")
+        return None
     except Exception as e:
-        st.error(f"❌ Error al procesar los correos: {e}")
+        st.error(f"❌ Error inesperado al procesar los correos: {e}")
         return None
 
 # --- UI de la aplicación ---
@@ -121,12 +145,14 @@ def main():
         st.info("Credenciales leídas desde los 'Secrets' de Streamlit Cloud.")
         
         dropbox_token = os.getenv("DROPBOX_REFRESH_TOKEN")
+        dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
+        dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         email_user = os.getenv("EMAIL_USER")
         email_password = os.getenv("EMAIL_PASSWORD")
         email_host = os.getenv("EMAIL_HOST")
 
         if st.button("Analizar Facturas"):
-            if not dropbox_token or not email_user or not email_password or not email_host:
+            if not all([dropbox_token, dropbox_app_key, dropbox_app_secret, email_user, email_password, email_host]):
                 st.error("Por favor, asegúrate de que todas las credenciales están configuradas como 'Secrets' en Streamlit Cloud.")
                 return
 
@@ -134,14 +160,14 @@ def main():
                 
                 # Paso 1: Cargar datos del ERP desde Dropbox
                 st.subheader("Paso 1: Carga de datos del ERP")
-                erp_data = load_dropbox_data(dropbox_token, "data/Proveedores.csv")
+                erp_data = load_dropbox_data(dropbox_token, "/data/Proveedores.csv", dropbox_app_key, dropbox_app_secret)
                 
                 if erp_data is not None:
                     st.dataframe(erp_data)
                     
                 # Paso 2: Extraer datos de facturas del correo
                 st.subheader("Paso 2: Extracción de facturas del correo")
-                email_data = fetch_email_invoices(email_user, email_password, email_host)
+                email_data = fetch_email_invoices(email_user, email_password, "imap.gmail.com") # Usamos imap.gmail.com como ejemplo
                 
                 if email_data is not None:
                     st.dataframe(email_data)
