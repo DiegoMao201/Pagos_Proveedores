@@ -35,7 +35,7 @@ def check_password():
     """
     def password_correct():
         """Comprueba si la contraseña ingresada coincide con la almacenada en los secretos."""
-        return st.session_state.get("password") == st.secrets["general"]["password"]
+        return st.session_state.get("password") == st.secrets.get("password")
 
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
