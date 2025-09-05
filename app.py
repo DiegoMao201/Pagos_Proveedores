@@ -10,7 +10,7 @@ import re
 import altair as alt
 import gspread
 from google.oauth2.service_account import Credentials
-import xml.etree.ElementTree as ET # Importa para el análisis de XML
+from bs4 import BeautifulSoup # Importa para el análisis de HTML
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -43,9 +43,12 @@ def clean_monetary_value(value):
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        value = re.sub(r'[$\s,]', '', value) # Elimina $, espacios y comas
+        # Elimina símbolos de moneda, espacios, puntos de miles y reemplaza la coma decimal por un punto.
+        value = re.sub(r'[$\s.]', '', value)
+        value = value.replace(',', '.')
         try:
-            return float(value)
+            float_val = float(value)
+            return float_val
         except (ValueError, TypeError):
             return 0.0
     return 0.0
@@ -54,7 +57,7 @@ def parse_date(date_str):
     """Convierte una cadena de texto a un objeto de fecha, manejando varios formatos."""
     if pd.isna(date_str) or date_str is None:
         return pd.NaT
-    # Añade más formatos si es necesario
+    # Maneja varios formatos comunes
     for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f'):
         try:
             return pd.to_datetime(str(date_str), format=fmt).normalize()
@@ -155,34 +158,36 @@ def load_erp_data_from_dropbox():
         st.error(f"❌ Error crítico al cargar datos desde Dropbox: {e}")
         return None
 
-def parse_invoice_xml(xml_content):
-    """Extrae los detalles de la factura del contenido XML interno de un adjunto."""
+def parse_invoice_html(html_content):
+    """Extrae los detalles de la factura de un archivo HTML."""
     try:
-        ns = {
-            'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
-            'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
-        }
-        root = ET.fromstring(xml_content)
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Usar expresiones regulares para encontrar las etiquetas correctas
+        invoice_number_tag = soup.find('td', string=re.compile(r"Num\.?\s*Factura", re.IGNORECASE))
+        invoice_number = invoice_number_tag.find_next_sibling('td').text.strip() if invoice_number_tag else "N/A"
         
-        invoice_number = root.find('cbc:ID', ns).text if root.find('cbc:ID', ns) is not None else "N/A"
-        issue_date = root.find('cbc:IssueDate', ns).text if root.find('cbc:IssueDate', ns) is not None else "N/A"
-        due_date = root.find('cbc:DueDate', ns).text if root.find('cbc:DueDate', ns) is not None else "N/A"
-        
-        supplier_name_element = root.find('cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name', ns)
-        supplier_name = supplier_name_element.text if supplier_name_element is not None else "N/A"
-        
-        total_value_element = root.find('cac:LegalMonetaryTotal/cbc:PayableAmount', ns)
-        total_value = total_value_element.text if total_value_element is not None else "0"
+        proveedor_tag = soup.find('td', string=re.compile("Proveedor", re.IGNORECASE))
+        proveedor = proveedor_tag.find_next_sibling('td').text.strip() if proveedor_tag else "N/A"
+
+        date_tag = soup.find('td', string=re.compile("Fecha Factura", re.IGNORECASE))
+        date = date_tag.find_next_sibling('td').text.strip() if date_tag else "N/A"
+
+        due_date_tag = soup.find('td', string=re.compile("Fecha Vencimiento", re.IGNORECASE))
+        due_date = due_date_tag.find_next_sibling('td').text.strip() if due_date_tag else "N/A"
+
+        total_amount_tag = soup.find('td', string=re.compile("Valor Total", re.IGNORECASE))
+        total_amount = total_amount_tag.find_next_sibling('td').text.strip() if total_amount_tag else "N/A"
 
         return {
             "num_factura": invoice_number,
-            "nombre_proveedor_correo": supplier_name,
-            "fecha_emision_correo": issue_date,
+            "nombre_proveedor_correo": proveedor,
+            "fecha_emision_correo": date,
             "fecha_vencimiento_correo": due_date,
-            "valor_total_correo": total_value,
+            "valor_total_correo": total_amount,
         }
-    except ET.ParseError as e:
-        st.warning(f"No se pudo procesar un archivo XML adjunto: {e}")
+    except Exception as e:
+        st.warning(f"No se pudo procesar un archivo HTML adjunto: {e}")
         return None
 
 @st.cache_data(show_spinner="Buscando nuevas facturas en el correo...", ttl=600)
@@ -220,14 +225,11 @@ def fetch_todays_invoices_from_email():
                     zip_bytes = part.get_payload(decode=True)
                     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_file:
                         for name in zip_file.namelist():
-                            if name.endswith('.xml'):
+                            if name.endswith('.html'):
                                 content_bytes = zip_file.read(name)
-                                cdata_match = re.search(r'<!\[CDATA\[\s*(<Invoice.*?</Invoice>)\s*\]\]>', content_bytes.decode('utf-8', 'ignore'), re.DOTALL)
-                                if cdata_match:
-                                    xml_data = cdata_match.group(1)
-                                    invoice_details = parse_invoice_xml(xml_data)
-                                    if invoice_details:
-                                        invoices.append(invoice_details)
+                                invoice_details = parse_invoice_html(content_bytes.decode('utf-8'))
+                                if invoice_details:
+                                    invoices.append(invoice_details)
 
             progress_bar.progress((i + 1) / len(message_ids), text=progress_text)
         
@@ -256,20 +258,17 @@ def main_app():
     if st.button("🔌 Sincronizar Datos", type="primary", use_container_width=True):
         st.session_state['data_loaded'] = False # Reinicia el estado de carga
         
-        # Conexión a Google Sheets y carga de datos históricos
         gs_client = connect_to_google_sheets()
         if not gs_client:
             return
 
         historical_email_df = load_data_from_gsheet(gs_client, "FacturasCorreo")
-        if historical_email_df.empty and "Error" in st.session_state: # Manejo de errores de carga
+        if historical_email_df.empty and "Error" in st.session_state:
             return
 
-        # Búsqueda de nuevas facturas del día
         todays_email_df = fetch_todays_invoices_from_email()
 
         if not todays_email_df.empty:
-            # Combina datos nuevos con los históricos y elimina duplicados
             combined_df = pd.concat([historical_email_df, todays_email_df], ignore_index=True)
             combined_df.drop_duplicates(subset=['num_factura'], keep='last', inplace=True)
             if update_gsheet_from_df(gs_client, "FacturasCorreo", combined_df):
@@ -278,20 +277,16 @@ def main_app():
         else:
             email_df = historical_email_df.copy()
 
-        # Limpieza y tipado de datos de email
         email_df['valor_total_correo'] = email_df['valor_total_correo'].apply(clean_monetary_value)
         email_df['fecha_emision_correo'] = email_df['fecha_emision_correo'].apply(parse_date)
         email_df['fecha_vencimiento_correo'] = email_df['fecha_vencimiento_correo'].apply(parse_date)
         email_df['num_factura'] = email_df['num_factura'].astype(str).str.strip()
 
-        # Carga de datos del ERP desde Dropbox
         erp_df = load_erp_data_from_dropbox()
         
-        # Guarda los DataFrames en el estado de la sesión
         st.session_state['erp_df'] = erp_df
         st.session_state['email_df'] = email_df
         
-        # Verifica si ambos DataFrames se cargaron correctamente
         if erp_df is not None and not email_df.empty:
             st.session_state['data_loaded'] = True
         else:
@@ -304,7 +299,6 @@ def main_app():
         # --- Fusión y Preparación de Datos para el Dashboard ---
         merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
         
-        # Unifica las columnas de fecha, valor y proveedor
         merged_df['fecha_emision'] = merged_df['fecha_emision_erp'].fillna(merged_df['fecha_emision_correo'])
         merged_df['fecha_vencimiento'] = merged_df['fecha_vencimiento_erp'].fillna(merged_df['fecha_vencimiento_correo'])
         merged_df['valor_total'] = merged_df['valor_total_erp'].fillna(merged_df['valor_total_correo'])
