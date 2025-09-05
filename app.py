@@ -10,7 +10,6 @@ import zipfile
 import io
 from bs4 import BeautifulSoup
 import re
-import bcrypt
 
 # --- Variables de entorno desde Streamlit Cloud Secrets ---
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -32,17 +31,11 @@ st.set_page_config(
 def check_password():
     """
     Devuelve `True` si el usuario ingresó la contraseña correcta, `False` de lo contrario.
-    La contraseña encriptada se almacena en los 'Secrets' de Streamlit Cloud.
+    La contraseña se lee en texto plano desde los 'Secrets' de Streamlit Cloud.
     """
     def password_correct():
-        """Comprueba si la contraseña ingresada coincide con la encriptada."""
-        entered_password_bytes = st.session_state["password"].encode('utf-8')
-        hashed_password_bytes = os.getenv("PASSWORD", "").encode('utf-8')
-        try:
-            return bcrypt.checkpw(entered_password_bytes, hashed_password_bytes)
-        except ValueError:
-            # En caso de que la contraseña encriptada no sea válida
-            return False
+        """Comprueba si la contraseña ingresada coincide con la almacenada en los secretos."""
+        return st.session_state.get("password") == st.secrets["general"]["password"]
 
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
@@ -53,7 +46,7 @@ def check_password():
             st.markdown("Por favor, introduce la contraseña para acceder.")
             password = st.text_input("Contraseña", type="password", key="password")
             st.form_submit_button("Entrar", on_click=lambda: st.session_state.update({"password_correct": password_correct()}))
-        if st.session_state["password_correct"] == False and "password" in st.session_state:
+        if "password" in st.session_state and st.session_state["password"] and not st.session_state["password_correct"]:
             st.error("Contraseña incorrecta. Por favor, inténtalo de nuevo.")
         return False
     else:
