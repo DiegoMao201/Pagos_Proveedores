@@ -9,6 +9,8 @@ import io
 from bs4 import BeautifulSoup
 import re
 import altair as alt
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -57,9 +59,63 @@ def parse_date(date_str):
             continue
     return pd.NaT
 
-# --- Funciones de Conexión y Lógica de Datos (Sin cambios) ---
+# --- NUEVAS Funciones de Conexión y Lógica con Google Sheets ---
+@st.cache_resource(show_spinner="Conectando a Google Sheets...")
+def connect_to_google_sheets():
+    """Establece conexión con Google Sheets usando las credenciales del servicio."""
+    try:
+        scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=scopes
+        )
+        client = gspread.authorize(creds)
+        return client
+    except Exception as e:
+        st.error(f"❌ Error crítico al conectar con Google Sheets: {e}")
+        return None
+
+def load_data_from_gsheet(client, sheet_name):
+    """Carga los datos históricos desde la hoja de Google Sheets especificada."""
+    try:
+        spreadsheet = client.open("BaseDatos_Facturacion_IA")
+        worksheet = spreadsheet.worksheet(sheet_name)
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        # Asegurar que las columnas clave existen aunque la hoja esté vacía
+        required_cols = ["num_factura", "nombre_proveedor_correo", "fecha_emision_correo", "fecha_vencimiento_correo", "valor_total_correo"]
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = pd.Series(dtype='object')
+        return df
+    except gspread.exceptions.WorksheetNotFound:
+        st.warning(f"⚠️ La hoja '{sheet_name}' no fue encontrada. Se creará una tabla vacía.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Error al leer datos desde Google Sheets: {e}")
+        return pd.DataFrame()
+
+def update_gsheet_from_df(client, sheet_name, df):
+    """Actualiza una hoja de Google Sheets con los datos de un DataFrame."""
+    try:
+        spreadsheet = client.open("BaseDatos_Facturacion_IA")
+        worksheet = spreadsheet.worksheet(sheet_name)
+        # Limpiar la hoja antes de escribir para evitar duplicados
+        worksheet.clear()
+        # Convertir NaT a strings vacíos para compatibilidad con gspread
+        df_to_upload = df.copy()
+        for col in df_to_upload.select_dtypes(include=['datetime64[ns]']).columns:
+            df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d').replace({pd.NaT: ''})
+        
+        worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist())
+        return True
+    except Exception as e:
+        st.error(f"❌ Error al actualizar la hoja de Google Sheets: {e}")
+        return False
+
+# --- Lógica de Datos (Modificada y Original) ---
 @st.cache_data(show_spinner="Conectando a Dropbox y cargando datos del ERP...")
 def load_erp_data_from_dropbox():
+    # Esta función permanece igual que la original
     try:
         dropbox_secrets = st.secrets.get("dropbox", {})
         dbx = dropbox.Dropbox(
@@ -91,8 +147,9 @@ def load_erp_data_from_dropbox():
         st.error(f"❌ Error crítico al cargar datos desde Dropbox: {e}")
         return None
 
-@st.cache_data(show_spinner="Buscando y extrayendo facturas del correo electrónico...")
-def fetch_invoices_from_email(_year_to_fetch):
+# MODIFICADA: Ahora solo busca correos del día actual
+def fetch_todays_invoices_from_email():
+    """Busca y extrae facturas de correos recibidos EN EL DÍA DE HOY."""
     invoices = []
     try:
         email_secrets = st.secrets.get("email", {})
@@ -101,14 +158,21 @@ def fetch_invoices_from_email(_year_to_fetch):
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(email_user, email_password)
         mail.select("TFHKA/Recepcion/Descargados")
-        search_criteria = f'(SINCE "01-Jan-{_year_to_fetch}")'
+        
+        # Criterio de búsqueda para el día actual
+        today_date = datetime.now().strftime("%d-%b-%Y")
+        search_criteria = f'(SINCE "{today_date}")'
+        
         status, messages = mail.search(None, search_criteria)
         if status != 'OK' or not messages[0]:
-            st.warning("No se encontraron correos con facturas para el año en curso.")
+            st.info("ℹ️ No se encontraron nuevas facturas por correo en el día de hoy.")
             mail.logout()
             return pd.DataFrame()
+        
         message_ids = messages[0].split()
-        progress_bar = st.progress(0, text=f"Procesando {len(message_ids)} correos...")
+        st.write(f"Procesando {len(message_ids)} correo(s) nuevo(s) de hoy...")
+        progress_bar = st.progress(0)
+
         for i, num in enumerate(message_ids):
             _, data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
@@ -131,64 +195,89 @@ def fetch_invoices_from_email(_year_to_fetch):
                                     "fecha_emision_correo": get_field("Fecha Factura"), "fecha_vencimiento_correo": get_field("Fecha Vencimiento"),
                                     "valor_total_correo": get_field("Valor Total"),
                                 })
-            progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {len(message_ids)} correos...")
+            progress_bar.progress((i + 1) / len(message_ids))
+        
         mail.logout()
         if not invoices:
             return pd.DataFrame()
+        
         df = pd.DataFrame(invoices)
-        df['valor_total_correo'] = df['valor_total_correo'].apply(clean_monetary_value)
-        df['fecha_emision_correo'] = df['fecha_emision_correo'].apply(parse_date)
-        df['fecha_vencimiento_correo'] = df['fecha_vencimiento_correo'].apply(parse_date)
-        df['num_factura'] = df['num_factura'].astype(str).str.strip()
         return df
     except Exception as e:
         st.error(f"❌ Error crítico al procesar los correos: {e}")
-        return None
+        return pd.DataFrame()
 
 # --- Interfaz Principal de la Aplicación (TOTALMENTE MEJORADA) ---
 def main_app():
-    st.image("LOGO FERREINOX SAS BIC 2024.png", width=350) 
+    st.image("LOGO FERREINOX SAS BIC 2024.png", width=350)
     st.title("Centro de Control de Facturación Inteligente")
     st.markdown("Bienvenido al sistema proactivo para la conciliación, análisis y predicción de pagos a proveedores.")
     st.markdown("---")
 
-    # --- PASO 1: Carga y visualización de datos crudos ---
-    st.header("Paso 1: Carga y Verificación de Datos")
-    if st.button("🔌 Conectar y Cargar Datos de Fuentes", type="primary", use_container_width=True):
+    st.header("Paso 1: Carga y Sincronización de Datos")
+    if st.button("🔌 Sincronizar Datos de Correo, ERP y Base de Datos", type="primary", use_container_width=True):
         st.session_state['data_loaded'] = False
-        current_year = datetime.now().year
         
-        # Cargar datos
-        erp_df = load_erp_data_from_dropbox()
-        email_df = fetch_invoices_from_email(current_year)
+        # 1. Conectar a Google Sheets
+        gs_client = connect_to_google_sheets()
         
-        # Guardar en el estado de la sesión para no recargar innecesariamente
-        st.session_state['erp_df'] = erp_df
-        st.session_state['email_df'] = email_df
-        
-        if erp_df is not None and email_df is not None:
-            st.session_state['data_loaded'] = True
-        else:
-            st.error("No se pudieron cargar todos los datos. Revisa los mensajes de error y vuelve a intentarlo.")
+        if gs_client:
+            # 2. Cargar datos históricos desde Google Sheets
+            with st.spinner("Cargando historial de facturas desde la base de datos..."):
+                historical_email_df = load_data_from_gsheet(gs_client, "FacturasCorreo")
+            
+            # 3. Buscar solo las facturas de hoy en el correo
+            with st.spinner("Buscando nuevas facturas en el correo de hoy..."):
+                todays_email_df = fetch_todays_invoices_from_email()
+
+            # 4. Combinar y actualizar la base de datos
+            if not todays_email_df.empty:
+                combined_df = pd.concat([historical_email_df, todays_email_df], ignore_index=True)
+                # Eliminar duplicados, manteniendo la última entrada (la más nueva)
+                combined_df.drop_duplicates(subset=['num_factura'], keep='last', inplace=True)
+                
+                with st.spinner("Actualizando la base de datos con las nuevas facturas..."):
+                    if update_gsheet_from_df(gs_client, "FacturasCorreo", combined_df):
+                        st.success(f"✅ Base de datos actualizada con {len(todays_email_df)} factura(s) nueva(s).")
+                email_df = combined_df.copy()
+            else:
+                email_df = historical_email_df.copy()
+
+            # Limpieza final del DataFrame de correos
+            email_df['valor_total_correo'] = email_df['valor_total_correo'].apply(clean_monetary_value)
+            email_df['fecha_emision_correo'] = email_df['fecha_emision_correo'].apply(parse_date)
+            email_df['fecha_vencimiento_correo'] = email_df['fecha_vencimiento_correo'].apply(parse_date)
+            email_df['num_factura'] = email_df['num_factura'].astype(str).str.strip()
+
+            # 5. Cargar datos del ERP
+            erp_df = load_erp_data_from_dropbox()
+            
+            # Guardar en el estado de la sesión
+            st.session_state['erp_df'] = erp_df
+            st.session_state['email_df'] = email_df
+            
+            if erp_df is not None and email_df is not None:
+                st.session_state['data_loaded'] = True
+            else:
+                st.error("No se pudieron cargar todos los datos. Revisa los mensajes de error y vuelve a intentarlo.")
 
     # --- PASO 2: Análisis y Dashboard (Solo si los datos se cargaron) ---
     if st.session_state.get('data_loaded', False):
-        st.success("✔ ¡Datos cargados! Ya puedes explorar el análisis completo.")
+        st.success("✔ ¡Datos sincronizados! Ya puedes explorar el análisis completo.")
         st.header("Paso 2: Análisis Inteligente y Dashboard")
         
         erp_df = st.session_state['erp_df']
         email_df = st.session_state['email_df']
 
-        # **MEJORA: Mostrar las tablas de datos que se construyeron**
         with st.expander("Verificar Tabla de Datos del ERP (Dropbox)"):
             st.dataframe(erp_df, use_container_width=True)
             st.write(f"Se encontraron **{len(erp_df)}** registros en el ERP.")
 
-        with st.expander("Verificar Tabla de Datos Extraídos del Correo"):
+        with st.expander("Verificar Tabla de Datos Extraídos del Correo (Historial + Hoy)"):
             st.dataframe(email_df, use_container_width=True)
-            st.write(f"Se encontraron **{len(email_df)}** facturas en el correo.")
+            st.write(f"Se encontraron **{len(email_df)}** facturas en total (Base de datos + Nuevas).")
         
-        # --- Lógica de Conciliación y Enriquecimiento de Datos ---
+        # --- Lógica de Conciliación y Enriquecimiento de Datos (sin cambios) ---
         merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
         today = pd.to_datetime(datetime.now().date())
         merged_df['fecha_vencimiento'] = merged_df['fecha_vencimiento_erp'].fillna(merged_df['fecha_vencimiento_correo'])
@@ -200,7 +289,7 @@ def main_app():
             else: return "🟢 Vigente"
         merged_df['estado'] = merged_df['dias_para_vencer'].apply(get_status)
         
-        # --- Pestañas con el nuevo contenido mejorado ---
+        # --- Pestañas (sin cambios en su contenido) ---
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard Principal", "🚨 Centro de Alertas y Discrepancias", "💡 Análisis Predictivo y Proveedores", "🔍 Explorador de Datos"])
 
         with tab1:
@@ -242,7 +331,6 @@ def main_app():
             
             st.error("🔴 **Facturas Vencidas** (Requieren Acción Inmediata)")
             vencidas_df = merged_df[merged_df['estado'] == '🔴 Vencida'].sort_values('dias_para_vencer')
-            # MEJORA VISUAL: Usar gradiente de color para resaltar la gravedad
             st.dataframe(vencidas_df[['nombre_proveedor_erp', 'num_factura', 'fecha_vencimiento', 'valor_total_erp', 'dias_para_vencer']].style.background_gradient(cmap='Reds_r', subset=['dias_para_vencer']), use_container_width=True)
 
             st.warning("🟠 **Facturas por Vencer** (Próximos 7 días)")
@@ -250,8 +338,8 @@ def main_app():
             st.dataframe(por_vencer_df[['nombre_proveedor_erp', 'num_factura', 'fecha_vencimiento', 'valor_total_erp', 'dias_para_vencer']].style.background_gradient(cmap='Oranges_r', subset=['dias_para_vencer']), use_container_width=True)
             
             st.info("❗ **Análisis de Discrepancias**")
-            unmatched_erp = merged_df[merged_df['nombre_proveedor_correo'].isnull()]
-            unmatched_email = merged_df[merged_df['nombre_proveedor_erp'].isnull()]
+            unmatched_erp = merged_df[merged_df['nombre_proveedor_correo'].isnull() & merged_df['nombre_proveedor_erp'].notnull()]
+            unmatched_email = merged_df[merged_df['nombre_proveedor_erp'].isnull() & merged_df['nombre_proveedor_correo'].notnull()]
             mismatched_values = merged_df.dropna(subset=['valor_total_erp', 'valor_total_correo'])
             mismatched_values = mismatched_values[abs(mismatched_values['valor_total_erp'] - mismatched_values['valor_total_correo']) > 0.01]
 
@@ -268,37 +356,40 @@ def main_app():
         with tab3:
             st.subheader("Análisis por Proveedor y Proyección de Pagos")
             
-            # --- Ficha de Proveedor ---
             st.markdown("#### 👤 Ficha de Desempeño por Proveedor")
             proveedores_lista = ['Todos'] + sorted(erp_df['nombre_proveedor_erp'].dropna().unique().tolist())
             proveedor_seleccionado = st.selectbox("Selecciona un proveedor para analizar en detalle:", proveedores_lista)
             
+            df_filtrado = merged_df if proveedor_seleccionado == 'Todos' else merged_df[merged_df['nombre_proveedor_erp'] == proveedor_seleccionado]
+
+            total_facturado = df_filtrado['valor_total_erp'].sum()
+            num_facturas = len(df_filtrado)
+            avg_factura = total_facturado / num_facturas if num_facturas > 0 else 0
+            facturas_vencidas = len(df_filtrado[df_filtrado['estado'] == '🔴 Vencida'])
+            
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            kpi1.metric("Total Facturado", f"${total_facturado:,.2f}")
+            kpi2.metric("Nº Facturas", f"{num_facturas}")
+            kpi3.metric("Valor Promedio", f"${avg_factura:,.2f}")
+            kpi4.metric("Facturas Vencidas", f"{facturas_vencidas}")
+            
             if proveedor_seleccionado != 'Todos':
-                df_proveedor = merged_df[merged_df['nombre_proveedor_erp'] == proveedor_seleccionado]
-                total_facturado = df_proveedor['valor_total_erp'].sum()
-                num_facturas = len(df_proveedor)
-                avg_factura = total_facturado / num_facturas if num_facturas > 0 else 0
-                facturas_vencidas = len(df_proveedor[df_proveedor['estado'] == '🔴 Vencida'])
-                
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                kpi1.metric("Total Facturado", f"${total_facturado:,.2f}")
-                kpi2.metric("Nº Facturas", f"{num_facturas}")
-                kpi3.metric("Valor Promedio", f"${avg_factura:,.2f}")
-                kpi4.metric("Facturas Vencidas", f"{facturas_vencidas}")
-                st.dataframe(df_proveedor[['num_factura', 'fecha_emision_erp', 'fecha_vencimiento', 'valor_total_erp', 'estado']], use_container_width=True)
+                st.dataframe(df_filtrado[['num_factura', 'fecha_emision_erp', 'fecha_vencimiento', 'valor_total_erp', 'estado']], use_container_width=True)
 
-            # --- Proyección de Flujo de Caja ---
-            st.markdown("####  прогнозирование Proyección de Pagos a 30 Días")
+            st.markdown("#### 📈 Proyección de Pagos a 30 Días")
             df_futuro = merged_df[(merged_df['dias_para_vencer'] >= 0) & (merged_df['dias_para_vencer'] <= 30)]
-            df_futuro['semana'] = pd.cut(df_futuro['dias_para_vencer'], bins=[-1, 7, 14, 21, 31], labels=['Próximos 7 días', 'Semana 2', 'Semana 3', 'Semana 4'])
-            proyeccion = df_futuro.groupby('semana')['valor_total_erp'].sum().reset_index()
+            if not df_futuro.empty:
+                df_futuro['semana'] = pd.cut(df_futuro['dias_para_vencer'], bins=[-1, 7, 14, 21, 31], labels=['Próximos 7 días', 'Semana 2', 'Semana 3', 'Semana 4'])
+                proyeccion = df_futuro.groupby('semana', observed=False)['valor_total_erp'].sum().reset_index()
+                chart_proyeccion = alt.Chart(proyeccion).mark_bar().encode(
+                    x=alt.X('semana:N', sort=None, title="Periodo de Vencimiento"),
+                    y=alt.Y('valor_total_erp:Q', title="Monto a Pagar"),
+                    tooltip=['semana', 'valor_total_erp']
+                ).properties(title="Necesidad de Flujo de Caja para Próximos Pagos")
+                st.altair_chart(chart_proyeccion, use_container_width=True)
+            else:
+                st.info("No hay pagos proyectados en los próximos 30 días.")
 
-            chart_proyeccion = alt.Chart(proyeccion).mark_bar().encode(
-                x=alt.X('semana:N', sort=None, title="Periodo de Vencimiento"),
-                y=alt.Y('valor_total_erp:Q', title="Monto a Pagar"),
-                tooltip=['semana', 'valor_total_erp']
-            ).properties(title="Necesidad de Flujo de Caja para Próximos Pagos")
-            st.altair_chart(chart_proyeccion, use_container_width=True)
 
         with tab4:
             st.subheader("Explorador de Datos Consolidados")
