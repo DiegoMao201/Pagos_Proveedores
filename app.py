@@ -266,8 +266,6 @@ def main_app():
 
         historical_email_df = load_data_from_gsheet(gs_client, "FacturasCorreo")
         
-        # Si load_data_from_gsheet falla, devuelve un DataFrame vacío. No necesitamos un chequeo extra.
-        
         todays_email_df = fetch_todays_invoices_from_email()
 
         if not todays_email_df.empty:
@@ -281,44 +279,65 @@ def main_app():
             if email_df.empty:
                 st.info("ℹ️ No hay facturas en Google Sheets y tampoco se encontraron nuevas hoy.")
 
+        # Asegurarse de que las columnas de email_df existan para evitar KeyError
+        required_email_cols = ["num_factura", "nombre_proveedor_correo", "fecha_emision_correo", "fecha_vencimiento_correo", "valor_total_correo"]
+        for col in required_email_cols:
+            if col not in email_df.columns:
+                email_df[col] = pd.Series(dtype='object')
+
         email_df['valor_total_correo'] = email_df['valor_total_correo'].apply(clean_monetary_value)
         email_df['fecha_emision_correo'] = email_df['fecha_emision_correo'].apply(parse_date)
         email_df['fecha_vencimiento_correo'] = email_df['fecha_vencimiento_correo'].apply(parse_date)
         email_df['num_factura'] = email_df['num_factura'].astype(str).str.strip()
 
         erp_df = load_erp_data_from_dropbox()
+
+        # Asegurarse de que las columnas de erp_df existan para evitar KeyError
+        required_erp_cols = ["num_factura", "nombre_proveedor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "valor_total_erp"]
+        if erp_df is not None:
+            for col in required_erp_cols:
+                if col not in erp_df.columns:
+                    erp_df[col] = pd.Series(dtype='object')
         
         st.session_state['erp_df'] = erp_df
         st.session_state['email_df'] = email_df
         
-        # --- CAMBIO CLAVE AQUI ---
-        # La aplicación ahora se carga si al menos una de las dos fuentes está disponible
         if erp_df is not None or not email_df.empty:
             st.session_state['data_loaded'] = True
         else:
             st.error("No se pudieron cargar los datos de ninguna de las fuentes. Revisa los mensajes de error de Dropbox y Google Sheets.")
 
-
     if st.session_state.get('data_loaded', False):
         erp_df = st.session_state['erp_df']
         email_df = st.session_state['email_df']
 
-        # Fusión de datos (maneja si uno de los DF está vacío)
-        if erp_df is None:
-            merged_df = email_df.copy()
-            merged_df['nombre_proveedor_erp'] = pd.NA
-        elif email_df.empty:
+        # --- Fusión y Preparación de Datos para el Dashboard ---
+        # El merge se realiza solo si ambos DFs no están vacíos
+        if erp_df is not None and not email_df.empty:
+            merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
+        elif erp_df is not None:
             merged_df = erp_df.copy()
             merged_df['nombre_proveedor_correo'] = pd.NA
+            merged_df['fecha_emision_correo'] = pd.NaT
+            merged_df['fecha_vencimiento_correo'] = pd.NaT
+            merged_df['valor_total_correo'] = 0.0
+        elif not email_df.empty:
+            merged_df = email_df.copy()
+            merged_df['nombre_proveedor_erp'] = pd.NA
+            merged_df['fecha_emision_erp'] = pd.NaT
+            merged_df['fecha_vencimiento_erp'] = pd.NaT
+            merged_df['valor_total_erp'] = 0.0
         else:
-            merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
-        
+            st.warning("No hay datos para mostrar el dashboard.")
+            return
+
+        # Ahora que sabemos que las columnas existen, procedemos con la unificación
         merged_df['fecha_emision'] = merged_df['fecha_emision_erp'].fillna(merged_df['fecha_emision_correo'])
         merged_df['fecha_vencimiento'] = merged_df['fecha_vencimiento_erp'].fillna(merged_df['fecha_vencimiento_correo'])
         merged_df['valor_total'] = merged_df['valor_total_erp'].fillna(merged_df['valor_total_correo'])
         merged_df['nombre_proveedor'] = merged_df['nombre_proveedor_erp'].fillna(merged_df['nombre_proveedor_correo'])
+        
         merged_df.dropna(subset=['fecha_emision'], inplace=True)
-
         today = pd.to_datetime(datetime.now().date())
         merged_df.dropna(subset=['fecha_vencimiento'], inplace=True)
         merged_df['dias_para_vencer'] = (merged_df['fecha_vencimiento'] - today).dt.days
@@ -346,6 +365,7 @@ def main_app():
         else:
             filtered_df = pd.DataFrame()
             st.warning("No hay datos disponibles para filtrar.")
+            return
         
         st.success(f"✔ ¡Datos sincronizados! Mostrando {len(filtered_df)} de {len(merged_df)} facturas según los filtros.")
 
