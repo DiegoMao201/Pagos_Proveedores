@@ -5,6 +5,7 @@ beautifulsoup4
 lxml
 bcrypt
 altair
+gspread
 
 
 
