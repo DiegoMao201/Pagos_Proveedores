@@ -3,4 +3,5 @@ pandas
 dropbox
 beautifulsoup4
 lxml
+bcrypt
 
