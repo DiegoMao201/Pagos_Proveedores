@@ -12,12 +12,8 @@ from bs4 import BeautifulSoup
 import re
 
 # --- Variables de entorno desde Streamlit Cloud Secrets ---
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_HOST = "imap.gmail.com" # Host para Gmail
+# Ahora se leen con la estructura de secciones.
+# Los valores se obtienen dentro de las funciones.
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -54,14 +50,24 @@ def check_password():
 
 # --- Funciones de Conexión y Lógica ---
 @st.cache_data(show_spinner=False)
-def load_dropbox_data(token, file_path, app_key, app_secret):
+def load_dropbox_data():
     """
     Lee el archivo CSV desde Dropbox usando un token de actualización.
     """
     try:
+        dropbox_secrets = st.secrets.get("dropbox", {})
+        refresh_token = dropbox_secrets.get("refresh_token")
+        app_key = dropbox_secrets.get("app_key")
+        app_secret = dropbox_secrets.get("app_secret")
+        file_path = "/data/Proveedores.csv"
+
+        if not all([refresh_token, app_key, app_secret]):
+            st.error("❌ Faltan credenciales de Dropbox en los secretos.")
+            return None
+
         st.info(f"Intentando conectar a Dropbox y leer el archivo: {file_path}")
         dbx = dropbox.Dropbox(
-            oauth2_refresh_token=token,
+            oauth2_refresh_token=refresh_token,
             app_key=app_key,
             app_secret=app_secret
         )
@@ -79,12 +85,21 @@ def load_dropbox_data(token, file_path, app_key, app_secret):
         st.error(f"❌ Error al cargar los datos de Dropbox: {e}")
         return None
 
-def fetch_email_invoices(email_user, email_password, email_host):
+def fetch_email_invoices():
     """
     Busca correos con archivos adjuntos de facturas en una carpeta comprimida.
     """
     invoices = []
     try:
+        email_secrets = st.secrets.get("email", {})
+        email_user = email_secrets.get("address")
+        email_password = email_secrets.get("password")
+        email_host = "imap.gmail.com"
+        
+        if not all([email_user, email_password]):
+            st.error("❌ Faltan credenciales de correo en los secretos.")
+            return None
+
         st.info(f"Intentando conectar al correo: {email_user} en el host: {email_host}")
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
@@ -151,26 +166,18 @@ def main_app():
         st.info("Credenciales leídas desde los 'Secrets' de Streamlit Cloud.")
 
         if st.button("Analizar Facturas"):
-            required_secrets = ["DROPBOX_REFRESH_TOKEN", "DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "EMAIL_USER", "EMAIL_PASSWORD", "EMAIL_HOST", "password"]
-            
-            missing_secrets = [secret for secret in required_secrets if not st.secrets.get(secret)]
-            
-            if missing_secrets:
-                st.error(f"❌ Faltan los siguientes secretos: {', '.join(missing_secrets)}. Por favor, asegúrate de que todas las credenciales estén configuradas en 'Secrets' de Streamlit Cloud.")
-                return
-
             with st.spinner("Procesando... Esto podría tardar unos segundos."):
                 
                 # Paso 1: Cargar datos del ERP desde Dropbox
                 st.subheader("Paso 1: Carga de datos del ERP")
-                erp_data = load_dropbox_data(DROPBOX_REFRESH_TOKEN, "/data/Proveedores.csv", DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
+                erp_data = load_dropbox_data()
                 
                 if erp_data is not None:
                     st.dataframe(erp_data)
                     
                 # Paso 2: Extraer datos de facturas del correo
                 st.subheader("Paso 2: Extracción de facturas del correo")
-                email_data = fetch_email_invoices(EMAIL_USER, EMAIL_PASSWORD, EMAIL_HOST)
+                email_data = fetch_email_invoices()
                 
                 if email_data is not None:
                     st.dataframe(email_data)
