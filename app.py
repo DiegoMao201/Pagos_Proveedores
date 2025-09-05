@@ -151,8 +151,12 @@ def main_app():
         st.info("Credenciales leídas desde los 'Secrets' de Streamlit Cloud.")
 
         if st.button("Analizar Facturas"):
-            if not all([DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, DROPBOX_APP_SECRET, EMAIL_USER, EMAIL_PASSWORD, EMAIL_HOST]):
-                st.error("Por favor, asegúrate de que todas las credenciales están configuradas como 'Secrets' en Streamlit Cloud.")
+            required_secrets = ["DROPBOX_REFRESH_TOKEN", "DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "EMAIL_USER", "EMAIL_PASSWORD", "EMAIL_HOST", "password"]
+            
+            missing_secrets = [secret for secret in required_secrets if not st.secrets.get(secret)]
+            
+            if missing_secrets:
+                st.error(f"❌ Faltan los siguientes secretos: {', '.join(missing_secrets)}. Por favor, asegúrate de que todas las credenciales estén configuradas en 'Secrets' de Streamlit Cloud.")
                 return
 
             with st.spinner("Procesando... Esto podría tardar unos segundos."):
