@@ -106,7 +106,10 @@ def fetch_email_invoices():
         st.info(f"Intentando conectar al correo: {email_user} en el host: {email_host}")
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
-        mail.select("inbox")
+        
+        # Cambiar el directorio de búsqueda a "Descargados"
+        mail.select("Descargados")
+        
         st.success("✔ Conexión al correo exitosa.")
         
         # Se ha cambiado el comando de búsqueda para hacerlo más compatible.
