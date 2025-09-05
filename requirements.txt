@@ -4,4 +4,7 @@ dropbox
 beautifulsoup4
 lxml
 bcrypt
+altair
+
+
 
