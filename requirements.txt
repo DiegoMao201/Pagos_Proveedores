@@ -1,7 +1,6 @@
-﻿streamlit
+streamlit
 pandas
-numpy
-toml
-pyjanitor
-BeautifulSoup
 dropbox
+beautifulsoup4
+lxml
+
