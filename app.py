@@ -110,14 +110,22 @@ def fetch_email_invoices():
         # Select the "Descargados" directory
         mail.select("Descargados")
         
-        st.success("✔ Successful email connection.")
+        st.success("✔ Successful email connection and folder selection.")
         
         # The search command has been changed to be more compatible.
-        status, messages = mail.search(None, "ALL")
-        message_ids = messages[0].split()
+        status, messages = mail.search(None, "ALL") # Este es el comando que estaba fallando
         
+        # Corregir la línea para manejar múltiples IDs de mensajes
+        if status == 'OK':
+            message_ids = messages[0].split()
+        else:
+            st.warning("No emails were found in the selected folder.")
+            mail.logout()
+            return pd.DataFrame()
+
         if not message_ids:
             st.warning("No emails with attachments were found.")
+            mail.logout()
             return pd.DataFrame()
 
         st.info(f"Found {len(message_ids)} email(s) to review.")
