@@ -90,7 +90,7 @@ def load_dropbox_data():
 
 def fetch_email_invoices():
     """
-    Searches for emails with invoice attachments in a zipped folder.
+    Searches for emails with invoice attachments in a zipped folder and extracts data from HTML files.
     """
     invoices = []
     try:
@@ -107,7 +107,6 @@ def fetch_email_invoices():
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
         
-        # Select the "Descargados" directory using the full path
         mail.select("TFHKA/Recepcion/Descargados")
         
         st.success("✔ Successful email connection and folder selection.")
@@ -144,16 +143,41 @@ def fetch_email_invoices():
                         if name.endswith('.html'):
                             html_content = zip_file.read(name).decode('utf-8')
                             soup = BeautifulSoup(html_content, 'html.parser')
+                            
+                            # Extract all the required fields from the HTML
                             invoice_number_tag = soup.find('td', string=re.compile("Num. Factura"))
                             invoice_number = invoice_number_tag.find_next_sibling('td').text.strip() if invoice_number_tag else "N/A"
-                            monto_tag = soup.find('td', string=re.compile("Total"))
-                            monto = monto_tag.find_next_sibling('td').text.strip() if monto_tag else "N/A"
+                            
                             proveedor_tag = soup.find('td', string=re.compile("Proveedor"))
                             proveedor = proveedor_tag.find_next_sibling('td').text.strip() if proveedor_tag else "N/A"
+
+                            date_tag = soup.find('td', string=re.compile("Fecha Factura"))
+                            date = date_tag.find_next_sibling('td').text.strip() if date_tag else "N/A"
+
+                            due_date_tag = soup.find('td', string=re.compile("Fecha Vencimiento"))
+                            due_date = due_date_tag.find_next_sibling('td').text.strip() if due_date_tag else "N/A"
+
+                            payment_type_tag = soup.find('td', string=re.compile("Tipo Pago"))
+                            payment_type = payment_type_tag.find_next_sibling('td').text.strip() if payment_type_tag else "N/A"
+
+                            amount_before_iva_tag = soup.find('td', string=re.compile("Valor Antes de IVA"))
+                            amount_before_iva = amount_before_iva_tag.find_next_sibling('td').text.strip() if amount_before_iva_tag else "N/A"
+
+                            iva_tag = soup.find('td', string=re.compile("IVA"))
+                            iva = iva_tag.find_next_sibling('td').text.strip() if iva_tag else "N/A"
+
+                            total_amount_tag = soup.find('td', string=re.compile("Valor Total"))
+                            total_amount = total_amount_tag.find_next_sibling('td').text.strip() if total_amount_tag else "N/A"
+
                             invoices.append({
                                 "num_factura_correo": invoice_number,
                                 "proveedor_correo": proveedor,
-                                "monto_correo": monto
+                                "fecha_factura_correo": date,
+                                "fecha_vencimiento_correo": due_date,
+                                "tipo_pago_correo": payment_type,
+                                "valor_antes_iva_correo": amount_before_iva,
+                                "iva_correo": iva,
+                                "valor_total_correo": total_amount,
                             })
         mail.logout()
         if invoices:
@@ -183,7 +207,7 @@ def main_app():
             with st.spinner("Processing... This might take a few seconds."):
                 
                 # Step 1: Load ERP data from Dropbox
-                st.subheader("Step 1: Load ERP Data")
+                st.subheader("Step 1: ERP Data from Dropbox")
                 erp_data = load_dropbox_data()
                 
                 if erp_data is not None:
@@ -198,9 +222,50 @@ def main_app():
                     
                 # Step 3: Perform data analysis and matching
                 if erp_data is not None and email_data is not None:
-                    st.subheader("Step 3: Data Analysis and Matching")
-                    st.warning("Analysis and alerts will be implemented in the next steps.")
-                    st.write("Simulated data analysis completed.")
+                    st.subheader("Step 3: Data Analysis and Reconciliation")
+                    
+                    # Clean and prepare the data for merging
+                    erp_data.rename(columns={'Numero Factura': 'num_factura'}, inplace=True)
+                    email_data.rename(columns={'num_factura_correo': 'num_factura'}, inplace=True)
+                    
+                    # Merge the dataframes on the invoice number
+                    merged_df = pd.merge(erp_data, email_data, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
+                    
+                    # Identify unmatched invoices
+                    unmatched_invoices_erp = merged_df[merged_df['proveedor_correo'].isnull()]
+                    unmatched_invoices_email = merged_df[merged_df['Proveedor'].isnull()]
+
+                    # Display the full merged table for detailed review
+                    st.markdown("### Merged Invoice Data (ERP vs. Email)")
+                    st.dataframe(merged_df, use_container_width=True)
+                    
+                    st.markdown("---")
+
+                    # Display discrepancies
+                    st.markdown("### Discrepancies and Alerts")
+                    
+                    if not unmatched_invoices_erp.empty:
+                        st.error("❌ The following invoices exist in the ERP but were not found in the emails:")
+                        st.dataframe(unmatched_invoices_erp[['num_factura', 'Proveedor_erp', 'Valor_total_erp']], use_container_width=True)
+                    else:
+                        st.success("✔ All ERP invoices were matched with emails.")
+
+                    if not unmatched_invoices_email.empty:
+                        st.warning("⚠️ The following invoices were found in emails but do not exist in the ERP:")
+                        st.dataframe(unmatched_invoices_email[['num_factura', 'proveedor_correo', 'valor_total_correo']], use_container_width=True)
+                    else:
+                        st.success("✔ All email invoices were matched with the ERP.")
+
+                    # Additional value comparison (example: Valor Total)
+                    merged_df['valor_total_erp'] = pd.to_numeric(merged_df['Valor_total_erp'], errors='coerce')
+                    merged_df['valor_total_correo'] = pd.to_numeric(merged_df['valor_total_correo'], errors='coerce')
+
+                    mismatched_values = merged_df[merged_df['valor_total_erp'] != merged_df['valor_total_correo']]
+                    if not mismatched_values.empty:
+                        st.error("❗ Found inconsistencies in 'Valor Total':")
+                        st.dataframe(mismatched_values[['num_factura', 'valor_total_erp', 'valor_total_correo']], use_container_width=True)
+                    else:
+                        st.success("✔ No discrepancies found in invoice total values.")
                     
                     st.info("¡Analysis finished! Review the data sections.")
 
