@@ -6,6 +6,7 @@ lxml
 bcrypt
 altair
 gspread
+matplotlib
 
 
 
