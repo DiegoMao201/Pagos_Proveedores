@@ -10,7 +10,7 @@ import re
 import altair as alt
 import gspread
 from google.oauth2.service_account import Credentials
-from bs4 import BeautifulSoup # Importa para el análisis de HTML
+import xml.etree.ElementTree as ET # Importa para el análisis de XML
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -43,7 +43,7 @@ def clean_monetary_value(value):
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        # Elimina símbolos de moneda, espacios, puntos de miles y reemplaza la coma decimal por un punto.
+        # Elimina $, espacios, puntos de miles y reemplaza la coma decimal por un punto.
         value = re.sub(r'[$\s.]', '', value)
         value = value.replace(',', '.')
         try:
@@ -129,9 +129,11 @@ def load_erp_data_from_dropbox():
         file_path = "/data/Proveedores.csv"
         _, res = dbx.files_download(file_path)
         
+        # Uso de `sep='{''` para leer el archivo con el separador correcto
         with io.StringIO(res.content.decode('latin1')) as csv_file:
             df = pd.read_csv(csv_file, sep='{', on_bad_lines='skip', header=None)
 
+        # Mapeo de columnas según la estructura proporcionada
         column_mapping = {
             0: 'nombre_proveedor_erp',
             1: 'serie_almacen',
@@ -158,36 +160,34 @@ def load_erp_data_from_dropbox():
         st.error(f"❌ Error crítico al cargar datos desde Dropbox: {e}")
         return None
 
-def parse_invoice_html(html_content):
-    """Extrae los detalles de la factura de un archivo HTML."""
+def parse_invoice_xml(xml_content):
+    """Extrae los detalles de la factura del contenido XML interno de un adjunto."""
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-
-        # Usar expresiones regulares para encontrar las etiquetas correctas
-        invoice_number_tag = soup.find('td', string=re.compile(r"Num\.?\s*Factura", re.IGNORECASE))
-        invoice_number = invoice_number_tag.find_next_sibling('td').text.strip() if invoice_number_tag else "N/A"
+        ns = {
+            'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
+            'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
+        }
+        root = ET.fromstring(xml_content)
         
-        proveedor_tag = soup.find('td', string=re.compile("Proveedor", re.IGNORECASE))
-        proveedor = proveedor_tag.find_next_sibling('td').text.strip() if proveedor_tag else "N/A"
-
-        date_tag = soup.find('td', string=re.compile("Fecha Factura", re.IGNORECASE))
-        date = date_tag.find_next_sibling('td').text.strip() if date_tag else "N/A"
-
-        due_date_tag = soup.find('td', string=re.compile("Fecha Vencimiento", re.IGNORECASE))
-        due_date = due_date_tag.find_next_sibling('td').text.strip() if due_date_tag else "N/A"
-
-        total_amount_tag = soup.find('td', string=re.compile("Valor Total", re.IGNORECASE))
-        total_amount = total_amount_tag.find_next_sibling('td').text.strip() if total_amount_tag else "N/A"
+        invoice_number = root.find('cbc:ID', ns).text if root.find('cbc:ID', ns) is not None else "N/A"
+        issue_date = root.find('cbc:IssueDate', ns).text if root.find('cbc:IssueDate', ns) is not None else "N/A"
+        due_date = root.find('cbc:DueDate', ns).text if root.find('cbc:DueDate', ns) is not None else "N/A"
+        
+        supplier_name_element = root.find('cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name', ns)
+        supplier_name = supplier_name_element.text if supplier_name_element is not None else "N/A"
+        
+        total_value_element = root.find('cac:LegalMonetaryTotal/cbc:PayableAmount', ns)
+        total_value = total_value_element.text if total_value_element is not None else "0"
 
         return {
             "num_factura": invoice_number,
-            "nombre_proveedor_correo": proveedor,
-            "fecha_emision_correo": date,
+            "nombre_proveedor_correo": supplier_name,
+            "fecha_emision_correo": issue_date,
             "fecha_vencimiento_correo": due_date,
-            "valor_total_correo": total_amount,
+            "valor_total_correo": total_value,
         }
-    except Exception as e:
-        st.warning(f"No se pudo procesar un archivo HTML adjunto: {e}")
+    except ET.ParseError as e:
+        st.warning(f"No se pudo procesar un archivo XML adjunto: {e}")
         return None
 
 @st.cache_data(show_spinner="Buscando nuevas facturas en el correo...", ttl=600)
@@ -225,11 +225,14 @@ def fetch_todays_invoices_from_email():
                     zip_bytes = part.get_payload(decode=True)
                     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_file:
                         for name in zip_file.namelist():
-                            if name.endswith('.html'):
+                            if name.endswith('.xml'):
                                 content_bytes = zip_file.read(name)
-                                invoice_details = parse_invoice_html(content_bytes.decode('utf-8'))
-                                if invoice_details:
-                                    invoices.append(invoice_details)
+                                cdata_match = re.search(r'<!\[CDATA\[\s*(<Invoice.*?</Invoice>)\s*\]\]>', content_bytes.decode('utf-8', 'ignore'), re.DOTALL)
+                                if cdata_match:
+                                    xml_data = cdata_match.group(1)
+                                    invoice_details = parse_invoice_xml(xml_data)
+                                    if invoice_details:
+                                        invoices.append(invoice_details)
 
             progress_bar.progress((i + 1) / len(message_ids), text=progress_text)
         
