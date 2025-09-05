@@ -102,7 +102,7 @@ def load_data_from_gsheet(client, sheet_name):
 def update_gsheet_from_df(client, sheet_name, df):
     """Actualiza una hoja de Google Sheets con los datos de un DataFrame."""
     try:
-        spreadsheet = client.open_by_key(st.secrets["google_sheet_id"])
+        spreadsheet = client.open_by_bykey(st.secrets["google_sheet_id"])
         worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
         df_to_upload = df.copy()
@@ -241,6 +241,9 @@ def fetch_todays_invoices_from_email():
             return pd.DataFrame()
         return pd.DataFrame(invoices)
 
+    except imaplib.IMAP4.error as imap_err:
+        st.error(f"❌ Error de conexión de correo: {imap_err}. Revisa tu contraseña de aplicación y que IMAP esté activado.")
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Error crítico al procesar los correos: {e}")
         return pd.DataFrame()
@@ -309,9 +312,9 @@ def main_app():
         erp_df = st.session_state['erp_df']
         email_df = st.session_state['email_df']
 
-        if erp_df is not None and not email_df.empty:
+        if erp_df is not None and not erp_df.empty and not email_df.empty:
             merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
-        elif erp_df is not None:
+        elif erp_df is not None and not erp_df.empty:
             merged_df = erp_df.copy()
             merged_df['nombre_proveedor_correo'] = pd.NA
             merged_df['fecha_emision_correo'] = pd.NaT
