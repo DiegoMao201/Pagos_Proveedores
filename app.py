@@ -102,7 +102,7 @@ def load_data_from_gsheet(client, sheet_name):
 def update_gsheet_from_df(client, sheet_name, df):
     """Actualiza una hoja de Google Sheets con los datos de un DataFrame."""
     try:
-        spreadsheet = client.open_by_bykey(st.secrets["google_sheet_id"])
+        spreadsheet = client.open_by_key(st.secrets["google_sheet_id"])
         worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
         df_to_upload = df.copy()
@@ -315,6 +315,7 @@ def main_app():
         if erp_df is not None and not erp_df.empty and not email_df.empty:
             merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
         elif erp_df is not None and not erp_df.empty:
+            # Aquí se creaba el problema, ahora lo manejamos explícitamente.
             merged_df = erp_df.copy()
             merged_df['nombre_proveedor_correo'] = pd.NA
             merged_df['fecha_emision_correo'] = pd.NaT
