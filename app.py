@@ -279,7 +279,6 @@ def main_app():
             if email_df.empty:
                 st.info("ℹ️ No hay facturas en Google Sheets y tampoco se encontraron nuevas hoy.")
 
-        # Asegurarse de que las columnas de email_df existan para evitar KeyError
         required_email_cols = ["num_factura", "nombre_proveedor_correo", "fecha_emision_correo", "fecha_vencimiento_correo", "valor_total_correo"]
         for col in required_email_cols:
             if col not in email_df.columns:
@@ -292,7 +291,6 @@ def main_app():
 
         erp_df = load_erp_data_from_dropbox()
 
-        # Asegurarse de que las columnas de erp_df existan para evitar KeyError
         required_erp_cols = ["num_factura", "nombre_proveedor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "valor_total_erp"]
         if erp_df is not None:
             for col in required_erp_cols:
@@ -311,8 +309,6 @@ def main_app():
         erp_df = st.session_state['erp_df']
         email_df = st.session_state['email_df']
 
-        # --- Fusión y Preparación de Datos para el Dashboard ---
-        # El merge se realiza solo si ambos DFs no están vacíos
         if erp_df is not None and not email_df.empty:
             merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
         elif erp_df is not None:
@@ -331,7 +327,6 @@ def main_app():
             st.warning("No hay datos para mostrar el dashboard.")
             return
 
-        # Ahora que sabemos que las columnas existen, procedemos con la unificación
         merged_df['fecha_emision'] = merged_df['fecha_emision_erp'].fillna(merged_df['fecha_emision_correo'])
         merged_df['fecha_vencimiento'] = merged_df['fecha_vencimiento_erp'].fillna(merged_df['fecha_vencimiento_correo'])
         merged_df['valor_total'] = merged_df['valor_total_erp'].fillna(merged_df['valor_total_correo'])
@@ -348,7 +343,6 @@ def main_app():
             else: return "🟢 Vigente"
         merged_df['estado'] = merged_df['dias_para_vencer'].apply(get_status)
 
-        # Lógica de Filtros en Sidebar
         proveedores_lista = sorted(merged_df['nombre_proveedor'].dropna().unique().tolist())
         selected_suppliers = st.sidebar.multiselect("Filtrar por Proveedor:", proveedores_lista, default=proveedores_lista)
         
@@ -369,7 +363,6 @@ def main_app():
         
         st.success(f"✔ ¡Datos sincronizados! Mostrando {len(filtered_df)} de {len(merged_df)} facturas según los filtros.")
 
-        # Despliegue del Dashboard
         st.header("📊 Dashboard Principal")
 
         total_facturado = filtered_df['valor_total'].sum()
