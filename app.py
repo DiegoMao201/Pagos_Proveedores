@@ -10,7 +10,15 @@ import zipfile
 import io
 from bs4 import BeautifulSoup
 import re
-import sys
+import bcrypt
+
+# --- Variables de entorno desde Streamlit Cloud Secrets ---
+DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_HOST = "imap.gmail.com" # Host para Gmail
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
@@ -20,16 +28,42 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title("🧾 Dashboard de Gestión de Facturas")
-st.markdown("---")
+# --- Autenticación y Lógica de Protección ---
+def check_password():
+    """
+    Devuelve `True` si el usuario ingresó la contraseña correcta, `False` de lo contrario.
+    La contraseña encriptada se almacena en los 'Secrets' de Streamlit Cloud.
+    """
+    def password_correct():
+        """Comprueba si la contraseña ingresada coincide con la encriptada."""
+        entered_password_bytes = st.session_state["password"].encode('utf-8')
+        hashed_password_bytes = os.getenv("PASSWORD", "").encode('utf-8')
+        try:
+            return bcrypt.checkpw(entered_password_bytes, hashed_password_bytes)
+        except ValueError:
+            # En caso de que la contraseña encriptada no sea válida
+            return False
+
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    if not st.session_state["password_correct"]:
+        st.header("🔒 Acceso Restringido")
+        with st.form("login_form"):
+            st.markdown("Por favor, introduce la contraseña para acceder.")
+            password = st.text_input("Contraseña", type="password", key="password")
+            st.form_submit_button("Entrar", on_click=lambda: st.session_state.update({"password_correct": password_correct()}))
+        if st.session_state["password_correct"] == False and "password" in st.session_state:
+            st.error("Contraseña incorrecta. Por favor, inténtalo de nuevo.")
+        return False
+    else:
+        return True
 
 # --- Funciones de Conexión y Lógica ---
 @st.cache_data(show_spinner=False)
 def load_dropbox_data(token, file_path, app_key, app_secret):
     """
     Lee el archivo CSV desde Dropbox usando un token de actualización.
-    El archivo debe estar en la carpeta 'data/' en tu Dropbox.
-    El CSV debe usar el separador especial '{'.
     """
     try:
         st.info(f"Intentando conectar a Dropbox y leer el archivo: {file_path}")
@@ -38,16 +72,10 @@ def load_dropbox_data(token, file_path, app_key, app_secret):
             app_key=app_key,
             app_secret=app_secret
         )
-        # Probamos la conexión y obtener info de la cuenta
         dbx.users_get_current_account()
-        
         metadata, res = dbx.files_download(file_path)
-        
-        # El contenido se descarga como bytes, lo convertimos a un objeto similar a un archivo
         csv_bytes = res.content
         csv_file = io.StringIO(csv_bytes.decode('utf-8'))
-        
-        # Lee el CSV usando el separador especial '{'
         df = pd.read_csv(csv_file, sep='{', on_bad_lines='skip')
         st.success("✔ Conexión a Dropbox y lectura del archivo exitosas.")
         return df
@@ -61,7 +89,6 @@ def load_dropbox_data(token, file_path, app_key, app_secret):
 def fetch_email_invoices(email_user, email_password, email_host):
     """
     Busca correos con archivos adjuntos de facturas en una carpeta comprimida.
-    Lee el contenido del HTML y extrae los datos de la factura.
     """
     invoices = []
     try:
@@ -69,10 +96,7 @@ def fetch_email_invoices(email_user, email_password, email_host):
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
         mail.select("inbox")
-        
         st.success("✔ Conexión al correo exitosa.")
-
-        # Busca correos con un archivo adjunto
         status, messages = mail.search(None, '(HAS_ATTACHMENT)')
         message_ids = messages[0].split()
         
@@ -85,11 +109,9 @@ def fetch_email_invoices(email_user, email_password, email_host):
         for num in message_ids:
             status, data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
-            
             for part in msg.walk():
                 if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None:
                     continue
-                
                 filename = part.get_filename()
                 if filename and filename.endswith('.zip'):
                     st.info(f"Se encontró un archivo ZIP: {filename}")
@@ -99,28 +121,18 @@ def fetch_email_invoices(email_user, email_password, email_host):
                     for name in zip_file.namelist():
                         if name.endswith('.html'):
                             html_content = zip_file.read(name).decode('utf-8')
-                            
-                            # --- Lógica de Extracción de Datos del HTML ---
-                            # Aquí debes personalizar la lógica de parsing de HTML
                             soup = BeautifulSoup(html_content, 'html.parser')
-                            
-                            # Ejemplo de extracción usando BeautifulSoup:
-                            # (Necesitas adaptar esta parte a la estructura real de tus facturas HTML)
                             invoice_number_tag = soup.find('td', string=re.compile("Num. Factura"))
                             invoice_number = invoice_number_tag.find_next_sibling('td').text.strip() if invoice_number_tag else "N/A"
-                            
                             monto_tag = soup.find('td', string=re.compile("Total"))
                             monto = monto_tag.find_next_sibling('td').text.strip() if monto_tag else "N/A"
-                            
                             proveedor_tag = soup.find('td', string=re.compile("Proveedor"))
                             proveedor = proveedor_tag.find_next_sibling('td').text.strip() if proveedor_tag else "N/A"
-                            
                             invoices.append({
                                 "num_factura_correo": invoice_number,
                                 "proveedor_correo": proveedor,
                                 "monto_correo": monto
                             })
-        
         mail.logout()
         if invoices:
             st.success("✔ Facturas del correo electrónico procesadas exitosamente.")
@@ -128,7 +140,6 @@ def fetch_email_invoices(email_user, email_password, email_host):
         else:
             st.warning("No se encontraron facturas en los correos con adjuntos.")
             return pd.DataFrame()
-        
     except imaplib.IMAP4.error as imap_err:
         st.error(f"❌ Error de autenticación o conexión IMAP. Revisa tu usuario, contraseña de aplicación y host: {imap_err}")
         return None
@@ -137,22 +148,17 @@ def fetch_email_invoices(email_user, email_password, email_host):
         return None
 
 # --- UI de la aplicación ---
-def main():
-    """Función principal que ejecuta la aplicación Streamlit."""
+def main_app():
+    """Función principal que ejecuta la aplicación Streamlit si el login es correcto."""
+    st.title("🧾 Dashboard de Gestión de Facturas")
+    st.markdown("---")
     
     with st.sidebar:
         st.header("Configuración")
         st.info("Credenciales leídas desde los 'Secrets' de Streamlit Cloud.")
-        
-        dropbox_token = os.getenv("DROPBOX_REFRESH_TOKEN")
-        dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
-        dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
-        email_user = os.getenv("EMAIL_USER")
-        email_password = os.getenv("EMAIL_PASSWORD")
-        email_host = os.getenv("EMAIL_HOST")
 
         if st.button("Analizar Facturas"):
-            if not all([dropbox_token, dropbox_app_key, dropbox_app_secret, email_user, email_password, email_host]):
+            if not all([DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, DROPBOX_APP_SECRET, EMAIL_USER, EMAIL_PASSWORD, EMAIL_HOST]):
                 st.error("Por favor, asegúrate de que todas las credenciales están configuradas como 'Secrets' en Streamlit Cloud.")
                 return
 
@@ -160,14 +166,14 @@ def main():
                 
                 # Paso 1: Cargar datos del ERP desde Dropbox
                 st.subheader("Paso 1: Carga de datos del ERP")
-                erp_data = load_dropbox_data(dropbox_token, "/data/Proveedores.csv", dropbox_app_key, dropbox_app_secret)
+                erp_data = load_dropbox_data(DROPBOX_REFRESH_TOKEN, "/data/Proveedores.csv", DROPBOX_APP_KEY, DROPBOX_APP_SECRET)
                 
                 if erp_data is not None:
                     st.dataframe(erp_data)
                     
                 # Paso 2: Extraer datos de facturas del correo
                 st.subheader("Paso 2: Extracción de facturas del correo")
-                email_data = fetch_email_invoices(email_user, email_password, "imap.gmail.com") # Usamos imap.gmail.com como ejemplo
+                email_data = fetch_email_invoices(EMAIL_USER, EMAIL_PASSWORD, EMAIL_HOST)
                 
                 if email_data is not None:
                     st.dataframe(email_data)
@@ -181,4 +187,5 @@ def main():
                     st.info("¡Análisis finalizado! Revisa las secciones de datos.")
 
 if __name__ == "__main__":
-    main()
+    if check_password():
+        main_app()
