@@ -74,7 +74,9 @@ def load_dropbox_data():
         dbx.users_get_current_account()
         metadata, res = dbx.files_download(file_path)
         csv_bytes = res.content
-        csv_file = io.StringIO(csv_bytes.decode('utf-8'))
+        
+        # FIX: Use 'latin1' encoding to handle special characters
+        csv_file = io.StringIO(csv_bytes.decode('latin1'))
         df = pd.read_csv(csv_file, sep='{', on_bad_lines='skip')
         st.success("✔ Successful connection to Dropbox and file read.")
         return df
@@ -85,7 +87,7 @@ def load_dropbox_data():
         st.error(f"❌ Error loading data from Dropbox: {api_err}. Please verify that the file path is correct.")
         return None
     except Exception as e:
-        st.error(f"❌ Error loading data from Dropbox: {e}")
+        st.error(f"❌ Unexpected error loading data from Dropbox: {e}")
         return None
 
 def fetch_email_invoices():
@@ -199,75 +201,72 @@ def main_app():
     st.title("🧾 Invoice Management Dashboard")
     st.markdown("---")
     
-    with st.sidebar:
-        st.header("Configuration")
-        st.info("Credentials read from 'Secrets' of Streamlit Cloud.")
-
-        if st.button("Analyze Invoices"):
-            with st.spinner("Processing... This might take a few seconds."):
+    # Place the "Analyze Invoices" button on the main dashboard
+    if st.button("Analyze Invoices", help="Click to start the process of loading and analyzing invoices."):
+        with st.spinner("Processing... This might take a few seconds."):
+            
+            # Step 1: Load ERP data from Dropbox
+            st.subheader("Step 1: ERP Data from Dropbox")
+            erp_data = load_dropbox_data()
+            
+            if erp_data is not None:
+                st.dataframe(erp_data)
                 
-                # Step 1: Load ERP data from Dropbox
-                st.subheader("Step 1: ERP Data from Dropbox")
-                erp_data = load_dropbox_data()
+            # Step 2: Extract invoice data from email
+            st.subheader("Step 2: Invoice Extraction from Email")
+            email_data = fetch_email_invoices()
+            
+            if email_data is not None:
+                st.dataframe(email_data)
                 
-                if erp_data is not None:
-                    st.dataframe(erp_data)
-                    
-                # Step 2: Extract invoice data from email
-                st.subheader("Step 2: Invoice Extraction from Email")
-                email_data = fetch_email_invoices()
+            # Step 3: Perform data analysis and matching
+            if erp_data is not None and email_data is not None:
+                st.subheader("Step 3: Data Analysis and Reconciliation")
                 
-                if email_data is not None:
-                    st.dataframe(email_data)
-                    
-                # Step 3: Perform data analysis and matching
-                if erp_data is not None and email_data is not None:
-                    st.subheader("Step 3: Data Analysis and Reconciliation")
-                    
-                    # Clean and prepare the data for merging
-                    erp_data.rename(columns={'Numero Factura': 'num_factura'}, inplace=True)
-                    email_data.rename(columns={'num_factura_correo': 'num_factura'}, inplace=True)
-                    
-                    # Merge the dataframes on the invoice number
-                    merged_df = pd.merge(erp_data, email_data, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
-                    
-                    # Identify unmatched invoices
-                    unmatched_invoices_erp = merged_df[merged_df['proveedor_correo'].isnull()]
-                    unmatched_invoices_email = merged_df[merged_df['Proveedor'].isnull()]
+                # Clean and prepare the data for merging
+                erp_data.rename(columns={'Numero Factura': 'num_factura'}, inplace=True)
+                email_data.rename(columns={'num_factura_correo': 'num_factura'}, inplace=True)
+                
+                # Merge the dataframes on the invoice number
+                merged_df = pd.merge(erp_data, email_data, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
+                
+                # Identify unmatched invoices
+                unmatched_invoices_erp = merged_df[merged_df['proveedor_correo'].isnull()]
+                unmatched_invoices_email = merged_df[merged_df['Proveedor'].isnull()]
 
-                    # Display the full merged table for detailed review
-                    st.markdown("### Merged Invoice Data (ERP vs. Email)")
-                    st.dataframe(merged_df, use_container_width=True)
-                    
-                    st.markdown("---")
+                # Display the full merged table for detailed review
+                st.markdown("### Merged Invoice Data (ERP vs. Email)")
+                st.dataframe(merged_df, use_container_width=True)
+                
+                st.markdown("---")
 
-                    # Display discrepancies
-                    st.markdown("### Discrepancies and Alerts")
-                    
-                    if not unmatched_invoices_erp.empty:
-                        st.error("❌ The following invoices exist in the ERP but were not found in the emails:")
-                        st.dataframe(unmatched_invoices_erp[['num_factura', 'Proveedor_erp', 'Valor_total_erp']], use_container_width=True)
-                    else:
-                        st.success("✔ All ERP invoices were matched with emails.")
+                # Display discrepancies
+                st.markdown("### Discrepancies and Alerts")
+                
+                if not unmatched_invoices_erp.empty:
+                    st.error("❌ The following invoices exist in the ERP but were not found in the emails:")
+                    st.dataframe(unmatched_invoices_erp[['num_factura', 'Proveedor_erp', 'Valor_total_erp']], use_container_width=True)
+                else:
+                    st.success("✔ All ERP invoices were matched with emails.")
 
-                    if not unmatched_invoices_email.empty:
-                        st.warning("⚠️ The following invoices were found in emails but do not exist in the ERP:")
-                        st.dataframe(unmatched_invoices_email[['num_factura', 'proveedor_correo', 'valor_total_correo']], use_container_width=True)
-                    else:
-                        st.success("✔ All email invoices were matched with the ERP.")
+                if not unmatched_invoices_email.empty:
+                    st.warning("⚠️ The following invoices were found in emails but do not exist in the ERP:")
+                    st.dataframe(unmatched_invoices_email[['num_factura', 'proveedor_correo', 'valor_total_correo']], use_container_width=True)
+                else:
+                    st.success("✔ All email invoices were matched with the ERP.")
 
-                    # Additional value comparison (example: Valor Total)
-                    merged_df['valor_total_erp'] = pd.to_numeric(merged_df['Valor_total_erp'], errors='coerce')
-                    merged_df['valor_total_correo'] = pd.to_numeric(merged_df['valor_total_correo'], errors='coerce')
+                # Additional value comparison (example: Valor Total)
+                merged_df['valor_total_erp'] = pd.to_numeric(merged_df['Valor_total_erp'], errors='coerce')
+                merged_df['valor_total_correo'] = pd.to_numeric(merged_df['valor_total_correo'], errors='coerce')
 
-                    mismatched_values = merged_df[merged_df['valor_total_erp'] != merged_df['valor_total_correo']]
-                    if not mismatched_values.empty:
-                        st.error("❗ Found inconsistencies in 'Valor Total':")
-                        st.dataframe(mismatched_values[['num_factura', 'valor_total_erp', 'valor_total_correo']], use_container_width=True)
-                    else:
-                        st.success("✔ No discrepancies found in invoice total values.")
-                    
-                    st.info("¡Analysis finished! Review the data sections.")
+                mismatched_values = merged_df[merged_df['valor_total_erp'] != merged_df['valor_total_correo']]
+                if not mismatched_values.empty:
+                    st.error("❗ Found inconsistencies in 'Valor Total':")
+                    st.dataframe(mismatched_values[['num_factura', 'valor_total_erp', 'valor_total_correo']], use_container_width=True)
+                else:
+                    st.success("✔ No discrepancies found in invoice total values.")
+                
+                st.info("¡Analysis finished! Review the data sections.")
 
 if __name__ == "__main__":
     if check_password():
