@@ -1,29 +1,24 @@
 import streamlit as st
-import os
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import dropbox
 import imaplib
 import email
-from email.header import decode_header
 import zipfile
 import io
 from bs4 import BeautifulSoup
 import re
-
-# --- Variables de entorno desde Streamlit Cloud Secrets ---
-# Ahora se leen con la estructura de secciones.
-# Los valores se obtienen dentro de las funciones.
+import altair as alt # Biblioteca para gráficos más avanzados
 
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(
-    page_title="Sistema de Gestión de Facturas",
-    page_icon="🧾",
+    page_title="Centro de Control de Facturación",
+    page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# --- Autenticación y Lógica de Protección ---
+# --- Lógica de Autenticación (Sin cambios) ---
 def check_password():
     """
     Returns `True` if the user entered the correct password, `False` otherwise.
@@ -37,236 +32,307 @@ def check_password():
         st.session_state["password_correct"] = False
 
     if not st.session_state["password_correct"]:
-        st.header("🔒 Restricted Access")
+        st.header("🔒 Acceso Restringido al Centro de Control")
         with st.form("login_form"):
-            st.markdown("Please enter the password to access.")
-            password = st.text_input("Password", type="password", key="password")
-            st.form_submit_button("Enter", on_click=lambda: st.session_state.update({"password_correct": password_correct()}))
+            st.markdown("Por favor, ingresa la contraseña para acceder al sistema.")
+            password = st.text_input("Contraseña", type="password", key="password")
+            st.form_submit_button("Ingresar", on_click=lambda: st.session_state.update({"password_correct": password_correct()}))
         if "password" in st.session_state and st.session_state["password"] and not st.session_state["password_correct"]:
-            st.error("Incorrect password. Please try again.")
+            st.error("Contraseña incorrecta. Por favor, intenta de nuevo.")
         return False
     else:
         return True
 
-# --- Connection and Logic Functions ---
-@st.cache_data(show_spinner=False)
-def load_dropbox_data():
+# --- Funciones Auxiliares para Limpieza de Datos ---
+def clean_monetary_value(value):
+    """Limpia y convierte un string monetario a un valor numérico (float)."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Elimina símbolos de moneda, puntos de miles y reemplaza la coma decimal por un punto
+        value = re.sub(r'[$\s]', '', value)
+        value = value.replace('.', '').replace(',', '.')
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+def parse_date(date_str):
+    """Convierte un string de fecha a un objeto datetime, probando varios formatos comunes."""
+    if pd.isna(date_str) or date_str is None:
+        return None
+    for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%d/%m/%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(date_str), fmt)
+        except ValueError:
+            continue
+    return pd.NaT # Retorna 'Not a Time' si no puede parsear
+
+# --- Funciones de Conexión y Lógica de Datos ---
+@st.cache_data(show_spinner="Conectando a Dropbox y cargando datos del ERP...")
+def load_erp_data_from_dropbox():
     """
-    Reads the CSV file from Dropbox using a refresh token.
+    Lee, limpia y estandariza el archivo CSV del ERP desde Dropbox.
     """
     try:
         dropbox_secrets = st.secrets.get("dropbox", {})
-        refresh_token = dropbox_secrets.get("refresh_token")
-        app_key = dropbox_secrets.get("app_key")
-        app_secret = dropbox_secrets.get("app_secret")
-        file_path = "/data/Proveedores.csv"
-
-        if not all([refresh_token, app_key, app_secret]):
-            st.error("❌ Missing Dropbox credentials in secrets.")
-            return None
-
-        st.info(f"Attempting to connect to Dropbox and read the file: {file_path}")
         dbx = dropbox.Dropbox(
-            oauth2_refresh_token=refresh_token,
-            app_key=app_key,
-            app_secret=app_secret
+            oauth2_refresh_token=dropbox_secrets.get("refresh_token"),
+            app_key=dropbox_secrets.get("app_key"),
+            app_secret=dropbox_secrets.get("app_secret")
         )
-        dbx.users_get_current_account()
-        metadata, res = dbx.files_download(file_path)
-        csv_bytes = res.content
+        dbx.users_get_current_account() # Verifica la conexión
         
-        # FIX: Use 'latin1' encoding to handle special characters
+        file_path = "/data/Proveedores.csv"
+        _, res = dbx.files_download(file_path)
+        
+        csv_bytes = res.content
         csv_file = io.StringIO(csv_bytes.decode('latin1'))
+        
         df = pd.read_csv(csv_file, sep='{', on_bad_lines='skip')
-        st.success("✔ Successful connection to Dropbox and file read.")
+        
+        # **MEJORA: Renombrar columnas para mayor claridad y presentación**
+        # (Ajusta los nombres originales 'col1', 'col2', etc., según tu archivo CSV)
+        # Basado en la imagen, inferimos los nombres de columna.
+        # Es posible que necesites ajustar 'Original_Col_Name' al nombre real en tu CSV.
+        column_mapping = {
+            df.columns[1]: 'nombre_proveedor_erp',
+            df.columns[4]: 'num_factura', # Asumiendo que esta es la columna de la factura
+            df.columns[6]: 'fecha_emision_erp',
+            df.columns[7]: 'fecha_vencimiento_erp',
+            df.columns[8]: 'valor_total_erp'
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        
+        # Seleccionar solo las columnas de interés
+        df = df[list(column_mapping.values())]
+
+        # **MEJORA: Limpieza y conversión de tipos de datos**
+        df['valor_total_erp'] = df['valor_total_erp'].apply(clean_monetary_value)
+        df['fecha_emision_erp'] = df['fecha_emision_erp'].apply(parse_date)
+        df['fecha_vencimiento_erp'] = df['fecha_vencimiento_erp'].apply(parse_date)
+        df['num_factura'] = df['num_factura'].astype(str).str.strip()
+
+        st.success("✔ Datos del ERP cargados y procesados exitosamente desde Dropbox.")
         return df
-    except dropbox.exceptions.AuthError as auth_err:
-        st.error(f"❌ Dropbox authentication error. Check your token and credentials: {auth_err}")
-        return None
-    except dropbox.exceptions.ApiError as api_err:
-        st.error(f"❌ Error loading data from Dropbox: {api_err}. Please verify that the file path is correct.")
-        return None
+
     except Exception as e:
-        st.error(f"❌ Unexpected error loading data from Dropbox: {e}")
+        st.error(f"❌ Error crítico al cargar datos desde Dropbox: {e}")
         return None
 
-def fetch_email_invoices():
+@st.cache_data(show_spinner="Buscando y extrayendo facturas del correo electrónico...")
+def fetch_invoices_from_email(_year_to_fetch):
     """
-    Searches for emails with invoice attachments in a zipped folder and extracts data from HTML files.
+    Busca correos del año en curso, extrae, limpia y consolida los datos de las facturas HTML adjuntas.
     """
     invoices = []
     try:
         email_secrets = st.secrets.get("email", {})
         email_user = email_secrets.get("address")
         email_password = email_secrets.get("password")
-        email_host = "imap.gmail.com"
         
-        if not all([email_user, email_password]):
-            st.error("❌ Missing email credentials in secrets.")
-            return None
-
-        st.info(f"Attempting to connect to email: {email_user} on host: {email_host}")
-        mail = imaplib.IMAP4_SSL(email_host)
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(email_user, email_password)
-        
         mail.select("TFHKA/Recepcion/Descargados")
         
-        st.success("✔ Successful email connection and folder selection.")
+        # **MEJORA: Filtrar correos solo del año en curso**
+        search_criteria = f'(SINCE "01-Jan-{_year_to_fetch}")'
+        status, messages = mail.search(None, search_criteria)
         
-        status, messages = mail.search(None, "ALL") 
-        
-        if status == 'OK':
-            message_ids = messages[0].split()
-        else:
-            st.warning("No emails were found in the selected folder.")
+        if status != 'OK' or not messages[0]:
+            st.warning("No se encontraron correos con facturas para el año en curso.")
             mail.logout()
             return pd.DataFrame()
 
-        if not message_ids:
-            st.warning("No emails with attachments were found.")
-            mail.logout()
-            return pd.DataFrame()
+        message_ids = messages[0].split()
+        progress_bar = st.progress(0, text=f"Procesando {len(message_ids)} correos...")
 
-        st.info(f"Found {len(message_ids)} email(s) to review.")
-        
-        for num in message_ids:
-            status, data = mail.fetch(num, "(RFC822)")
+        for i, num in enumerate(message_ids):
+            _, data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
+            
             for part in msg.walk():
                 if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None:
                     continue
+                
                 filename = part.get_filename()
                 if filename and filename.endswith('.zip'):
-                    st.info(f"Found a ZIP file: {filename}")
                     zip_bytes = part.get_payload(decode=True)
-                    zip_file = zipfile.ZipFile(io.BytesIO(zip_bytes))
-                    
-                    for name in zip_file.namelist():
-                        if name.endswith('.html'):
-                            html_content = zip_file.read(name).decode('utf-8')
-                            soup = BeautifulSoup(html_content, 'html.parser')
-                            
-                            # Extract all the required fields from the HTML
-                            invoice_number_tag = soup.find('td', string=re.compile("Num. Factura"))
-                            invoice_number = invoice_number_tag.find_next_sibling('td').text.strip() if invoice_number_tag else "N/A"
-                            
-                            proveedor_tag = soup.find('td', string=re.compile("Proveedor"))
-                            proveedor = proveedor_tag.find_next_sibling('td').text.strip() if proveedor_tag else "N/A"
+                    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_file:
+                        for name in zip_file.namelist():
+                            if name.endswith('.html'):
+                                html_content = zip_file.read(name).decode('utf-8')
+                                soup = BeautifulSoup(html_content, 'html.parser')
+                                
+                                # Extraer campos del HTML
+                                def get_field(label):
+                                    tag = soup.find('td', string=re.compile(label))
+                                    return tag.find_next_sibling('td').text.strip() if tag else "N/A"
 
-                            date_tag = soup.find('td', string=re.compile("Fecha Factura"))
-                            date = date_tag.find_next_sibling('td').text.strip() if date_tag else "N/A"
+                                invoices.append({
+                                    "num_factura": get_field("Num. Factura"),
+                                    "nombre_proveedor_correo": get_field("Proveedor"),
+                                    "fecha_emision_correo": get_field("Fecha Factura"),
+                                    "fecha_vencimiento_correo": get_field("Fecha Vencimiento"),
+                                    "valor_total_correo": get_field("Valor Total"),
+                                })
+            progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {len(message_ids)} correos...")
 
-                            due_date_tag = soup.find('td', string=re.compile("Fecha Vencimiento"))
-                            due_date = due_date_tag.find_next_sibling('td').text.strip() if due_date_tag else "N/A"
-
-                            payment_type_tag = soup.find('td', string=re.compile("Tipo Pago"))
-                            payment_type = payment_type_tag.find_next_sibling('td').text.strip() if payment_type_tag else "N/A"
-
-                            amount_before_iva_tag = soup.find('td', string=re.compile("Valor Antes de IVA"))
-                            amount_before_iva = amount_before_iva_tag.find_next_sibling('td').text.strip() if amount_before_iva_tag else "N/A"
-
-                            iva_tag = soup.find('td', string=re.compile("IVA"))
-                            iva = iva_tag.find_next_sibling('td').text.strip() if iva_tag else "N/A"
-
-                            total_amount_tag = soup.find('td', string=re.compile("Valor Total"))
-                            total_amount = total_amount_tag.find_next_sibling('td').text.strip() if total_amount_tag else "N/A"
-
-                            invoices.append({
-                                "num_factura_correo": invoice_number,
-                                "proveedor_correo": proveedor,
-                                "fecha_factura_correo": date,
-                                "fecha_vencimiento_correo": due_date,
-                                "tipo_pago_correo": payment_type,
-                                "valor_antes_iva_correo": amount_before_iva,
-                                "iva_correo": iva,
-                                "valor_total_correo": total_amount,
-                            })
         mail.logout()
-        if invoices:
-            st.success("✔ Email invoices successfully processed.")
-            return pd.DataFrame(invoices)
-        else:
-            st.warning("No invoices were found in emails with attachments.")
+
+        if not invoices:
+            st.warning("No se encontraron archivos de factura válidos en los correos del año en curso.")
             return pd.DataFrame()
-    except imaplib.IMAP4.error as imap_err:
-        st.error(f"❌ IMAP authentication or connection error. Check your user, application password, and host: {imap_err}")
-        return None
+        
+        df = pd.DataFrame(invoices)
+        
+        # **MEJORA: Limpieza y conversión de tipos de datos**
+        df['valor_total_correo'] = df['valor_total_correo'].apply(clean_monetary_value)
+        df['fecha_emision_correo'] = df['fecha_emision_correo'].apply(parse_date)
+        df['fecha_vencimiento_correo'] = df['fecha_vencimiento_correo'].apply(parse_date)
+        df['num_factura'] = df['num_factura'].astype(str).str.strip()
+        
+        st.success(f"✔ Se procesaron {len(df)} facturas desde el correo electrónico.")
+        return df
+
     except Exception as e:
-        st.error(f"❌ Unexpected error when processing emails: {e}")
+        st.error(f"❌ Error crítico al procesar los correos: {e}")
         return None
 
-# --- App UI ---
+# --- Interfaz Principal de la Aplicación ---
 def main_app():
-    """Main function that runs the Streamlit app if login is correct."""
-    st.title("🧾 Invoice Management Dashboard")
+    """Función principal que renderiza la interfaz y la lógica de análisis."""
+    st.image("https://i.imgur.com/u4AXs0S.png", width=400) # Un logo genérico para dar un toque profesional
+    st.title("Centro de Control y Gestión de Facturación")
+    st.markdown("Bienvenido al sistema inteligente para la conciliación y análisis de facturas de proveedores.")
     st.markdown("---")
-    
-    # Place the "Analyze Invoices" button on the main dashboard
-    if st.button("Analyze Invoices", help="Click to start the process of loading and analyzing invoices."):
-        with st.spinner("Processing... This might take a few seconds."):
+
+    if st.button("🚀 Iniciar Análisis de Facturación", type="primary", use_container_width=True):
+        
+        current_year = datetime.now().year
+        erp_df = load_erp_data_from_dropbox()
+        email_df = fetch_invoices_from_email(current_year)
+
+        if erp_df is None or email_df is None:
+            st.error("El análisis no puede continuar debido a errores en la carga de datos. Por favor, revisa los mensajes anteriores.")
+            return
+
+        # --- FASE 1: Conciliación de Datos ---
+        merged_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
+        
+        # --- FASE 2: Enriquecimiento de Datos y KPIs ---
+        today = datetime.now()
+        
+        # Crear columnas de estado y días para vencimiento
+        merged_df['fecha_vencimiento'] = merged_df['fecha_vencimiento_erp'].fillna(merged_df['fecha_vencimiento_correo'])
+        merged_df.dropna(subset=['fecha_vencimiento'], inplace=True) # Analizar solo facturas con fecha
+        
+        merged_df['dias_para_vencer'] = (merged_df['fecha_vencimiento'] - today).dt.days
+        
+        def get_status(dias):
+            if dias < 0:
+                return "🔴 Vencida"
+            elif 0 <= dias <= 7:
+                return "🟠 Por Vencer (Próximos 7 días)"
+            else:
+                return "🟢 Vigente"
+        
+        merged_df['estado'] = merged_df['dias_para_vencer'].apply(get_status)
+
+        # Identificar discrepancias
+        unmatched_erp = merged_df[merged_df['nombre_proveedor_correo'].isnull()]
+        unmatched_email = merged_df[merged_df['nombre_proveedor_erp'].isnull()]
+        
+        # Comparar valores solo donde ambas fuentes existen
+        matched_df = merged_df.dropna(subset=['valor_total_erp', 'valor_total_correo'])
+        mismatched_values = matched_df[abs(matched_df['valor_total_erp'] - matched_df['valor_total_correo']) > 0.01] # Tolerancia pequeña
+
+        # --- FASE 3: Visualización y Dashboard ---
+        st.markdown("## 📊 Dashboard General de Facturación")
+        st.markdown(f"Análisis para el año **{current_year}**.")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Facturado (ERP)", f"${erp_df['valor_total_erp'].sum():,.2f}")
+        with col2:
+            st.metric("Facturas Vencidas", f"{len(merged_df[merged_df['estado'] == '🔴 Vencida'])}", f"Suma: ${merged_df[merged_df['dias_para_vencer'] < 0]['valor_total_erp'].sum():,.2f}")
+        with col3:
+            st.metric("Facturas por Vencer (7 días)", f"{len(merged_df[merged_df['estado'] == '🟠 Por Vencer (Próximos 7 días)'])}")
+        with col4:
+            st.metric("Discrepancias de Monto", f"{len(mismatched_values)}")
+        
+        st.markdown("---")
+        
+        # Pestañas para una navegación limpia
+        tab1, tab2, tab3 = st.tabs(["🚨 Centro de Alertas y Pagos", "📈 Análisis Visual", "🔍 Explorador de Datos Completo"])
+
+        with tab1:
+            st.subheader("🚨 Centro de Alertas y Pagos")
+            st.markdown("Aquí se listan las facturas que requieren atención inmediata.")
             
-            # Step 1: Load ERP data from Dropbox
-            st.subheader("Step 1: ERP Data from Dropbox")
-            erp_data = load_dropbox_data()
+            st.error("🔴 Facturas Vencidas")
+            vencidas_df = merged_df[merged_df['estado'] == '🔴 Vencida'].sort_values('dias_para_vencer')
+            st.dataframe(vencidas_df[['nombre_proveedor_erp', 'num_factura', 'fecha_vencimiento', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True)
             
-            if erp_data is not None:
-                st.dataframe(erp_data)
-                
-            # Step 2: Extract invoice data from email
-            st.subheader("Step 2: Invoice Extraction from Email")
-            email_data = fetch_email_invoices()
+            st.warning("🟠 Facturas por Vencer (Próximos 7 días)")
+            por_vencer_df = merged_df[merged_df['estado'] == '🟠 Por Vencer (Próximos 7 días)'].sort_values('dias_para_vencer')
+            st.dataframe(por_vencer_df[['nombre_proveedor_erp', 'num_factura', 'fecha_vencimiento', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True)
             
-            if email_data is not None:
-                st.dataframe(email_data)
-                
-            # Step 3: Perform data analysis and matching
-            if erp_data is not None and email_data is not None:
-                st.subheader("Step 3: Data Analysis and Reconciliation")
-                
-                # Clean and prepare the data for merging
-                erp_data.rename(columns={'Numero Factura': 'num_factura'}, inplace=True)
-                email_data.rename(columns={'num_factura_correo': 'num_factura'}, inplace=True)
-                
-                # Merge the dataframes on the invoice number
-                merged_df = pd.merge(erp_data, email_data, on='num_factura', how='outer', suffixes=('_erp', '_correo'))
-                
-                # Identify unmatched invoices
-                unmatched_invoices_erp = merged_df[merged_df['proveedor_correo'].isnull()]
-                unmatched_invoices_email = merged_df[merged_df['Proveedor'].isnull()]
+            st.info("❗ Discrepancias Encontradas")
+            if not mismatched_values.empty:
+                st.write("**Inconsistencias en Valor Total:**")
+                st.dataframe(mismatched_values[['num_factura', 'nombre_proveedor_erp', 'valor_total_erp', 'valor_total_correo']], use_container_width=True)
+            if not unmatched_erp.empty:
+                st.write("**Facturas en ERP pero no en Correo:**")
+                st.dataframe(unmatched_erp[['num_factura', 'nombre_proveedor_erp', 'valor_total_erp']], use_container_width=True)
+            if not unmatched_email.empty:
+                st.write("**Facturas en Correo pero no en ERP:**")
+                st.dataframe(unmatched_email[['num_factura', 'nombre_proveedor_correo', 'valor_total_correo']], use_container_width=True)
 
-                # Display the full merged table for detailed review
-                st.markdown("### Merged Invoice Data (ERP vs. Email)")
-                st.dataframe(merged_df, use_container_width=True)
-                
-                st.markdown("---")
+        with tab2:
+            st.subheader("📈 Análisis Visual de la Facturación")
+            
+            # Gráfico 1: Total facturado por proveedor
+            provider_total = erp_df.groupby('nombre_proveedor_erp')['valor_total_erp'].sum().reset_index().sort_values('valor_total_erp', ascending=False)
+            chart1 = alt.Chart(provider_total.head(10)).mark_bar().encode(
+                x=alt.X('valor_total_erp:Q', title='Valor Total Facturado'),
+                y=alt.Y('nombre_proveedor_erp:N', sort='-x', title='Proveedor'),
+                tooltip=['nombre_proveedor_erp', 'valor_total_erp']
+            ).properties(
+                title='Top 10 Proveedores por Monto Facturado'
+            )
+            st.altair_chart(chart1, use_container_width=True)
 
-                # Display discrepancies
-                st.markdown("### Discrepancies and Alerts")
-                
-                if not unmatched_invoices_erp.empty:
-                    st.error("❌ The following invoices exist in the ERP but were not found in the emails:")
-                    st.dataframe(unmatched_invoices_erp[['num_factura', 'Proveedor_erp', 'Valor_total_erp']], use_container_width=True)
-                else:
-                    st.success("✔ All ERP invoices were matched with emails.")
+            # Gráfico 2: Evolución de la facturación mensual
+            monthly_total = erp_df.set_index('fecha_emision_erp').resample('M')['valor_total_erp'].sum().reset_index()
+            monthly_total['mes'] = monthly_total['fecha_emision_erp'].dt.strftime('%Y-%b')
+            chart2 = alt.Chart(monthly_total).mark_line(point=True).encode(
+                x=alt.X('mes:N', sort=None, title='Mes de Emisión'),
+                y=alt.Y('valor_total_erp:Q', title='Suma Total Facturada'),
+                tooltip=['mes', 'valor_total_erp']
+            ).properties(
+                title='Evolución Mensual de la Facturación'
+            )
+            st.altair_chart(chart2, use_container_width=True)
 
-                if not unmatched_invoices_email.empty:
-                    st.warning("⚠️ The following invoices were found in emails but do not exist in the ERP:")
-                    st.dataframe(unmatched_invoices_email[['num_factura', 'proveedor_correo', 'valor_total_correo']], use_container_width=True)
-                else:
-                    st.success("✔ All email invoices were matched with the ERP.")
+        with tab3:
+            st.subheader("🔍 Explorador de Datos Completo")
+            st.markdown("Utiliza los filtros para explorar la tabla de datos consolidados.")
+            st.dataframe(merged_df, use_container_width=True)
+            
+            # Opción para descargar los datos
+            @st.cache_data
+            def convert_df_to_csv(df):
+                return df.to_csv(index=False).encode('utf-8')
 
-                # Additional value comparison (example: Valor Total)
-                merged_df['valor_total_erp'] = pd.to_numeric(merged_df['Valor_total_erp'], errors='coerce')
-                merged_df['valor_total_correo'] = pd.to_numeric(merged_df['valor_total_correo'], errors='coerce')
-
-                mismatched_values = merged_df[merged_df['valor_total_erp'] != merged_df['valor_total_correo']]
-                if not mismatched_values.empty:
-                    st.error("❗ Found inconsistencies in 'Valor Total':")
-                    st.dataframe(mismatched_values[['num_factura', 'valor_total_erp', 'valor_total_correo']], use_container_width=True)
-                else:
-                    st.success("✔ No discrepancies found in invoice total values.")
-                
-                st.info("¡Analysis finished! Review the data sections.")
+            csv = convert_df_to_csv(merged_df)
+            st.download_button(
+                label="📥 Descargar Tabla Completa como CSV",
+                data=csv,
+                file_name=f'reporte_facturacion_{today.strftime("%Y%m%d")}.csv',
+                mime='text/csv',
+            )
 
 if __name__ == "__main__":
     if check_password():
