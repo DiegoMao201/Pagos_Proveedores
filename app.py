@@ -81,6 +81,9 @@ def load_dropbox_data():
     except dropbox.exceptions.AuthError as auth_err:
         st.error(f"❌ Error de autenticación en Dropbox. Revisa tu token y credenciales: {auth_err}")
         return None
+    except dropbox.exceptions.ApiError as api_err:
+        st.error(f"❌ Error al cargar los datos de Dropbox: {api_err}. Por favor, verifica que la ruta del archivo sea correcta.")
+        return None
     except Exception as e:
         st.error(f"❌ Error al cargar los datos de Dropbox: {e}")
         return None
@@ -105,14 +108,16 @@ def fetch_email_invoices():
         mail.login(email_user, email_password)
         mail.select("inbox")
         st.success("✔ Conexión al correo exitosa.")
-        status, messages = mail.search(None, '(HAS_ATTACHMENT)')
+        
+        # Se ha cambiado el comando de búsqueda para hacerlo más compatible.
+        status, messages = mail.search(None, "ALL")
         message_ids = messages[0].split()
         
         if not message_ids:
             st.warning("No se encontraron correos con archivos adjuntos.")
             return pd.DataFrame()
 
-        st.info(f"Se encontraron {len(message_ids)} correo(s) con adjuntos.")
+        st.info(f"Se encontraron {len(message_ids)} correo(s) para revisar.")
         
         for num in message_ids:
             status, data = mail.fetch(num, "(RFC822)")
