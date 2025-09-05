@@ -107,15 +107,13 @@ def fetch_email_invoices():
         mail = imaplib.IMAP4_SSL(email_host)
         mail.login(email_user, email_password)
         
-        # Select the "Descargados" directory
-        mail.select("Descargados")
+        # Select the "Descargados" directory using the full path
+        mail.select("TFHKA/Recepcion/Descargados")
         
         st.success("✔ Successful email connection and folder selection.")
         
-        # The search command has been changed to be more compatible.
-        status, messages = mail.search(None, "ALL") # Este es el comando que estaba fallando
+        status, messages = mail.search(None, "ALL") 
         
-        # Corregir la línea para manejar múltiples IDs de mensajes
         if status == 'OK':
             message_ids = messages[0].split()
         else:
