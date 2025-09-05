@@ -126,7 +126,7 @@ def load_erp_data_from_dropbox():
             app_secret=dropbox_secrets.get("app_secret")
         )
         dbx.users_get_current_account() # Prueba la conexión
-        file_path = "/data/Proveedores.csv"
+        file_path = "/data/facturas/Proveedores.csv"
         _, res = dbx.files_download(file_path)
         
         # Uso de `sep='{''` para leer el archivo con el separador correcto
