@@ -490,7 +490,11 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
+                # ### INICIO DE LA CORRECCIÓN ###
+                # Se aplica la conversión a cada elemento para mayor robustez ante formatos inconsistentes.
+                date_series = email_df_proc[col].apply(pd.to_datetime, errors='coerce')
+                # ### FIN DE LA CORRECCIÓN ###
+                
                 if date_series.dt.tz is None:
                     email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                 else:
@@ -569,7 +573,11 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            date_series = pd.to_datetime(historical_df[col], errors='coerce')
+                            # ### INICIO DE LA CORRECCIÓN ###
+                            # Se aplica la conversión a cada elemento para mayor robustez.
+                            date_series = historical_df[col].apply(pd.to_datetime, errors='coerce')
+                            # ### FIN DE LA CORRECCIÓN ###
+                            
                             if date_series.dt.tz is None:
                                 historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                             else:
