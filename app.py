@@ -274,29 +274,61 @@ def load_erp_data() -> pd.DataFrame:
     return pd.DataFrame()
 
 def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
-    """Parsea de forma robusta el contenido de un XML de factura electrónica DIAN."""
+    """
+    Parsea de forma robusta el contenido de un XML de factura electrónica DIAN.
+    **NUEVA VERSIÓN MEJORADA**: Maneja XML anidados dentro de CDATA y es más flexible
+    con las diferentes estructuras de los proveedores.
+    """
     try:
         # Limpia cualquier caracter previo a la declaración XML
         xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
         root = ET.fromstring(xml_content.encode('utf-8'))
+
+        # Define los namespaces (espacios de nombres) comunes en facturas UBL
         ns = {
             'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+            'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+            'inv': "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
+            'att': "urn:oasis:names:specification:ubl:schema:xsd:AttachedDocument-2"
         }
 
-        def find_text_robust(paths: List[str]) -> Optional[str]:
+        # --- MEJORA: Manejo de XML anidado (formato AttachedDocument) ---
+        # Busca el XML de la factura dentro de una sección CDATA si el XML principal es un 'AttachedDocument'.
+        description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
+        if description_node is not None and description_node.text and '<Invoice' in description_node.text:
+            try:
+                # Si encuentra un XML de factura anidado, lo convierte en el nuevo 'root' para el análisis
+                inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
+                root = ET.fromstring(inner_xml_text.encode('utf-8'))
+            except ET.ParseError:
+                # Si el contenido anidado no es un XML válido, continúa con el XML original.
+                pass
+
+        # --- Búsqueda robusta de datos ---
+        def find_text_robust(element, paths: List[str]) -> Optional[str]:
             for path in paths:
-                node = root.find(path, ns)
+                node = element.find(path, ns)
                 if node is not None and node.text:
                     return node.text.strip()
             return None
 
-        invoice_number = find_text_robust(['./cbc:ID'])
-        supplier_name = find_text_robust(['./cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name'])
-        issue_date = find_text_robust(['./cbc:IssueDate'])
-        due_date = find_text_robust(['./cac:PaymentMeans/cbc:PaymentDueDate', './cbc:DueDate'])
-        total_value = find_text_robust(['./cac:LegalMonetaryTotal/cbc:PayableAmount'])
+        # Lista de posibles rutas (XPaths) para cada dato. Se prueba cada una hasta encontrar un valor.
+        invoice_number_paths = ['./cbc:ID']
+        supplier_name_paths = [
+            './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name',
+            './cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName'
+        ]
+        issue_date_paths = ['./cbc:IssueDate']
+        due_date_paths = ['./cbc:DueDate', './cac:PaymentMeans/cbc:PaymentDueDate']
+        total_value_paths = ['./cac:LegalMonetaryTotal/cbc:PayableAmount']
 
+        invoice_number = find_text_robust(root, invoice_number_paths)
+        supplier_name = find_text_robust(root, supplier_name_paths)
+        issue_date = find_text_robust(root, issue_date_paths)
+        due_date = find_text_robust(root, due_date_paths)
+        total_value = find_text_robust(root, total_value_paths)
+
+        # Si no se encontraron los datos esenciales, la factura no es válida.
         if not all([invoice_number, supplier_name, total_value]):
             return None
 
@@ -307,8 +339,10 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
             COL_FECHA_VENCIMIENTO_CORREO: due_date,
             COL_VALOR_CORREO: total_value
         }
-    except (ET.ParseError, Exception):
+    except (ET.ParseError, Exception) as e:
+        # st.warning(f"No se pudo parsear un XML. Error: {e}") # Descomentar para depuración
         return None
+
 
 def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
     """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail."""
@@ -376,23 +410,22 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 
     if not email_df.empty:
         email_df[COL_VALOR_CORREO] = email_df[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
-        email_df[COL_VALOR_CORREO] = pd.to_numeric(email_df[COL_VALOR_CORREO], errors='coerce')
         email_df[COL_FECHA_EMISION_CORREO] = pd.to_datetime(email_df[COL_FECHA_EMISION_CORREO], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         email_df[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         email_df = email_df.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
         # Si no hay datos de email, crea un DF vacío con las columnas esperadas para el merge
-        email_df = pd.DataFrame(columns=[COL_NUM_FACTURA, COL_PROVEEDOR_CORREO, COL_VALOR_CORREO, COL_FECHA_EMISION_CORREO])
+        email_df = pd.DataFrame(columns=[COL_NUM_FACTURA, COL_PROVEEDOR_CORREO, COL_VALOR_CORREO, COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO])
 
     # --- Fusión de Datos ---
     master_df = pd.merge(erp_df, email_df, on=COL_NUM_FACTURA, how='outer', indicator=True)
 
-    # --- Lógica de Conciliación (SOLUCIÓN AL ERROR) ---
+    # --- Lógica de Conciliación ---
     # Asegura que ambas columnas de valor son numéricas antes de la comparación
     master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
     master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
 
-    # Llena NaN con un valor que no afectará la comparación (ej. 0) o maneja la lógica
+    # Llena NaN con 0 para poder comparar sin errores
     erp_vals = master_df[COL_VALOR_ERP].fillna(0)
     email_vals = master_df[COL_VALOR_CORREO].fillna(0)
 
@@ -423,6 +456,7 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 
     return master_df
 
+
 # ======================================================================================
 # --- 7. ORQUESTACIÓN DE SINCRONIZACIÓN ---
 # ======================================================================================
@@ -442,20 +476,32 @@ def run_full_sync():
         email_df = fetch_new_invoices_from_email(search_start_date)
 
         if not email_df.empty:
-            st.success(f"¡Se encontraron {len(email_df)} facturas nuevas en el correo!")
+            st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
             email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
 
             st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
             db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
             if db_sheet:
                 # Carga datos históricos para no sobreescribir, sino añadir
-                historical_df = pd.DataFrame(db_sheet.get_all_records())
+                try:
+                    historical_df = pd.DataFrame(db_sheet.get_all_records())
+                except gspread.exceptions.GSpreadException:
+                    historical_df = pd.DataFrame() # Hoja vacía
+                
                 combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
                 update_gsheet_from_df(db_sheet, combined_df)
+                st.session_state.email_df = combined_df
         else:
-            combined_df = pd.DataFrame() # Si no hay nuevos, usa un DF vacío
-            
-        st.session_state.email_df = combined_df
+            st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
+            # Carga los datos históricos de correos si no se encontraron nuevos
+            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
+            if db_sheet:
+                 try:
+                    st.session_state.email_df = pd.DataFrame(db_sheet.get_all_records())
+                 except gspread.exceptions.GSpreadException:
+                    st.session_state.email_df = pd.DataFrame()
+            else:
+                st.session_state.email_df = pd.DataFrame()
 
         st.info("Paso 4/5: Cargando datos del ERP y conciliando...")
         st.session_state.erp_df = load_erp_data()
@@ -516,8 +562,8 @@ def display_sidebar(master_df: pd.DataFrame):
                 start_date = pd.to_datetime(date_range[0]).tz_localize(COLOMBIA_TZ)
                 end_date = pd.to_datetime(date_range[1]).tz_localize(COLOMBIA_TZ)
                 # Filtra solo las filas donde la fecha no es NaT
-                erp_dates = filtered_df[COL_FECHA_EMISION_ERP].dropna()
-                filtered_df = filtered_df.loc[erp_dates[(erp_dates >= start_date) & (erp_dates <= end_date)].index]
+                erp_dates_mask = filtered_df[COL_FECHA_EMISION_ERP].notna()
+                filtered_df = filtered_df[erp_dates_mask & (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & (filtered_df[COL_FECHA_EMISION_ERP] <= end_date)]
 
             st.session_state.filtered_df = filtered_df
 
@@ -537,7 +583,6 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
     
-    # Resto de la UI (sin cambios significativos, ya estaba bien estructurada)...
     vencidas_df = df[df['estado_pago'] == '🔴 Vencida'].sort_values('dias_para_vencer')
     por_vencer_df = df[df['estado_pago'] == '🟠 Por Vencer (7 días)'].sort_values('dias_para_vencer')
 
@@ -600,7 +645,7 @@ def display_dashboard(df: pd.DataFrame):
             pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
                 theta=alt.Theta(field="numero_facturas", type="quantitative"),
                 color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"),
-                tooltip=['estado_conciliacion', 'numero_facturas']
+                tooltip=['estado_conciliacion', 'numero_facturas', alt.Tooltip('valor_total:Q', title='Valor', format='$,.2f')]
             ).properties(title="Distribución de Facturas por Estado")
             st.altair_chart(pie_chart, use_container_width=True)
 
