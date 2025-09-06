@@ -56,6 +56,7 @@ import pytz
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread import Client, Worksheet
+from gspread.utils import get_column_letter
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN INICIAL Y CONSTANTES GLOBALES ---
@@ -206,37 +207,64 @@ def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str)
     return None
 
 def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
-    """Actualiza una hoja de Google Sheets con los datos de un DataFrame."""
+    """
+    Actualiza una hoja de Google Sheets con los datos de un DataFrame,
+    preservando las columnas existentes fuera del rango del DataFrame.
+    """
     if not isinstance(worksheet, Worksheet):
         st.error("Se intentó actualizar una hoja de cálculo inválida.")
         return False
+
     try:
-        worksheet.clear()
+        # --- PREPARACIÓN DE DATOS ---
         df_to_upload = df.copy()
 
         # Bucle robusto para convertir todas las columnas de fecha a texto.
-        # Itera sobre las columnas del DataFrame y comprueba si su tipo es de fecha/hora.
-        # Este método es más seguro que .select_dtypes().
         for col in df_to_upload.columns:
             if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
-                # Se aplica el formato estándar ISO 8601. Los valores NaT (Not a Time) se ignorarán.
                 df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
 
         # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
-        # 'NaT' (de las fechas), 'None' y 'nan' (de los números) se convierten en celdas vacías.
         df_to_upload = df_to_upload.astype(str).replace({
-            'nan': '',
-            'NaT': '',
-            'None': ''
+            'nan': '', 'NaT': '', 'None': ''
         })
 
-        # Prepara la lista de valores y la envía a Google Sheets.
-        worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist())
+        # --- LÓGICA DE ACTUALIZACIÓN MODIFICADA PARA NO BORRAR COLUMNAS ADICIONALES ---
+        
+        # 1. Preparar los datos para la subida (encabezados + filas).
+        data_to_upload = [df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist()
+        num_rows_data = len(data_to_upload)
+        num_cols_data = len(df_to_upload.columns)
+        
+        # 2. Obtener la letra de la última columna que el script manejará (ej. 22 -> 'V').
+        last_col_letter = get_column_letter(num_cols_data)
+        
+        # 3. Primero, actualiza el contenido nuevo desde la celda A1.
+        #    Esto sobrescribe los datos antiguos hasta donde lleguen los nuevos.
+        worksheet.update(data_to_upload, 'A1')
+
+        # 4. Limpiar las filas sobrantes DEBAJO de los nuevos datos.
+        #    Si los datos anteriores eran más largos, este paso borra los residuos
+        #    sin afectar columnas como la W, X, Y.
+        start_row_to_clear = num_rows_data + 1
+        total_sheet_rows = worksheet.row_count
+        
+        if start_row_to_clear <= total_sheet_rows:
+            # Definir el rango exacto a limpiar.
+            range_to_clear = f'A{start_row_to_clear}:{last_col_letter}{total_sheet_rows}'
+            
+            # Crear una matriz de celdas vacías para limpiar el rango.
+            rows_to_clear_count = total_sheet_rows - start_row_to_clear + 1
+            if rows_to_clear_count > 0:
+                empty_data = [[''] * num_cols_data for _ in range(rows_to_clear_count)]
+                worksheet.update(range_to_clear, empty_data, raw=False)
+
         return True
+
     except Exception as e:
-        # Muestra el error específico si la actualización falla.
         st.error(f"❌ Error al actualizar la hoja '{worksheet.title}': {e}")
         return False
+
 
 # ======================================================================================
 # --- 5. LECTURA Y PROCESAMIENTO DE DATOS (ERP & CORREO) ---
@@ -299,12 +327,12 @@ def load_erp_data() -> pd.DataFrame:
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
         df.dropna(subset=[COL_PROVEEDOR_ERP, COL_VALOR_ERP], inplace=True)
 
-        ### INICIO DE LA CORRECCIÓN PARA NOTAS CRÉDITO ###
-        # Identificar notas crédito (valor negativo y sin num_factura)
+        # ### INICIO DE LA CORRECCIÓN PARA CARGAR NOTAS CRÉDITO ###
+        # Esta sección identifica las notas crédito (valor negativo y sin num_factura)
+        # y les asigna un ID único para que no sean descartadas.
         credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | df[COL_NUM_FACTURA].str.strip() == '')
         
-        # Generar un ID único para las notas crédito para que no sean descartadas
-        # Se usa 'NC' (Nota Crédito) + doc_erp + valor absoluto para crear un ID robusto
+        # Generar un ID único usando 'NC' (Nota Crédito) + doc_erp + valor.
         if credit_note_mask.any():
             df.loc[credit_note_mask, COL_NUM_FACTURA] = 'NC-' + \
                 df.loc[credit_note_mask, 'doc_erp'].astype(str) + '-' + \
@@ -312,7 +340,7 @@ def load_erp_data() -> pd.DataFrame:
 
         # Ahora, se eliminan las filas que AÚN no tengan un número de factura (datos malformados)
         df.dropna(subset=[COL_NUM_FACTURA], inplace=True)
-        ### FIN DE LA CORRECCIÓN ###
+        # ### FIN DE LA CORRECCIÓN ###
 
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         
@@ -490,11 +518,8 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                # ### INICIO DE LA CORRECCIÓN ###
                 # Se convierte toda la columna a datetime de forma vectorizada.
-                # Esto es más eficiente y robusto que usar .apply().
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
-                # ### FIN DE LA CORRECCIÓN ###
                 
                 if date_series.dt.tz is None:
                     email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
@@ -574,11 +599,8 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            # ### INICIO DE LA CORRECCIÓN ###
                             # Se convierte toda la columna a datetime de forma vectorizada.
-                            # Esto es más eficiente y robusto que usar .apply().
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
-                            # ### FIN DE LA CORRECCIÓN ###
                             
                             if date_series.dt.tz is None:
                                 historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
@@ -629,7 +651,7 @@ def display_sidebar(master_df: pd.DataFrame):
         st.image("LOGO FERREINOX SAS BIC 2024.png")
         st.title("Panel de Control")
 
-        if st.button("🔄 Sincronizar Todo", type="primary", width='stretch', help=f"Busca correos de los últimos {SEARCH_DAYS_AGO} días, recarga el ERP y actualiza reportes."):
+        if st.button("🔄 Sincronizar Todo", type="primary", help=f"Busca correos de los últimos {SEARCH_DAYS_AGO} días, recarga el ERP y actualiza reportes."):
             run_full_sync()
             st.rerun()
 
