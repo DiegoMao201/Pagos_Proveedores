@@ -532,7 +532,18 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            historical_df[col] = pd.to_datetime(historical_df[col], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+                            # --- INICIO DE LA CORRECCIÓN DEL TypeError ---
+                            # Convierte la columna a datetime primero
+                            date_series = pd.to_datetime(historical_df[col], errors='coerce')
+                            
+                            # Revisa si la serie de fechas NO tiene zona horaria (es "naive")
+                            if date_series.dt.tz is None:
+                                # Si es naive, ASIGNA la zona horaria
+                                historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+                            else:
+                                # Si ya tiene zona horaria (es "aware"), CONVIÉRTELA a la correcta
+                                historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+                            # --- FIN DE LA CORRECCIÓN ---
 
             except gspread.exceptions.GSpreadException as e:
                 st.warning(f"No se pudo leer la base de datos histórica de correos: {e}")
@@ -623,9 +634,10 @@ def display_dashboard(df: pd.DataFrame):
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
 
-    c1.metric("Deuda Total (en ERP)", f"${total_deuda:,.2f}")
-    c2.metric("Monto Vencido", f"${monto_vencido:,.2f}")
-    c3.metric("Monto por Vencer (7 días)", f"${por_vencer_monto:,.2f}")
+    # --- CAMBIO DE FORMATO EN MÉTRICAS ---
+    c1.metric("Deuda Total (en ERP)", f"{int(total_deuda):,}")
+    c2.metric("Monto Vencido", f"{int(monto_vencido):,}")
+    c3.metric("Monto por Vencer (7 días)", f"{int(por_vencer_monto):,}")
     c4.metric("Total Facturas Gestionadas", f"{len(df)}")
 
     st.divider()
@@ -658,10 +670,11 @@ def display_dashboard(df: pd.DataFrame):
     with tab1:
         st.subheader("Explorador de Datos Consolidados")
         display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
+        # --- CAMBIO DE FORMATO EN DATAFRAME ---
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
           column_config={
-              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="$ %,.2f"),
-              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="$ %,.2f"),
+              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="%d"),
+              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="%d"),
               COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
               COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
               "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
@@ -674,17 +687,18 @@ def display_dashboard(df: pd.DataFrame):
             numero_facturas=(COL_NUM_FACTURA, 'count'),
             monto_vencido=(COL_VALOR_ERP, lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
         ).reset_index().sort_values('total_facturado', ascending=False)
+        # --- CAMBIO DE FORMATO EN DATAFRAME ---
         st.dataframe(provider_summary, use_container_width=True, hide_index=True,
             column_config={
-                "total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ %,.2f"),
-                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ %,.2f")
+                "total_facturado": st.column_config.NumberColumn("Total Facturado", format="%d"),
+                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="%d")
             })
         
         st.markdown("##### Top 15 Proveedores por Monto Facturado")
         chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
-            x=alt.X('total_facturado:Q', title='Total Facturado ($)'),
+            x=alt.X('total_facturado:Q', title='Total Facturado'),
             y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format='$,.2f'), 'numero_facturas']
+            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format=',.0f'), 'numero_facturas']
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
@@ -696,13 +710,14 @@ def display_dashboard(df: pd.DataFrame):
         ).reset_index()
         c1, c2 = st.columns([1, 2])
         with c1:
+            # --- CAMBIO DE FORMATO EN DATAFRAME ---
             st.dataframe(conc_summary, use_container_width=True, hide_index=True,
-                column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="$ %,.2f")})
+                column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="%d")})
         with c2:
             pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
                 theta=alt.Theta(field="numero_facturas", type="quantitative"),
                 color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"),
-                tooltip=['estado_conciliacion', 'numero_facturas', alt.Tooltip('valor_total:Q', title='Valor', format='$,.2f')]
+                tooltip=['estado_conciliacion', 'numero_facturas', alt.Tooltip('valor_total:Q', title='Valor', format=',.0f')]
             ).properties(title="Distribución de Facturas por Estado")
             st.altair_chart(pie_chart, use_container_width=True)
             
@@ -719,7 +734,8 @@ def display_dashboard(df: pd.DataFrame):
             st.info("Actualmente no hay facturas con oportunidades de descuento por pronto pago en la selección.")
         else:
             total_ahorro_potencial = descuentos_df['valor_descuento'].sum()
-            st.metric("Ahorro Potencial Total", f"${total_ahorro_potencial:,.2f}", help="Suma de todos los descuentos disponibles en la selección actual.")
+            # --- CAMBIO DE FORMATO EN MÉTRICA ---
+            st.metric("Ahorro Potencial Total", f"{int(total_ahorro_potencial):,}", help="Suma de todos los descuentos disponibles en la selección actual.")
 
             st.markdown("---")
             st.markdown("### 🧠 Plan de Pagos Sugerido (Próximos 15 días)")
@@ -740,11 +756,12 @@ def display_dashboard(df: pd.DataFrame):
                     'nombre_proveedor', COL_NUM_FACTURA, COL_VALOR_ERP, 
                     'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
                 ]
+                # --- CAMBIO DE FORMATO EN DATAFRAME ---
                 st.dataframe(plan_pagos_df[display_cols_plan], use_container_width=True, hide_index=True,
                     column_config={
-                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="$ %,.2f"),
-                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="$ %,.2f"),
-                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="$ %,.2f"),
+                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="%d"),
+                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="%d"),
+                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="%d"),
                         'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
                     }
                 )
@@ -757,12 +774,13 @@ def display_dashboard(df: pd.DataFrame):
                     'nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_VALOR_ERP, 
                     'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
                 ]
+                # --- CAMBIO DE FORMATO EN DATAFRAME ---
                 st.dataframe(descuentos_df[descuentos_df['fecha_limite_descuento'].notna()].sort_values('fecha_limite_descuento'), use_container_width=True, hide_index=True,
                     column_config={
                         COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="$ %,.2f"),
-                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="$ %,.2f"),
-                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="$ %,.2f"),
+                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="%d"),
+                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="%d"),
+                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="%d"),
                         'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
                     }
                 )
