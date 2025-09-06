@@ -53,19 +53,20 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
         # --- Limpieza y Conversión de Tipos de Datos ---
         for col in NUMERIC_COLS:
             if col in df.columns:
-                # Reemplaza cadenas vacías por 0 antes de la conversión
-                df[col] = df[col].replace('', 0)
+                # ### INICIO DE LA CORRECCIÓN (FutureWarning) ###
+                # Se elimina la línea df[col].replace('', 0) que causaba la advertencia.
+                # La siguiente función es la forma correcta y segura de hacer la conversión,
+                # ya que maneja los textos vacíos ('') y otros valores no numéricos.
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                # ### FIN DE LA CORRECCIÓN ###
 
         for col in DATE_COLS:
             if col in df.columns:
+                # Convierte la columna a tipo fecha, los errores se convierten en NaT (Not a Time)
                 df[col] = pd.to_datetime(df[col], errors='coerce')
                 
-                ### INICIO DE LA CORRECCIÓN ###
-                # Se reestructura la lógica para evitar el TypeError.
-                # Primero, se verifica si la columna es de tipo datetime.
-                # Solo si lo es, se procede a manejar la zona horaria.
-                
+                # Se verifica si la columna es de tipo datetime antes de manipular zonas horarias.
+                # Esto evita errores si la conversión anterior falló y la columna no es de tipo fecha.
                 if pd.api.types.is_datetime64_any_dtype(df[col]):
                     # Si la columna es datetime pero no tiene zona horaria (naive), se le asigna.
                     if df[col].dt.tz is None:
@@ -73,7 +74,6 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
                     # Si ya tiene una zona horaria, se convierte a la de Colombia para estandarizar.
                     else:
                         df[col] = df[col].dt.tz_convert(COLOMBIA_TZ)
-                ### FIN DE LA CORRECCIÓN ###
 
         return df
 
