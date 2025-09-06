@@ -226,7 +226,8 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         # Bucle robusto para convertir todas las columnas de fecha a texto.
         for col in df_to_upload.columns:
             if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
-                df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                # Se normaliza la fecha para asegurar que no haya componentes de tiempo inesperados
+                df_to_upload[col] = pd.to_datetime(df_to_upload[col]).dt.strftime('%Y-%m-%d')
 
         # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
         df_to_upload = df_to_upload.astype(str).replace({
@@ -316,7 +317,7 @@ def load_erp_data() -> pd.DataFrame:
         
         try:
             df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                          sep='{', header=None, names=column_names, engine='python')
+                                     sep='{', header=None, names=column_names, engine='python')
         except Exception as csv_error:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
@@ -337,8 +338,11 @@ def load_erp_data() -> pd.DataFrame:
 
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         
-        df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-        df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+        # ### INICIO DE CORRECCIÓN DE FECHAS ERP ###
+        # Se normaliza la fecha para quitar la hora y luego se localiza la zona horaria.
+        df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+        df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+        # ### FIN DE CORRECCIÓN DE FECHAS ERP ###
         
         st.success(f"✅ Datos del ERP cargados exitosamente ({len(df)} registros).")
         return df
@@ -507,12 +511,14 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         # ### INICIO DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS ###
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                # Se reemplazan cadenas vacías o con solo espacios por NaN para una conversión segura
+                # Se limpian valores no válidos y se convierte a datetime, ignorando errores.
                 email_df_proc[col] = email_df_proc[col].replace(r'^\s*$', np.nan, regex=True)
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
-                # Asignar zona horaria solo si la conversión fue exitosa
+                # Asignar zona horaria y normalizar solo si la conversión fue exitosa.
                 if pd.api.types.is_datetime64_any_dtype(date_series):
+                    # Normaliza para quitar la hora y dejar solo la fecha.
+                    date_series = date_series.dt.normalize()
                     if date_series.dt.tz is None:
                         email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                     else:
@@ -542,7 +548,7 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    today = datetime.now(COLOMBIA_TZ)
+    today = datetime.now(COLOMBIA_TZ).normalize()
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
     conditions_pago = [
@@ -594,6 +600,7 @@ def run_full_sync():
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
                             if pd.api.types.is_datetime64_any_dtype(date_series):
+                                date_series = date_series.dt.normalize()
                                 if date_series.dt.tz is None:
                                     historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                                 else:
@@ -605,7 +612,7 @@ def run_full_sync():
 
         if not email_df.empty:
             st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
+            email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ).normalize()
             st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
             
             combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
