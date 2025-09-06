@@ -45,7 +45,6 @@ from gspread import Client, Worksheet
 # ======================================================================================
 
 # --- Configuración de la página de Streamlit ---
-# Debe ser el primer comando de Streamlit en ejecutarse.
 st.set_page_config(
     page_title="Gestión Inteligente de Facturas | FERREINOX",
     page_icon="🤖",
@@ -54,10 +53,9 @@ st.set_page_config(
 )
 
 # --- Constantes Globales ---
-# Facilita la gestión y modificación de valores fijos.
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 
-# Credenciales y rutas de servicios externos
+# Credenciales y rutas
 IMAP_SERVER = "imap.gmail.com"
 EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_FILE_PATH = "/data/Proveedores.csv"
@@ -65,10 +63,10 @@ GSHEET_DB_NAME = "FacturasCorreo_DB"
 GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
 
 # Parámetros de la aplicación
-SEARCH_DAYS_AGO = 30  # Días hacia atrás para buscar correos si no hay historial previo.
-APP_PASSWORD = st.secrets.get("password", "DEFAULT_PASSWORD") # Obtiene la contraseña de los secrets
+SEARCH_DAYS_AGO = 30
+APP_PASSWORD = st.secrets.get("password", "DEFAULT_PASSWORD")
 
-# Nombres de columnas para evitar errores de tipeo (magic strings)
+# Nombres de columnas para evitar errores de tipeo
 COL_NUM_FACTURA = 'num_factura'
 COL_PROVEEDOR_ERP = 'nombre_proveedor_erp'
 COL_VALOR_ERP = 'valor_total_erp'
@@ -98,7 +96,7 @@ def initialize_session_state():
             st.session_state[key] = value
 
 def load_css():
-    """ Carga estilos CSS personalizados para mejorar la apariencia del dashboard. """
+    """Carga estilos CSS personalizados para mejorar la apariencia del dashboard."""
     st.markdown("""
         <style>
             .main .block-container { padding-top: 2rem; }
@@ -109,14 +107,11 @@ def load_css():
                 padding: 20px;
                 box-shadow: 0 4px 12px rgba(0,0,0,0.05);
             }
-            .stMetric [data-testid="stMetricLabel"] { /* Selector más robusto para la etiqueta */
-                font-size: 1rem;
-                color: #4F4F4F;
-                font-weight: 600;
+            .stMetric [data-testid="stMetricLabel"] {
+                font-size: 1rem; color: #4F4F4F; font-weight: 600;
             }
-            .stMetric [data-testid="stMetricValue"] { /* Selector más robusto para el valor */
-                font-size: 2.2rem;
-                font-weight: 700;
+            .stMetric [data-testid="stMetricValue"] {
+                font-size: 2.2rem; font-weight: 700;
             }
             .stButton>button { width: 100%; border-radius: 8px; }
             .st-expander { border-radius: 12px !important; border: 1px solid #E0E0E0 !important; }
@@ -128,10 +123,7 @@ def load_css():
 # ======================================================================================
 
 def check_password() -> bool:
-    """
-    Muestra un formulario de contraseña y verifica el acceso.
-    Retorna True si la contraseña es correcta, de lo contrario False.
-    """
+    """Muestra un formulario de contraseña y verifica el acceso."""
     if st.session_state.get("password_correct", False):
         return True
 
@@ -145,7 +137,7 @@ def check_password() -> bool:
         if submitted:
             if password == APP_PASSWORD:
                 st.session_state.password_correct = True
-                st.rerun() # Recarga la app para mostrar el contenido principal
+                st.rerun()
             else:
                 st.error("Contraseña incorrecta. Inténtalo de nuevo.")
                 
@@ -157,10 +149,7 @@ def check_password() -> bool:
 
 @st.cache_resource(show_spinner="Conectando a Google Sheets...")
 def connect_to_google_sheets() -> Optional[Client]:
-    """
-    Establece conexión con la API de Google Sheets usando las credenciales de Streamlit.
-    Retorna un objeto cliente de gspread o None si falla la conexión.
-    """
+    """Establece conexión con la API de Google Sheets."""
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["google_credentials"], scopes=scopes)
@@ -170,10 +159,7 @@ def connect_to_google_sheets() -> Optional[Client]:
         return None
 
 def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str) -> Optional[Worksheet]:
-    """
-    Obtiene una hoja de cálculo por su nombre, o la crea si no existe.
-    Retorna un objeto Worksheet o None si ocurre un error.
-    """
+    """Obtiene una hoja de cálculo por su nombre, o la crea si no existe."""
     try:
         spreadsheet = client.open_by_key(sheet_key)
         try:
@@ -188,24 +174,18 @@ def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str)
     return None
 
 def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
-    """
-    Actualiza una hoja de Google Sheets con los datos de un DataFrame de forma segura.
-    Retorna True si la actualización fue exitosa, de lo contrario False.
-    """
+    """Actualiza una hoja de Google Sheets con los datos de un DataFrame."""
     if not isinstance(worksheet, Worksheet):
         st.error("Se intentó actualizar una hoja de cálculo inválida.")
         return False
     try:
         worksheet.clear()
-        # Prepara el DataFrame para la subida a Google Sheets
         df_to_upload = df.copy()
         for col in df_to_upload.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns, America/Bogota]']).columns:
             df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d')
         
-        # Convierte todo a string para evitar problemas de formato con gspread
         df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
         
-        # Actualiza la hoja con los encabezados y los datos
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist())
         return True
     except Exception as e:
@@ -216,17 +196,15 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
 # --- 5. LECTURA Y PROCESAMIENTO DE DATOS (ERP & CORREO) ---
 # ======================================================================================
 
-# --- CORRECCIÓN CLAVE ---
+# --- MEJORA CLAVE ---
 # Esta nueva función es mucho más robusta para convertir diferentes formatos de
-# texto a números, que era la causa principal de tu problema.
+# texto a números, que era una posible causa de errores.
 def clean_and_convert_numeric(value: Any) -> float:
     """
     Limpia una cadena de texto que representa un número y la convierte a float.
-    Maneja de forma inteligente formatos colombianos (ej: "1.234,56") y
-    estándar (ej: "1234.56").
+    Maneja formatos colombianos (ej: "1.234,56") y estándar (ej: "1234.56").
     Retorna np.nan si el valor no se puede convertir.
     """
-    # Si el valor ya es numérico o es nulo/vacío, lo devuelve o convierte a nan.
     if pd.isna(value) or value is None or value == '':
         return np.nan
     if isinstance(value, (int, float)):
@@ -234,31 +212,22 @@ def clean_and_convert_numeric(value: Any) -> float:
     if not isinstance(value, str):
         return np.nan
 
-    # Normaliza la cadena de texto
-    cleaned_str = str(value).strip()
-    cleaned_str = cleaned_str.replace('$', '').strip()
-
+    cleaned_str = str(value).strip().replace('$', '').strip()
     try:
-        # Detecta el formato colombiano (punto como miles, coma como decimal)
+        # Detecta y normaliza el formato colombiano (punto como miles, coma como decimal)
         if ',' in cleaned_str and '.' in cleaned_str:
-            # Elimina los puntos de miles y reemplaza la coma decimal
             cleaned_str = cleaned_str.replace('.', '').replace(',', '.')
         # Maneja el caso de solo coma decimal
         elif ',' in cleaned_str:
             cleaned_str = cleaned_str.replace(',', '.')
         
-        # En este punto, la cadena debería estar en formato estándar (ej: "1234.56")
         return float(cleaned_str)
     except (ValueError, TypeError):
-        # Si la conversión falla, retorna nan (Not a Number)
         return np.nan
 
 @st.cache_data(show_spinner="Descargando datos del ERP (Dropbox)...", ttl=900)
 def load_erp_data() -> pd.DataFrame:
-    """
-    Carga los datos de facturas desde un archivo CSV en Dropbox.
-    Realiza la limpieza y conversión de tipos de datos de forma vectorizada.
-    """
+    """Carga los datos de facturas desde un archivo CSV en Dropbox."""
     try:
         dbx = dropbox.Dropbox(
             oauth2_refresh_token=st.secrets.dropbox["refresh_token"],
@@ -272,21 +241,18 @@ def load_erp_data() -> pd.DataFrame:
             'doc_erp', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP
         ]
         
-        # Lee el CSV en memoria
         df = pd.read_csv(io.StringIO(response.content.decode('latin1')), 
                          sep='{', header=None, names=column_names, engine='python')
 
         # --- Limpieza y transformación de datos ---
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].astype(str).str.strip().str.upper()
         
-        # **APLICACIÓN DE LA CORRECCIÓN**: Usa la nueva función para convertir los valores
+        # **APLICACIÓN DE LA MEJORA**: Usa la nueva función para convertir valores
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
         
-        # Conversión de fechas vectorizada y segura.
         df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.normalize()
         df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.normalize()
         
-        # Elimina filas esenciales que son nulas
         return df.dropna(subset=[COL_NUM_FACTURA, COL_PROVEEDOR_ERP])
 
     except dropbox.exceptions.ApiError as e:
@@ -297,45 +263,31 @@ def load_erp_data() -> pd.DataFrame:
     return pd.DataFrame()
 
 def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
-    """
-    Parsea de forma robusta el contenido de un XML de factura electrónica DIAN (UBL 2.1).
-    Busca en varias rutas posibles para cada campo clave.
-    Retorna un diccionario con los datos o None si faltan campos esenciales.
-    """
+    """Parsea de forma robusta el contenido de un XML de factura electrónica DIAN."""
     try:
-        # Limpieza inicial del contenido XML
         xml_content = xml_content.strip()
         if xml_content.startswith('<?xml'):
-             xml_content = re.sub(r'^[^\<]+', '', xml_content)
+            xml_content = re.sub(r'^[^\<]+', '', xml_content)
         
         root = ET.fromstring(xml_content.encode('utf-8'))
-
-        # Definición de namespaces para facilitar las búsquedas con XPath
         ns = {
             'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
             'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
         }
 
         def find_text_robust(paths: List[str]) -> Optional[str]:
-            """Función anidada para buscar un texto en varias rutas XPath."""
             for path in paths:
                 node = root.find(path, ns)
                 if node is not None and node.text:
                     return node.text.strip()
             return None
 
-        # Búsqueda robusta de cada campo en rutas comunes
         invoice_number = find_text_robust(['./cbc:ID'])
-        supplier_name = find_text_robust(['./cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName',
-                                          './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name'])
+        supplier_name = find_text_robust(['./cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name'])
         issue_date = find_text_robust(['./cbc:IssueDate'])
-        due_date = find_text_robust(['./cac:PaymentMeans/cbc:PaymentDueDate', 
-                                     './cbc:DueDate', 
-                                     './cac:PaymentTerms/cbc:SettlementPeriod/cbc:EndDate'])
-        total_value = find_text_robust(['./cac:LegalMonetaryTotal/cbc:PayableAmount', 
-                                        './cac:RequestedMonetaryTotal/cbc:PayableAmount'])
+        due_date = find_text_robust(['./cac:PaymentMeans/cbc:PaymentDueDate', './cbc:DueDate', './cac:PaymentTerms/cbc:SettlementPeriod/cbc:EndDate'])
+        total_value = find_text_robust(['./cac:LegalMonetaryTotal/cbc:PayableAmount', './cac:RequestedMonetaryTotal/cbc:PayableAmount'])
 
-        # Valida que los campos mínimos requeridos existan
         if not all([invoice_number, supplier_name, total_value]):
             return None
 
@@ -344,16 +296,13 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
             COL_PROVEEDOR_CORREO: supplier_name,
             COL_FECHA_EMISION_CORREO: issue_date,
             COL_FECHA_VENCIMIENTO_CORREO: due_date,
-            COL_VALOR_CORREO: total_value # Se mantiene como texto para ser limpiado después
+            COL_VALOR_CORREO: total_value
         }
     except (ET.ParseError, Exception):
-        # Captura errores de parseo XML o cualquier otro error inesperado
         return None
 
 def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
-    """
-    Busca, descarga y extrae datos de facturas desde archivos adjuntos en una cuenta de Gmail.
-    """
+    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail."""
     invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -390,7 +339,6 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
                                     if details:
                                         invoices_data.append(details)
                     except (zipfile.BadZipFile, io.UnsupportedOperation):
-                        # Ignora archivos zip corruptos o que no son zip
                         continue
             progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {i+1}/{len(message_ids)} correos...")
         
@@ -407,42 +355,41 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
 # --- 6. LÓGICA DE PROCESAMIENTO Y CONCILIACIÓN DE DATOS ---
 # ======================================================================================
 def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cruza los datos del ERP y del correo para crear un DataFrame maestro conciliado,
-    calculando estados de pago y conciliación.
-    """
+    """Cruza los datos del ERP y del correo para crear un DataFrame maestro conciliado."""
     if erp_df.empty:
         st.error("El análisis no puede continuar sin datos del ERP.")
         return pd.DataFrame()
 
-    # --- Preparación del DataFrame de Correos ---
-    if not email_df.empty:
-        # Asegura que las columnas esperadas existan, incluso si no se encontró ninguna factura
-        expected_email_cols = {
-            COL_NUM_FACTURA: '', COL_PROVEEDOR_CORREO: '',
-            COL_FECHA_EMISION_CORREO: pd.NaT, COL_FECHA_VENCIMIENTO_CORREO: pd.NaT,
-            COL_VALOR_CORREO: np.nan
-        }
+    # --- **CORRECCIÓN CLAVE PARA EVITAR EL KEYERROR** ---
+    # Se asegura que el DataFrame de correos tenga las columnas necesarias
+    # incluso si está vacío, antes de hacer el merge.
+    expected_email_cols = {
+        COL_NUM_FACTURA: '', COL_PROVEEDOR_CORREO: '',
+        COL_FECHA_EMISION_CORREO: pd.NaT, COL_FECHA_VENCIMIENTO_CORREO: pd.NaT,
+        COL_VALOR_CORREO: np.nan
+    }
+    if email_df.empty:
+        email_df = pd.DataFrame(columns=expected_email_cols.keys())
+    else:
         for col, default_val in expected_email_cols.items():
             if col not in email_df.columns:
                 email_df[col] = default_val
 
-        # **APLICACIÓN DE LA CORRECCIÓN**: Usa la nueva función para convertir los valores del correo
-        email_df[COL_VALOR_CORREO] = email_df[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
-        email_df[COL_NUM_FACTURA] = email_df[COL_NUM_FACTURA].astype(str).str.strip().str.upper()
-        
-        # Conversión de fechas vectorizada y segura
-        email_df[COL_FECHA_EMISION_CORREO] = pd.to_datetime(email_df[COL_FECHA_EMISION_CORREO], errors='coerce').dt.normalize()
-        email_df[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.normalize()
-        
-        # Elimina duplicados, conservando la última factura recibida por correo
-        email_df = email_df.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
+    # --- Preparación del DataFrame de Correos ---
+    # **APLICACIÓN DE LA MEJORA**: Usa la nueva función para convertir valores
+    email_df[COL_VALOR_CORREO] = email_df[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
+    email_df[COL_NUM_FACTURA] = email_df[COL_NUM_FACTURA].astype(str).str.strip().str.upper()
     
-    # --- Fusión de Datos ---
+    email_df[COL_FECHA_EMISION_CORREO] = pd.to_datetime(email_df[COL_FECHA_EMISION_CORREO], errors='coerce').dt.normalize()
+    email_df[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.normalize()
+    
+    email_df = email_df.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
+    
+    # --- Fusión de Datos (Ahora es segura) ---
     master_df = pd.merge(erp_df, email_df, on=COL_NUM_FACTURA, how='outer', indicator=True)
     
     # --- Cálculo de Estados de Conciliación ---
-    # **MEJORA**: Condición más robusta para discrepancia, ignora si uno de los valores es nulo.
+    # **MEJORA**: Condición más robusta para discrepancia
     are_both_values_present = master_df[COL_VALOR_ERP].notna() & master_df[COL_VALOR_CORREO].notna()
     
     conditions_conciliacion = [
@@ -467,7 +414,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna(), 'Sin Fecha ERP', master_df['estado_pago'])
     
     # --- Limpieza Final ---
-    # Unifica el nombre del proveedor, dando prioridad al del ERP
     master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
     master_df.drop(columns=['_merge'], inplace=True)
     
@@ -478,9 +424,7 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 # ======================================================================================
 
 def run_full_sync():
-    """
-    Orquesta el proceso completo de sincronización de datos.
-    """
+    """Orquesta el proceso completo de sincronización de datos."""
     with st.spinner('Iniciando sincronización completa...'):
         st.info("Paso 1/6: Conectando a servicios de Google...")
         gs_client = connect_to_google_sheets()
@@ -495,7 +439,7 @@ def run_full_sync():
         # Determina la fecha de inicio para la búsqueda de nuevos correos
         if not historical_email_df.empty and 'fecha_lectura' in historical_email_df.columns:
             last_date = pd.to_datetime(historical_email_df['fecha_lectura'], errors='coerce').max()
-            # Busca desde 5 días antes de la última lectura para cubrir posibles desfases
+            # Busca desde 5 días antes de la última lectura para cubrir desfases
             search_start_date = (last_date - timedelta(days=5)) if pd.notna(last_date) else (datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO))
         else:
             search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
@@ -526,22 +470,21 @@ def run_full_sync():
             st.success("✅ ¡Sincronización completada con éxito!")
         
         st.session_state.data_loaded = True
+        st.balloons()
 
 # ======================================================================================
 # --- 8. COMPONENTES DE LA INTERFAZ DE USUARIO (STREAMLIT) ---
 # ======================================================================================
-# La interfaz se divide en funciones para mayor claridad.
 
 def display_sidebar(master_df: pd.DataFrame):
     """Renderiza la barra lateral con el logo, botón de sincronización y filtros."""
     with st.sidebar:
-        # Asegúrate de que este archivo de imagen esté en el directorio raíz de tu app
         st.image("LOGO FERREINOX SAS BIC 2024.png", use_container_width=True)
         st.title("Panel de Control")
         
-        if st.button("🔄 Sincronizar Todo", type="primary", use_container_width=True):
+        if st.button("🔄 Sincronizar Todo", type="primary", use_container_width=True, help="Busca nuevos correos, recarga los datos del ERP y actualiza todos los reportes."):
             run_full_sync()
-            st.rerun() # Recarga la app para reflejar los nuevos datos
+            st.rerun()
 
         if 'master_df' in st.session_state and not st.session_state.master_df.empty:
             st.divider()
@@ -550,7 +493,6 @@ def display_sidebar(master_df: pd.DataFrame):
             proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
             selected_suppliers = st.multiselect("Proveedor:", proveedores_lista, default=proveedores_lista)
             
-            # Manejo seguro de rangos de fechas
             min_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().min()
             max_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().max()
             
@@ -564,11 +506,9 @@ def display_sidebar(master_df: pd.DataFrame):
                                        value=(min_date, max_date), 
                                        min_value=min_date, max_value=max_date)
             
-            # Aplica los filtros
             filtered_df = master_df[master_df['nombre_proveedor'].isin(selected_suppliers)]
             if len(date_range) == 2:
                 start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-                # Filtra de forma segura incluso con fechas nulas en la columna
                 filtered_df = filtered_df[
                     (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & 
                     (filtered_df[COL_FECHA_EMISION_ERP] <= end_date)
@@ -576,11 +516,10 @@ def display_sidebar(master_df: pd.DataFrame):
             st.session_state.filtered_df = filtered_df
 
 def display_dashboard(df: pd.DataFrame):
-    """Renderiza el contenido principal del dashboard: métricas, alertas y tabs."""
+    """Renderiza el contenido principal del dashboard."""
     st.header("📊 Resumen Financiero y de Gestión")
     c1, c2, c3, c4 = st.columns(4)
     
-    # Cálculos para las métricas (sum() ignora los NaN automáticamente)
     total_deuda = df.loc[df['estado_conciliacion'] != '📧 Solo en Correo', COL_VALOR_ERP].sum()
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
@@ -592,7 +531,6 @@ def display_dashboard(df: pd.DataFrame):
     
     st.divider()
 
-    # --- Centro de Alertas y Búsqueda ---
     vencidas_df = df[df['estado_pago'] == '🔴 Vencida'].sort_values('dias_para_vencer')
     por_vencer_df = df[df['estado_pago'] == '🟠 Por Vencer (7 días)'].sort_values('dias_para_vencer')
 
@@ -601,7 +539,7 @@ def display_dashboard(df: pd.DataFrame):
         if not vencidas_df.empty:
             st.dataframe(vencidas_df[['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'dias_para_vencer']], use_container_width=True)
         else:
-            st.info("¡Excelente! No hay facturas vencidas.")
+            st.success("¡Excelente! No hay facturas vencidas en la selección actual.")
             
         st.subheader("🟠 Facturas por Vencer (Próximos 7 días)")
         if not por_vencer_df.empty:
@@ -611,20 +549,19 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
 
-    # --- Pestañas de Análisis ---
     tab1, tab2, tab3 = st.tabs(["📑 Explorador de Datos", "🏢 Análisis de Proveedores", "⚙️ Estado de Conciliación"])
 
     with tab1:
         st.subheader("Explorador de Datos Consolidados")
         display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
-            column_config={
-                COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"),
-                COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="$ {:,.2f}"),
-                COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-                COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
-                "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
-            })
+          column_config={
+              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"),
+              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="$ {:,.2f}"),
+              COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
+              COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+              "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
+          })
     
     with tab2:
         st.subheader("Análisis por Proveedor")
@@ -639,11 +576,7 @@ def display_dashboard(df: pd.DataFrame):
         chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
             x=alt.X('total_facturado:Q', title='Total Facturado ($)'),
             y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=[
-                alt.Tooltip('nombre_proveedor', title='Proveedor'),
-                alt.Tooltip('total_facturado:Q', title='Facturado', format='$,.2f'),
-                'numero_facturas'
-            ]
+            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format='$,.2f'), 'numero_facturas']
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
@@ -651,7 +584,7 @@ def display_dashboard(df: pd.DataFrame):
         st.subheader("Resumen del Estado de Conciliación")
         conc_summary = df.groupby('estado_conciliacion').agg(
             numero_facturas=(COL_NUM_FACTURA, 'count'),
-            valor_total=(COL_VALOR_ERP, 'sum') # Suma el valor del ERP que es la fuente principal
+            valor_total=(COL_VALOR_ERP, 'sum')
         ).reset_index()
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -669,9 +602,7 @@ def display_dashboard(df: pd.DataFrame):
 # ======================================================================================
 
 def main_app():
-    """
-    Función principal que construye y renderiza la interfaz de la aplicación.
-    """
+    """Función principal que construye y renderiza la interfaz de la aplicación."""
     load_css()
     display_sidebar(st.session_state.master_df)
     
