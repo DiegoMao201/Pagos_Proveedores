@@ -5,8 +5,7 @@ import altair as alt
 from datetime import datetime, timedelta
 
 # Asumimos que las funciones de conexión están en un directorio común.
-# Si no es así, puedes copiar las funciones aquí directamente.
-from common.utils import load_data_from_gsheet, connect_to_google_sheets, COLOMBIA_TZ
+from common.utils import load_data_from_gsheet, connect_to_google_sheets
 
 # --- 1. CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -16,12 +15,17 @@ st.set_page_config(
 )
 
 # --- 2. CARGA DE DATOS ---
-# Usamos un decorador de cache para no recargar los datos en cada interacción.
 @st.cache_data(ttl=600)
 def get_master_data():
     """Conecta y carga los datos consolidados desde Google Sheets."""
     gs_client = connect_to_google_sheets()
-    df = load_data_from_gsheet(gs_client, sheet_name="ReporteConsolidado_Activo")
+    
+    ### INICIO DE LA CORRECCIÓN (TypeError) ###
+    # Se elimina el argumento 'sheet_name' porque la función load_data_from_gsheet
+    # ya sabe qué hoja debe cargar desde el archivo utils.py.
+    df = load_data_from_gsheet(gs_client)
+    ### FIN DE LA CORRECCIÓN ###
+    
     return df
 
 master_df = get_master_data()
@@ -34,11 +38,9 @@ if master_df.empty:
 st.sidebar.header("Filtros de Análisis 🔎")
 proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
 
-# Establecer "PINTUCO COLOMBIA S.A.S" como default si existe
 default_provider = "PINTUCO COLOMBIA S.A.S"
-if default_provider not in proveedores_lista:
-    default_provider_index = 0
-else:
+default_provider_index = 0
+if default_provider in proveedores_lista:
     default_provider_index = proveedores_lista.index(default_provider)
 
 selected_supplier = st.sidebar.selectbox(
@@ -47,7 +49,6 @@ selected_supplier = st.sidebar.selectbox(
     index=default_provider_index
 )
 
-# Filtrar el DataFrame para el proveedor seleccionado
 supplier_df = master_df[master_df['nombre_proveedor'] == selected_supplier].copy()
 
 # --- 4. TÍTULO PRINCIPAL Y VERIFICACIÓN DE DATOS ---
@@ -62,13 +63,11 @@ if supplier_df.empty:
 st.header("🧠 Sugerencias Inteligentes para Tesorería")
 st.markdown("Acciones prioritarias para optimizar el flujo de caja y maximizar ahorros.")
 
-# Filtrar facturas con descuentos disponibles y ordenarlas por fecha límite
 descuentos_df = supplier_df[
     (supplier_df['estado_descuento'] != 'No Aplica') &
     (supplier_df['fecha_limite_descuento'].notna())
 ].sort_values('fecha_limite_descuento')
 
-# Filtrar facturas vencidas y ordenarlas por las más antiguas
 vencidas_df = supplier_df[supplier_df['estado_pago'] == '🔴 Vencida'].sort_values('dias_para_vencer', ascending=True)
 
 s1, s2 = st.columns(2)
@@ -81,7 +80,9 @@ with s1:
             st.success(f"¡Oportunidad de ahorrar **${total_ahorro:,.0f}**! Paga estas facturas antes de su fecha límite:")
             st.dataframe(
                 descuentos_df[['num_factura', 'valor_con_descuento', 'fecha_limite_descuento', 'valor_descuento']],
-                hide_index=True, use_container_width=True,
+                hide_index=True,
+                ### CORRECCIÓN (Advertencia): 'use_container_width' actualizado a 'width' ###
+                width='stretch',
                 column_config={
                     "num_factura": "N° Factura",
                     "valor_con_descuento": st.column_config.NumberColumn("Pagar", format="$ {:,.0f}"),
@@ -99,7 +100,9 @@ with s2:
             st.error(f"Hay **{len(vencidas_df)} facturas vencidas**. Priorizar su pago para evitar problemas:")
             st.dataframe(
                 vencidas_df[['num_factura', 'valor_total_erp', 'fecha_vencimiento_erp', 'dias_para_vencer']],
-                hide_index=True, use_container_width=True,
+                hide_index=True,
+                ### CORRECCIÓN (Advertencia): 'use_container_width' actualizado a 'width' ###
+                width='stretch',
                 column_config={
                     "num_factura": "N° Factura",
                     "valor_total_erp": st.column_config.NumberColumn("Valor", format="$ {:,.0f}"),
@@ -115,16 +118,11 @@ st.divider()
 # --- 6. MÉTRICAS Y KPIs CLAVE ---
 st.header("📊 Resumen Financiero y Operativo")
 
-# Cálculos
 total_deuda = supplier_df['valor_total_erp'].sum()
 monto_vencido = vencidas_df['valor_total_erp'].sum()
-num_facturas = len(supplier_df)
-avg_valor_factura = supplier_df['valor_total_erp'].mean()
 descuento_potencial = descuentos_df['valor_descuento'].sum()
-# Calcular días promedio de pago (aproximación si no hay fecha de pago real)
 supplier_df['plazo_dias'] = (supplier_df['fecha_vencimiento_erp'] - supplier_df['fecha_emision_erp']).dt.days
 avg_plazo = supplier_df['plazo_dias'].mean()
-
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 kpi1.metric("Deuda Total Actual", f"${total_deuda:,.0f}", help="Suma de todas las facturas pendientes de pago en el ERP.")
@@ -155,7 +153,7 @@ with v1:
             alt.Tooltip('valor_total', title='Valor Total', format='$,.0f')
         ]
     ).properties(title="Distribución de la Deuda por Estado")
-    st.altair_chart(pie_chart, use_container_width=True)
+    st.altair_chart(pie_chart, use_container_width=True) # `use_container_width` sigue siendo válido para altair_chart
 
 with v2:
     st.subheader("Facturación Mensual")
@@ -178,7 +176,7 @@ with v2:
             alt.Tooltip('numero_facturas', title='N° Facturas')
         ]
     )
-    st.altair_chart((bars).interactive(), use_container_width=True)
+    st.altair_chart((bars).interactive(), use_container_width=True) # `use_container_width` sigue siendo válido para altair_chart
 
 
 # --- 8. TABLA DE DATOS DETALLADA ---
@@ -192,7 +190,8 @@ with st.expander("Ver todas las facturas del proveedor", expanded=False):
     ]
     st.dataframe(
         supplier_df[display_cols],
-        use_container_width=True,
+        ### CORRECCIÓN (Advertencia): 'use_container_width' actualizado a 'width' ###
+        width='stretch',
         hide_index=True,
         column_config={
             "num_factura": st.column_config.TextColumn("N° Factura"),
