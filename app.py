@@ -290,7 +290,7 @@ def load_erp_data() -> pd.DataFrame:
         
         try:
             df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                     sep='{', header=None, names=column_names, engine='python')
+                                         sep='{', header=None, names=column_names, engine='python')
         except Exception as csv_error:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
