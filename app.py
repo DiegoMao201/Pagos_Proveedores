@@ -491,8 +491,9 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         for col in date_cols_correo:
             if col in email_df_proc.columns:
                 # ### INICIO DE LA CORRECCIÓN ###
-                # Se aplica la conversión a cada elemento para mayor robustez ante formatos inconsistentes.
-                date_series = email_df_proc[col].apply(pd.to_datetime, errors='coerce')
+                # Se convierte toda la columna a datetime de forma vectorizada.
+                # Esto es más eficiente y robusto que usar .apply().
+                date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 # ### FIN DE LA CORRECCIÓN ###
                 
                 if date_series.dt.tz is None:
@@ -574,8 +575,9 @@ def run_full_sync():
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
                             # ### INICIO DE LA CORRECCIÓN ###
-                            # Se aplica la conversión a cada elemento para mayor robustez.
-                            date_series = historical_df[col].apply(pd.to_datetime, errors='coerce')
+                            # Se convierte toda la columna a datetime de forma vectorizada.
+                            # Esto es más eficiente y robusto que usar .apply().
+                            date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             # ### FIN DE LA CORRECCIÓN ###
                             
                             if date_series.dt.tz is None:
@@ -624,10 +626,10 @@ def run_full_sync():
 def display_sidebar(master_df: pd.DataFrame):
     """Renderiza la barra lateral con el logo, botón de sincronización y filtros."""
     with st.sidebar:
-        st.image("LOGO FERREINOX SAS BIC 2024.png", use_container_width=True)
+        st.image("LOGO FERREINOX SAS BIC 2024.png")
         st.title("Panel de Control")
 
-        if st.button("🔄 Sincronizar Todo", type="primary", use_container_width=True, help=f"Busca correos de los últimos {SEARCH_DAYS_AGO} días, recarga el ERP y actualiza reportes."):
+        if st.button("🔄 Sincronizar Todo", type="primary", width='stretch', help=f"Busca correos de los últimos {SEARCH_DAYS_AGO} días, recarga el ERP y actualiza reportes."):
             run_full_sync()
             st.rerun()
 
