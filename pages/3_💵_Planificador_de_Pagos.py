@@ -138,7 +138,7 @@ Utiliza el **Motor de Sugerencias** para optimizar tus pagos según tu presupues
 # Se utiliza el caché de la función para eficiencia.
 try:
     gs_client = connect_to_google_sheets()
-    df_full = load_data_from_gsheet(gs_client, "ReporteConsolidado_Activo")
+    df_full = load_data_from_gsheet(gs_client)
 except Exception as e:
     st.error(f"No se pudo conectar o cargar los datos desde Google Sheets. Error: {e}")
     st.stop()
@@ -338,9 +338,15 @@ else:
                     key="whatsapp_num"
                 )
 
+                # Se define lote_info aquí también para que esté disponible aunque no se presione el botón de generar lote
+                total_original = selected_rows['valor_total_erp'].sum()
+                ahorro_total = selected_rows['valor_descuento'].sum()
+                total_a_pagar = selected_rows['valor_con_descuento'].sum()
+                num_facturas = len(selected_rows)
+                
                 mensaje_base = (
                     f"¡Hola! 👋 Se ha generado un nuevo lote de pago para tu gestión.\n\n"
-                    f"*{lote_info.get('id_lote', 'LOTE-PENDIENTE')}*\n\n"
+                    f"*{'LOTE-POR-CONFIRMAR'}*\n\n"
                     f"🔹 *Total a Pagar:* ${total_a_pagar:,.0f}\n"
                     f"🔹 *Nº Facturas:* {num_facturas}\n"
                     f"🔹 *Ahorro Obtenido:* ${ahorro_total:,.0f}\n\n"
