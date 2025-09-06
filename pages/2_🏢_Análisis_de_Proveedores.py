@@ -245,13 +245,18 @@ with tab2:
         title='Distribución de la Deuda por Antigüedad'
     )
     
+    # --- BLOQUE CORREGIDO PARA EVITAR EL ERROR ---
     text = chart.mark_text(
         align='left',
         baseline='middle',
-        dx=3,
-        expr="datum.valor_total / 1000000" # Muestra texto si el valor es > 0, para no sobrecargar
+        dx=3,  # Desplaza el texto ligeramente a la derecha de la barra
     ).encode(
-        text=alt.Text('valor_total:Q', format='$,.1s') # Formato compacto (e.g., $1M, $500k)
+        # Usa alt.condition para mostrar el texto solo si el valor es significativo
+        text=alt.condition(
+            'datum.valor_total > 100000',  # Condición: si el valor es mayor a 100,000
+            alt.Text('valor_total:Q', format='$,.1s'),  # Si es VERDADERO, muestra el valor formateado
+            alt.value('')  # Si es FALSO, no muestres nada (texto vacío)
+        )
     )
 
     st.altair_chart((chart + text).interactive(), use_container_width=True)
