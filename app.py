@@ -14,6 +14,11 @@ Funcionalidades principales:
 - Dashboard interactivo con métricas, alertas de vencimiento y filtros.
 - Visualización de datos y reportes por proveedor.
 - Actualización de una base de datos y un reporte consolidado en Google Sheets.
+
+**NUEVAS FUNCIONALIDADES (Versión 2.0):**
+- Módulo de análisis de descuentos financieros por pronto pago.
+- Plan de pagos sugerido para maximizar ahorros.
+- Panel visual dedicado a la gestión de oportunidades de descuento.
 """
 
 # ======================================================================================
@@ -27,7 +32,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 # Librerías de terceros (instaladas)
 import altair as alt
@@ -76,6 +81,21 @@ COL_PROVEEDOR_CORREO = 'nombre_proveedor_correo'
 COL_VALOR_CORREO = 'valor_total_correo'
 COL_FECHA_EMISION_CORREO = 'fecha_emision_correo'
 COL_FECHA_VENCIMIENTO_CORREO = 'fecha_vencimiento_correo'
+
+# --- NUEVA CONSTANTE: Reglas de Descuentos por Proveedor ---
+DISCOUNT_PROVIDERS = {
+    "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
+    "ARMETALES S.A.": [{"days": 10, "rate": 0.02}],
+    "ASSA ABLOY COLOMBIA S.A.S": [{"days": 12, "rate": 0.025}],
+    "INDUMA S.C.A": [{"days": 15, "rate": 0.035}],
+    "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.03}],
+    "PINTUCO COLOMBIA S.A.S": [
+        {"days": 15, "rate": 0.03},
+        {"days": 30, "rate": 0.02}
+    ],
+    "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.03}]
+}
+
 
 # ======================================================================================
 # --- 2. ESTADO DE SESIÓN Y ESTILOS CSS ---
@@ -166,7 +186,7 @@ def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str)
             return spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
             st.warning(f"Hoja '{worksheet_name}' no encontrada. Creando una nueva...")
-            return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="30")
+            return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="50") # Aumentado el número de columnas
     except gspread.exceptions.APIError as e:
         st.error(f"Error de API de Google al acceder a la hoja de cálculo: {e}")
     except Exception as e:
@@ -181,6 +201,7 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
     try:
         worksheet.clear()
         df_to_upload = df.copy()
+        
         # Formatea columnas de fecha a string para evitar problemas de formato
         for col in df_to_upload.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns, America/Bogota]']).columns:
             df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -199,12 +220,7 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
 # ======================================================================================
 
 def clean_and_convert_numeric(value: Any) -> float:
-    """
-    **FUNCIÓN MEJORADA Y ROBUSTA**
-    Limpia una cadena de texto que representa un número y la convierte a float.
-    Maneja diversos formatos, incluyendo símbolos de moneda y separadores.
-    Retorna np.nan si el valor es inválido o no se puede convertir.
-    """
+    """Limpia una cadena de texto que representa un número y la convierte a float."""
     if pd.isna(value) or value is None:
         return np.nan
     if isinstance(value, (int, float)):
@@ -212,21 +228,15 @@ def clean_and_convert_numeric(value: Any) -> float:
     if not isinstance(value, str):
         return np.nan
 
-    # Elimina espacios en blanco y símbolos de moneda comunes
     cleaned_str = str(value).strip().replace('$', '').replace('COP', '').strip()
-
     try:
-        # Normaliza el formato colombiano (punto como miles, coma como decimal)
         if '.' in cleaned_str and ',' in cleaned_str:
-            # Asume que el último separador es el decimal
             if cleaned_str.rfind('.') > cleaned_str.rfind(','):
-                cleaned_str = cleaned_str.replace(',', '') # 1.234.567 -> 1234567
+                cleaned_str = cleaned_str.replace(',', '')
             else:
-                cleaned_str = cleaned_str.replace('.', '').replace(',', '.') # 1.234,56 -> 1234.56
-        # Maneja el caso de solo coma decimal
+                cleaned_str = cleaned_str.replace('.', '').replace(',', '.')
         elif ',' in cleaned_str:
             cleaned_str = cleaned_str.replace(',', '.')
-
         return float(cleaned_str)
     except (ValueError, TypeError):
         return np.nan
@@ -235,7 +245,6 @@ def normalize_invoice_number(inv_num: Any) -> str:
     """Limpia y estandariza el número de factura para un cruce más efectivo."""
     if not isinstance(inv_num, str):
         inv_num = str(inv_num)
-    # Elimina espacios, guiones y convierte a mayúsculas
     return re.sub(r'[\s-]+', '', inv_num).upper().strip()
 
 @st.cache_data(show_spinner="Descargando datos del ERP (Dropbox)...", ttl=600)
@@ -249,11 +258,14 @@ def load_erp_data() -> pd.DataFrame:
         )
         _, response = dbx.files_download(DROPBOX_FILE_PATH)
 
+        # La lógica de carga se mantiene como la original, ya que indicaste que es "perfecta".
+        # Si el CSV tuviera más columnas, esta parte necesitaría ajustarse.
         column_names = [
             COL_PROVEEDOR_ERP, 'serie', 'num_entrada', COL_NUM_FACTURA,
             'doc_erp', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP
         ]
 
+        # Se cargan todas las columnas que el archivo contenga.
         df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
                                      sep='{', header=None, names=column_names, engine='python')
 
@@ -273,38 +285,26 @@ def load_erp_data() -> pd.DataFrame:
 
     return pd.DataFrame()
 
+
 def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
-    """
-    Parsea de forma robusta el contenido de un XML de factura electrónica DIAN.
-    **NUEVA VERSIÓN MEJORADA**: Maneja XML anidados dentro de CDATA y es más flexible
-    con las diferentes estructuras de los proveedores.
-    """
+    """Parsea de forma robusta el contenido de un XML de factura electrónica DIAN."""
     try:
-        # Limpia cualquier caracter previo a la declaración XML
         xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
         root = ET.fromstring(xml_content.encode('utf-8'))
-
-        # Define los namespaces (espacios de nombres) comunes en facturas UBL
         ns = {
             'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
             'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
             'inv': "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
             'att': "urn:oasis:names:specification:ubl:schema:xsd:AttachedDocument-2"
         }
-
-        # --- MEJORA: Manejo de XML anidado (formato AttachedDocument) ---
-        # Busca el XML de la factura dentro de una sección CDATA si el XML principal es un 'AttachedDocument'.
         description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
         if description_node is not None and description_node.text and '<Invoice' in description_node.text:
             try:
-                # Si encuentra un XML de factura anidado, lo convierte en el nuevo 'root' para el análisis
                 inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
                 root = ET.fromstring(inner_xml_text.encode('utf-8'))
             except ET.ParseError:
-                # Si el contenido anidado no es un XML válido, continúa con el XML original.
                 pass
 
-        # --- Búsqueda robusta de datos ---
         def find_text_robust(element, paths: List[str]) -> Optional[str]:
             for path in paths:
                 node = element.find(path, ns)
@@ -312,23 +312,15 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
                     return node.text.strip()
             return None
 
-        # Lista de posibles rutas (XPaths) para cada dato. Se prueba cada una hasta encontrar un valor.
-        invoice_number_paths = ['./cbc:ID']
-        supplier_name_paths = [
+        invoice_number = find_text_robust(root, ['./cbc:ID'])
+        supplier_name = find_text_robust(root, [
             './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name',
             './cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName'
-        ]
-        issue_date_paths = ['./cbc:IssueDate']
-        due_date_paths = ['./cbc:DueDate', './cac:PaymentMeans/cbc:PaymentDueDate']
-        total_value_paths = ['./cac:LegalMonetaryTotal/cbc:PayableAmount']
+        ])
+        issue_date = find_text_robust(root, ['./cbc:IssueDate'])
+        due_date = find_text_robust(root, ['./cbc:DueDate', './cac:PaymentMeans/cbc:PaymentDueDate'])
+        total_value = find_text_robust(root, ['./cac:LegalMonetaryTotal/cbc:PayableAmount'])
 
-        invoice_number = find_text_robust(root, invoice_number_paths)
-        supplier_name = find_text_robust(root, supplier_name_paths)
-        issue_date = find_text_robust(root, issue_date_paths)
-        due_date = find_text_robust(root, due_date_paths)
-        total_value = find_text_robust(root, total_value_paths)
-
-        # Si no se encontraron los datos esenciales, la factura no es válida.
         if not all([invoice_number, supplier_name, total_value]):
             return None
 
@@ -339,14 +331,12 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
             COL_FECHA_VENCIMIENTO_CORREO: due_date,
             COL_VALOR_CORREO: total_value
         }
-    except (ET.ParseError, Exception) as e:
-        # st.warning(f"No se pudo parsear un XML. Error: {e}") # Descomentar para depuración
+    except (ET.ParseError, Exception):
         return None
 
-# <<< MEJORA DE EFICIENCIA: La función ahora acepta los IDs de facturas existentes
-def fetch_new_invoices_from_email(start_date: datetime, existing_invoice_numbers: Set[str]) -> pd.DataFrame:
-    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail, ignorando las ya procesadas."""
-    new_invoices_data = []
+def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
+    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail."""
+    invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(st.secrets.email["address"], st.secrets.email["password"])
@@ -357,6 +347,7 @@ def fetch_new_invoices_from_email(start_date: datetime, existing_invoice_numbers
 
         message_ids = messages[0].split()
         if not message_ids:
+            st.info(f"✅ No se encontraron correos nuevos desde {start_date.strftime('%Y-%m-%d')}.")
             mail.logout()
             return pd.DataFrame()
 
@@ -379,17 +370,11 @@ def fetch_new_invoices_from_email(start_date: datetime, existing_invoice_numbers
                                 if name.lower().endswith('.xml'):
                                     xml_content = zf.read(name).decode('utf-8', 'ignore')
                                     details = parse_invoice_xml(xml_content)
-                                    
-                                    # <<< MEJORA DE EFICIENCIA: Comprueba si la factura ya existe antes de añadirla
-                                    if details and details[COL_NUM_FACTURA] not in existing_invoice_numbers:
-                                        new_invoices_data.append(details)
-                                        # Agrega el nuevo ID a la lista de existentes para evitar duplicados en la misma sesión
-                                        existing_invoice_numbers.add(details[COL_NUM_FACTURA])
-
+                                    if details:
+                                        invoices_data.append(details)
                     except (zipfile.BadZipFile, io.UnsupportedOperation):
                         continue
             progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {i+1}/{len(message_ids)} correos...")
-        
         mail.logout()
 
     except imaplib.IMAP4.error as e:
@@ -397,20 +382,57 @@ def fetch_new_invoices_from_email(start_date: datetime, existing_invoice_numbers
     except Exception as e:
         st.warning(f"⚠️ Error inesperado procesando correos: {e}")
 
-    return pd.DataFrame(new_invoices_data)
-
+    return pd.DataFrame(invoices_data)
 
 # ======================================================================================
 # --- 6. LÓGICA DE PROCESAMIENTO Y CONCILIACIÓN DE DATOS ---
 # ======================================================================================
+
+def calculate_financial_discounts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    NUEVA FUNCIÓN: Calcula los descuentos por pronto pago disponibles para cada factura.
+    """
+    df['descuento_pct'] = 0.0
+    df['valor_descuento'] = 0.0
+    df['valor_con_descuento'] = df[COL_VALOR_ERP]
+    df['fecha_limite_descuento'] = pd.NaT
+    df['estado_descuento'] = 'No Aplica'
+
+    today = datetime.now(COLOMBIA_TZ)
+
+    for provider, tiers in DISCOUNT_PROVIDERS.items():
+        # Filtra las facturas del proveedor actual que no estén vencidas y tengan fecha de emisión
+        provider_mask = (df['nombre_proveedor'] == provider) & (df[COL_FECHA_EMISION_ERP].notna()) & (df['estado_pago'] != '🔴 Vencida')
+        
+        if provider_mask.sum() > 0:
+            # Ordena los tiers por días para aplicar el mejor descuento posible (el de menos días)
+            sorted_tiers = sorted(tiers, key=lambda x: x['days'])
+            
+            for tier in sorted_tiers:
+                days_limit = tier['days']
+                rate = tier['rate']
+                
+                # Calcula la fecha límite para este tier de descuento
+                fecha_limite = df.loc[provider_mask, COL_FECHA_EMISION_ERP] + timedelta(days=days_limit)
+                
+                # Aplica el descuento solo si la fecha límite no ha pasado y aún no se ha asignado un descuento a esa factura
+                eligible_mask = (fecha_limite >= today) & (df['estado_descuento'] == 'No Aplica') & provider_mask
+                
+                if eligible_mask.sum() > 0:
+                    df.loc[eligible_mask, 'descuento_pct'] = rate
+                    df.loc[eligible_mask, 'valor_descuento'] = df.loc[eligible_mask, COL_VALOR_ERP] * rate
+                    df.loc[eligible_mask, 'valor_con_descuento'] = df.loc[eligible_mask, COL_VALOR_ERP] - df.loc[eligible_mask, 'valor_descuento']
+                    df.loc[eligible_mask, 'fecha_limite_descuento'] = fecha_limite[eligible_mask]
+                    df.loc[eligible_mask, 'estado_descuento'] = f'Disponible ({rate:.1%} en {days_limit} días)'
+    
+    return df
+
 def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.DataFrame:
     """Cruza los datos del ERP y del correo para crear un DataFrame maestro conciliado."""
     if erp_df.empty:
         st.error("El análisis no puede continuar sin datos del ERP.")
         return pd.DataFrame()
 
-    # --- Preparación de DataFrames ---
-    # Asegura que las columnas de valor sean numéricas, convirtiendo errores a NaN
     erp_df[COL_VALOR_ERP] = pd.to_numeric(erp_df[COL_VALOR_ERP], errors='coerce')
 
     if not email_df.empty:
@@ -419,18 +441,13 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         email_df[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         email_df = email_df.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
-        # Si no hay datos de email, crea un DF vacío con las columnas esperadas para el merge
         email_df = pd.DataFrame(columns=[COL_NUM_FACTURA, COL_PROVEEDOR_CORREO, COL_VALOR_CORREO, COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO])
 
-    # --- Fusión de Datos ---
     master_df = pd.merge(erp_df, email_df, on=COL_NUM_FACTURA, how='outer', indicator=True)
 
-    # --- Lógica de Conciliación ---
-    # Asegura que ambas columnas de valor son numéricas antes de la comparación
     master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
     master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
 
-    # Llena NaN con 0 para poder comparar sin errores
     erp_vals = master_df[COL_VALOR_ERP].fillna(0)
     email_vals = master_df[COL_VALOR_CORREO].fillna(0)
 
@@ -443,7 +460,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    # --- Cálculo de Estados de Pago ---
     today = datetime.now(COLOMBIA_TZ)
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
@@ -455,9 +471,12 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
     master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna(), 'Sin Fecha ERP', master_df['estado_pago'])
 
-    # --- Limpieza Final ---
     master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
     master_df.drop(columns=['_merge'], inplace=True)
+
+    # --- NUEVA LLAMADA: Aplicar lógica de descuentos ---
+    if not master_df.empty:
+        master_df = calculate_financial_discounts(master_df)
 
     return master_df
 
@@ -466,62 +485,50 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 # --- 7. ORQUESTACIÓN DE SINCRONIZACIÓN ---
 # ======================================================================================
 
-# <<< MEJORA DE EFICIENCIA: Lógica reestructurada para leer primero y luego buscar solo lo nuevo.
 def run_full_sync():
-    """Orquesta el proceso completo de sincronización de datos de forma eficiente."""
+    """Orquesta el proceso completo de sincronización de datos."""
     with st.spinner('Iniciando sincronización completa...'):
-        st.info("Paso 1/6: Conectando a servicios de Google...")
+        st.info("Paso 1/5: Conectando a servicios de Google...")
         gs_client = connect_to_google_sheets()
         if not gs_client:
             st.error("Sincronización cancelada. No se pudo conectar a Google.")
             st.stop()
 
-        st.info(f"Paso 2/6: Leyendo base de datos histórica desde '{GSHEET_DB_NAME}'...")
-        db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
-        historical_df = pd.DataFrame()
-        if db_sheet:
-            try:
-                records = db_sheet.get_all_records()
-                if records:
-                    historical_df = pd.DataFrame(records)
-            except gspread.exceptions.GSpreadException as e:
-                st.warning(f"No se pudo leer la base de datos histórica. Se asumirá que está vacía. Error: {e}")
-        
-        # <<< MEJORA DE EFICIENCIA: Crea un set de IDs de facturas ya procesadas para una búsqueda rápida.
-        if not historical_df.empty and COL_NUM_FACTURA in historical_df.columns:
-            # Asegura que todos los números de factura sean strings antes de crear el set
-            historical_df[COL_NUM_FACTURA] = historical_df[COL_NUM_FACTURA].astype(str).apply(normalize_invoice_number)
-            existing_invoice_numbers = set(historical_df[COL_NUM_FACTURA])
-        else:
-            existing_invoice_numbers = set()
-        st.success(f"Se encontraron {len(existing_invoice_numbers)} facturas en la base de datos histórica.")
-
         search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
-        st.info(f"Paso 3/6: Buscando NUEVOS correos desde {search_start_date.strftime('%Y-%m-%d')}...")
-        # <<< MEJORA DE EFICIENCIA: Pasa los IDs existentes para que la función los ignore.
-        new_email_df = fetch_new_invoices_from_email(search_start_date, existing_invoice_numbers)
+        st.info(f"Paso 2/5: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
+        email_df = fetch_new_invoices_from_email(search_start_date)
 
-        combined_df = historical_df
-        if not new_email_df.empty:
-            st.success(f"¡Se encontraron y procesaron {len(new_email_df)} facturas NUEVAS en el correo!")
-            new_email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
-            
-            st.info(f"Paso 4/6: Actualizando la base de datos '{GSHEET_DB_NAME}' con los nuevos hallazgos...")
-            # <<< MEJORA DE EFICIENCIA: Combina el histórico con lo nuevo.
-            combined_df = pd.concat([historical_df, new_email_df], ignore_index=True).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
+        if not email_df.empty:
+            st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
+            email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
+            st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
+            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
             if db_sheet:
+                try:
+                    historical_df = pd.DataFrame(db_sheet.get_all_records())
+                except gspread.exceptions.GSpreadException:
+                    historical_df = pd.DataFrame()
+                
+                combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
                 update_gsheet_from_df(db_sheet, combined_df)
+                st.session_state.email_df = combined_df
         else:
-            st.info("Paso 4/6: No se encontraron facturas nuevas en el correo. No se requiere actualizar la base de datos.")
+            st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
+            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
+            if db_sheet:
+                try:
+                    st.session_state.email_df = pd.DataFrame(db_sheet.get_all_records())
+                except gspread.exceptions.GSpreadException:
+                    st.session_state.email_df = pd.DataFrame()
+            else:
+                st.session_state.email_df = pd.DataFrame()
 
-        st.session_state.email_df = combined_df
-
-        st.info("Paso 5/6: Cargando datos del ERP y conciliando...")
+        st.info("Paso 4/5: Cargando datos del ERP y conciliando...")
         st.session_state.erp_df = load_erp_data()
         final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
         st.session_state.master_df = final_df
 
-        st.info(f"Paso 6/6: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
+        st.info(f"Paso 5/5: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
         report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
         if report_sheet and not final_df.empty:
             if update_gsheet_from_df(report_sheet, final_df):
@@ -531,7 +538,6 @@ def run_full_sync():
 
         st.session_state.data_loaded = True
         st.balloons()
-
 
 # ======================================================================================
 # --- 8. COMPONENTES DE LA INTERFAZ DE USUARIO (STREAMLIT) ---
@@ -553,8 +559,7 @@ def display_sidebar(master_df: pd.DataFrame):
 
             proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
             selected_suppliers = st.multiselect("Proveedor:", proveedores_lista, default=proveedores_lista)
-
-            # Lógica mejorada para rangos de fecha
+            
             min_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().min()
             max_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().max()
             
@@ -569,13 +574,11 @@ def display_sidebar(master_df: pd.DataFrame):
                     value=(min_date, max_date),
                     min_value=min_date, max_value=max_date
                 )
-
-            # Aplicar filtros
+            
             filtered_df = master_df[master_df['nombre_proveedor'].isin(selected_suppliers)]
             if len(date_range) == 2:
                 start_date = pd.to_datetime(date_range[0]).tz_localize(COLOMBIA_TZ)
                 end_date = pd.to_datetime(date_range[1]).tz_localize(COLOMBIA_TZ)
-                # Filtra solo las filas donde la fecha no es NaT
                 erp_dates_mask = filtered_df[COL_FECHA_EMISION_ERP].notna()
                 filtered_df = filtered_df[erp_dates_mask & (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & (filtered_df[COL_FECHA_EMISION_ERP] <= end_date)]
 
@@ -615,15 +618,21 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📑 Explorador de Datos", "🏢 Análisis de Proveedores", "⚙️ Estado de Conciliación"])
+    # --- PESTAÑAS MEJORADAS ---
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📑 Explorador de Datos", 
+        "🏢 Análisis de Proveedores", 
+        "⚙️ Estado de Conciliación",
+        "💡 Descuentos y Pagos" # NUEVA PESTAÑA
+    ])
 
     with tab1:
         st.subheader("Explorador de Datos Consolidados")
         display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
           column_config={
-              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP"),
-              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo"),
+              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="$ %,.2f"),
+              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="$ %,.2f"),
               COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
               COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
               "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
@@ -638,8 +647,8 @@ def display_dashboard(df: pd.DataFrame):
         ).reset_index().sort_values('total_facturado', ascending=False)
         st.dataframe(provider_summary, use_container_width=True, hide_index=True,
             column_config={
-                "total_facturado": st.column_config.NumberColumn("Total Facturado"),
-                "monto_vencido": st.column_config.NumberColumn("Monto Vencido")
+                "total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ %,.2f"),
+                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ %,.2f")
             })
         
         st.markdown("##### Top 15 Proveedores por Monto Facturado")
@@ -659,7 +668,7 @@ def display_dashboard(df: pd.DataFrame):
         c1, c2 = st.columns([1, 2])
         with c1:
             st.dataframe(conc_summary, use_container_width=True, hide_index=True,
-                column_config={"valor_total": st.column_config.NumberColumn("Valor Total")})
+                column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="$ %,.2f")})
         with c2:
             pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
                 theta=alt.Theta(field="numero_facturas", type="quantitative"),
@@ -667,7 +676,63 @@ def display_dashboard(df: pd.DataFrame):
                 tooltip=['estado_conciliacion', 'numero_facturas', alt.Tooltip('valor_total:Q', title='Valor', format='$,.2f')]
             ).properties(title="Distribución de Facturas por Estado")
             st.altair_chart(pie_chart, use_container_width=True)
+            
+    # --- NUEVO CONTENIDO DE LA PESTAÑA DE DESCUENTOS ---
+    with tab4:
+        st.subheader("💰 Oportunidades de Descuento por Pronto Pago")
+        
+        descuentos_df = df[df['estado_descuento'] != 'No Aplica'].copy()
+        
+        if descuentos_df.empty:
+            st.info("Actualmente no hay facturas con oportunidades de descuento por pronto pago en la selección.")
+        else:
+            total_ahorro_potencial = descuentos_df['valor_descuento'].sum()
+            st.metric("Ahorro Potencial Total", f"${total_ahorro_potencial:,.2f}", help="Suma de todos los descuentos disponibles en la selección actual.")
 
+            st.markdown("---")
+            st.markdown("### 🧠 Plan de Pagos Sugerido (Próximos 15 días)")
+            
+            today = datetime.now(COLOMBIA_TZ).date()
+            limite_sugerencia = today + timedelta(days=15)
+            
+            plan_pagos_df = descuentos_df[
+                descuentos_df['fecha_limite_descuento'].dt.date <= limite_sugerencia
+            ].sort_values('fecha_limite_descuento', ascending=True)
+
+            if plan_pagos_df.empty:
+                st.success("¡Todo en orden! No hay pagos con descuento que venzan en los próximos 15 días.")
+            else:
+                st.warning("¡Atención! Estas son las facturas que deberías pagar pronto para maximizar tu ahorro.")
+                display_cols_plan = [
+                    'nombre_proveedor', COL_NUM_FACTURA, COL_VALOR_ERP, 
+                    'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
+                ]
+                st.dataframe(plan_pagos_df[display_cols_plan], use_container_width=True, hide_index=True,
+                    column_config={
+                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="$ %,.2f"),
+                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="$ %,.2f"),
+                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="$ %,.2f"),
+                        'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
+                    }
+                )
+
+            st.markdown("---")
+            st.markdown("### 📋 Todas las Oportunidades de Descuento Activas")
+            
+            with st.expander("Ver todas las facturas con descuentos disponibles"):
+                display_cols_all = [
+                    'nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_VALOR_ERP, 
+                    'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
+                ]
+                st.dataframe(descuentos_df[display_cols_all].sort_values('fecha_limite_descuento'), use_container_width=True, hide_index=True,
+                    column_config={
+                        COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
+                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="$ %,.2f"),
+                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="$ %,.2f"),
+                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="$ %,.2f"),
+                        'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
+                    }
+                )
 
 # ======================================================================================
 # --- 9. APLICACIÓN PRINCIPAL (PUNTO DE ENTRADA) ---
