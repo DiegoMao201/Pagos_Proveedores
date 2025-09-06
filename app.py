@@ -27,7 +27,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 # Librerías de terceros (instaladas)
 import altair as alt
@@ -64,7 +64,7 @@ GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
 APP_PASSWORD = st.secrets.get("password", "DEFAULT_PASSWORD")
 
 # Parámetros de la aplicación
-SEARCH_DAYS_AGO = 20  # **MEJORA**: Búsqueda ampliada a los últimos 20 días.
+SEARCH_DAYS_AGO = 20  # Búsqueda ampliada a los últimos 20 días.
 
 # Nombres de columnas estandarizados para evitar errores de tipeo
 COL_NUM_FACTURA = 'num_factura'
@@ -255,7 +255,7 @@ def load_erp_data() -> pd.DataFrame:
         ]
 
         df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                  sep='{', header=None, names=column_names, engine='python')
+                                     sep='{', header=None, names=column_names, engine='python')
 
         # --- Limpieza y transformación de datos ---
         df = df.dropna(subset=[COL_NUM_FACTURA, COL_PROVEEDOR_ERP])
@@ -343,10 +343,10 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
         # st.warning(f"No se pudo parsear un XML. Error: {e}") # Descomentar para depuración
         return None
 
-
-def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
-    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail."""
-    invoices_data = []
+# <<< MEJORA DE EFICIENCIA: La función ahora acepta los IDs de facturas existentes
+def fetch_new_invoices_from_email(start_date: datetime, existing_invoice_numbers: Set[str]) -> pd.DataFrame:
+    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail, ignorando las ya procesadas."""
+    new_invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(st.secrets.email["address"], st.secrets.email["password"])
@@ -357,7 +357,6 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
 
         message_ids = messages[0].split()
         if not message_ids:
-            st.info(f"✅ No se encontraron correos nuevos desde {start_date.strftime('%Y-%m-%d')}.")
             mail.logout()
             return pd.DataFrame()
 
@@ -380,11 +379,17 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
                                 if name.lower().endswith('.xml'):
                                     xml_content = zf.read(name).decode('utf-8', 'ignore')
                                     details = parse_invoice_xml(xml_content)
-                                    if details:
-                                        invoices_data.append(details)
+                                    
+                                    # <<< MEJORA DE EFICIENCIA: Comprueba si la factura ya existe antes de añadirla
+                                    if details and details[COL_NUM_FACTURA] not in existing_invoice_numbers:
+                                        new_invoices_data.append(details)
+                                        # Agrega el nuevo ID a la lista de existentes para evitar duplicados en la misma sesión
+                                        existing_invoice_numbers.add(details[COL_NUM_FACTURA])
+
                     except (zipfile.BadZipFile, io.UnsupportedOperation):
                         continue
             progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {i+1}/{len(message_ids)} correos...")
+        
         mail.logout()
 
     except imaplib.IMAP4.error as e:
@@ -392,7 +397,7 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
     except Exception as e:
         st.warning(f"⚠️ Error inesperado procesando correos: {e}")
 
-    return pd.DataFrame(invoices_data)
+    return pd.DataFrame(new_invoices_data)
 
 
 # ======================================================================================
@@ -461,54 +466,62 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 # --- 7. ORQUESTACIÓN DE SINCRONIZACIÓN ---
 # ======================================================================================
 
+# <<< MEJORA DE EFICIENCIA: Lógica reestructurada para leer primero y luego buscar solo lo nuevo.
 def run_full_sync():
-    """Orquesta el proceso completo de sincronización de datos."""
+    """Orquesta el proceso completo de sincronización de datos de forma eficiente."""
     with st.spinner('Iniciando sincronización completa...'):
-        st.info("Paso 1/5: Conectando a servicios de Google...")
+        st.info("Paso 1/6: Conectando a servicios de Google...")
         gs_client = connect_to_google_sheets()
         if not gs_client:
             st.error("Sincronización cancelada. No se pudo conectar a Google.")
             st.stop()
 
-        # **MEJORA**: Siempre busca los últimos 20 días.
-        search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
-        st.info(f"Paso 2/5: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
-        email_df = fetch_new_invoices_from_email(search_start_date)
-
-        if not email_df.empty:
-            st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
-
-            st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
-            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
-            if db_sheet:
-                # Carga datos históricos para no sobreescribir, sino añadir
-                try:
-                    historical_df = pd.DataFrame(db_sheet.get_all_records())
-                except gspread.exceptions.GSpreadException:
-                    historical_df = pd.DataFrame() # Hoja vacía
-                
-                combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
-                update_gsheet_from_df(db_sheet, combined_df)
-                st.session_state.email_df = combined_df
+        st.info(f"Paso 2/6: Leyendo base de datos histórica desde '{GSHEET_DB_NAME}'...")
+        db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
+        historical_df = pd.DataFrame()
+        if db_sheet:
+            try:
+                records = db_sheet.get_all_records()
+                if records:
+                    historical_df = pd.DataFrame(records)
+            except gspread.exceptions.GSpreadException as e:
+                st.warning(f"No se pudo leer la base de datos histórica. Se asumirá que está vacía. Error: {e}")
+        
+        # <<< MEJORA DE EFICIENCIA: Crea un set de IDs de facturas ya procesadas para una búsqueda rápida.
+        if not historical_df.empty and COL_NUM_FACTURA in historical_df.columns:
+            # Asegura que todos los números de factura sean strings antes de crear el set
+            historical_df[COL_NUM_FACTURA] = historical_df[COL_NUM_FACTURA].astype(str).apply(normalize_invoice_number)
+            existing_invoice_numbers = set(historical_df[COL_NUM_FACTURA])
         else:
-            st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
-            # Carga los datos históricos de correos si no se encontraron nuevos
-            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
-            if db_sheet:
-                try:
-                    st.session_state.email_df = pd.DataFrame(db_sheet.get_all_records())
-                except gspread.exceptions.GSpreadException:
-                    st.session_state.email_df = pd.DataFrame()
-            else:
-                st.session_state.email_df = pd.DataFrame()
+            existing_invoice_numbers = set()
+        st.success(f"Se encontraron {len(existing_invoice_numbers)} facturas en la base de datos histórica.")
 
-        st.info("Paso 4/5: Cargando datos del ERP y conciliando...")
+        search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
+        st.info(f"Paso 3/6: Buscando NUEVOS correos desde {search_start_date.strftime('%Y-%m-%d')}...")
+        # <<< MEJORA DE EFICIENCIA: Pasa los IDs existentes para que la función los ignore.
+        new_email_df = fetch_new_invoices_from_email(search_start_date, existing_invoice_numbers)
+
+        combined_df = historical_df
+        if not new_email_df.empty:
+            st.success(f"¡Se encontraron y procesaron {len(new_email_df)} facturas NUEVAS en el correo!")
+            new_email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ)
+            
+            st.info(f"Paso 4/6: Actualizando la base de datos '{GSHEET_DB_NAME}' con los nuevos hallazgos...")
+            # <<< MEJORA DE EFICIENCIA: Combina el histórico con lo nuevo.
+            combined_df = pd.concat([historical_df, new_email_df], ignore_index=True).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
+            if db_sheet:
+                update_gsheet_from_df(db_sheet, combined_df)
+        else:
+            st.info("Paso 4/6: No se encontraron facturas nuevas en el correo. No se requiere actualizar la base de datos.")
+
+        st.session_state.email_df = combined_df
+
+        st.info("Paso 5/6: Cargando datos del ERP y conciliando...")
         st.session_state.erp_df = load_erp_data()
         final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
         st.session_state.master_df = final_df
 
-        st.info(f"Paso 5/5: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
+        st.info(f"Paso 6/6: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
         report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
         if report_sheet and not final_df.empty:
             if update_gsheet_from_df(report_sheet, final_df):
@@ -518,6 +531,7 @@ def run_full_sync():
 
         st.session_state.data_loaded = True
         st.balloons()
+
 
 # ======================================================================================
 # --- 8. COMPONENTES DE LA INTERFAZ DE USUARIO (STREAMLIT) ---
