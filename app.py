@@ -8,7 +8,7 @@ del sistema ERP (extraídos de Dropbox).
 
 Funcionalidades principales:
 - Autenticación segura por contraseña.
-- Sincronización de facturas de los últimos 10 días desde una cuenta de Gmail.
+- Sincronización de facturas de los últimos 20 días desde una cuenta de Gmail.
 - Carga de datos de cuentas por pagar desde un archivo CSV en Dropbox.
 - Proceso de conciliación robusto para cruzar datos del ERP y correos.
 - Dashboard interactivo con métricas, alertas de vencimiento y filtros.
@@ -64,7 +64,7 @@ GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
 APP_PASSWORD = st.secrets.get("password", "DEFAULT_PASSWORD")
 
 # Parámetros de la aplicación
-SEARCH_DAYS_AGO = 10  # **MEJORA**: Búsqueda limitada a los últimos 10 días.
+SEARCH_DAYS_AGO = 20  # **MEJORA**: Búsqueda ampliada a los últimos 20 días.
 
 # Nombres de columnas estandarizados para evitar errores de tipeo
 COL_NUM_FACTURA = 'num_factura'
@@ -255,7 +255,7 @@ def load_erp_data() -> pd.DataFrame:
         ]
 
         df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                         sep='{', header=None, names=column_names, engine='python')
+                                  sep='{', header=None, names=column_names, engine='python')
 
         # --- Limpieza y transformación de datos ---
         df = df.dropna(subset=[COL_NUM_FACTURA, COL_PROVEEDOR_ERP])
@@ -470,7 +470,7 @@ def run_full_sync():
             st.error("Sincronización cancelada. No se pudo conectar a Google.")
             st.stop()
 
-        # **MEJORA**: Siempre busca los últimos 10 días.
+        # **MEJORA**: Siempre busca los últimos 20 días.
         search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
         st.info(f"Paso 2/5: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
         email_df = fetch_new_invoices_from_email(search_start_date)
@@ -496,9 +496,9 @@ def run_full_sync():
             # Carga los datos históricos de correos si no se encontraron nuevos
             db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
             if db_sheet:
-                 try:
+                try:
                     st.session_state.email_df = pd.DataFrame(db_sheet.get_all_records())
-                 except gspread.exceptions.GSpreadException:
+                except gspread.exceptions.GSpreadException:
                     st.session_state.email_df = pd.DataFrame()
             else:
                 st.session_state.email_df = pd.DataFrame()
@@ -608,8 +608,8 @@ def display_dashboard(df: pd.DataFrame):
         display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
           column_config={
-              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"),
-              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="$ {:,.2f}"),
+              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP"),
+              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo"),
               COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
               COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
               "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
@@ -622,7 +622,11 @@ def display_dashboard(df: pd.DataFrame):
             numero_facturas=(COL_NUM_FACTURA, 'count'),
             monto_vencido=(COL_VALOR_ERP, lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
         ).reset_index().sort_values('total_facturado', ascending=False)
-        st.dataframe(provider_summary, use_container_width=True, hide_index=True, column_config={"total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ {:,.2f}"), "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ {:,.2f}")})
+        st.dataframe(provider_summary, use_container_width=True, hide_index=True,
+            column_config={
+                "total_facturado": st.column_config.NumberColumn("Total Facturado"),
+                "monto_vencido": st.column_config.NumberColumn("Monto Vencido")
+            })
         
         st.markdown("##### Top 15 Proveedores por Monto Facturado")
         chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
@@ -640,7 +644,8 @@ def display_dashboard(df: pd.DataFrame):
         ).reset_index()
         c1, c2 = st.columns([1, 2])
         with c1:
-            st.dataframe(conc_summary, use_container_width=True, hide_index=True, column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="$ {:,.2f}")})
+            st.dataframe(conc_summary, use_container_width=True, hide_index=True,
+                column_config={"valor_total": st.column_config.NumberColumn("Valor Total")})
         with c2:
             pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
                 theta=alt.Theta(field="numero_facturas", type="quantitative"),
