@@ -55,7 +55,7 @@ import pandas as pd
 import pytz
 import streamlit as st
 from google.oauth2.service_account import Credentials
-from gspread.utils import Client, Worksheet
+from gspread import Client, Worksheet
 # ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
 from gspread.utils import column_letter
 # ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
