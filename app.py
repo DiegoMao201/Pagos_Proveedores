@@ -95,10 +95,7 @@ def check_password():
 def connect_to_google_sheets():
     """ Establece conexión con la API de Google Sheets usando las credenciales. """
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["google_credentials"], scopes=scopes)
         return gspread.authorize(creds)
     except Exception as e:
@@ -162,11 +159,7 @@ def clean_and_convert_numeric(value_str: Optional[str]) -> float:
 def load_erp_data() -> pd.DataFrame:
     """ Carga los datos de facturas desde un archivo CSV en Dropbox. """
     try:
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets.dropbox["refresh_token"],
-            app_key=st.secrets.dropbox["app_key"],
-            app_secret=st.secrets.dropbox["app_secret"]
-        )
+        dbx = dropbox.Dropbox(oauth2_refresh_token=st.secrets.dropbox["refresh_token"], app_key=st.secrets.dropbox["app_key"], app_secret=st.secrets.dropbox["app_secret"])
         _, res = dbx.files_download(DROPBOX_FILE_PATH)
         names = ['nombre_proveedor_erp', 'serie', 'num_entrada', 'num_factura', 'doc_erp', 'fecha_emision_erp', 'fecha_vencimiento_erp', 'valor_total_erp']
         df = pd.read_csv(io.StringIO(res.content.decode('latin1')), sep='{', header=None, names=names, engine='python')
@@ -182,10 +175,7 @@ def load_erp_data() -> pd.DataFrame:
         return pd.DataFrame()
 
 def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, str]]:
-    """
-    Parsea de forma robusta el contenido de un XML de factura electrónica, manejando
-    múltiples namespaces y rutas de datos comunes en el estándar DIAN de Colombia.
-    """
+    """ Parsea de forma robusta el contenido de un XML de factura electrónica DIAN. """
     try:
         xml_content = xml_content.strip()
         if xml_content.startswith('<?xml'):
@@ -193,13 +183,7 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, str]]:
         
         root = ET.fromstring(xml_content.encode('utf-8'))
 
-        ns = {
-            'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
-            'sts': "dian:gov:co:facturaelectronica:Structures-2-1",
-            'inv': "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
-            'ext': "urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
-        }
+        ns = {'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2", 'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"}
 
         def find_text_robust(paths: List[str]) -> Optional[str]:
             for path in paths:
@@ -209,39 +193,15 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, str]]:
             return None
 
         invoice_number = find_text_robust(['./cbc:ID'])
-        
-        supplier_name = find_text_robust([
-            './cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName',
-            './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name',
-        ])
-        
+        supplier_name = find_text_robust(['./cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name'])
         issue_date = find_text_robust(['./cbc:IssueDate'])
+        due_date = find_text_robust(['./cac:PaymentMeans/cbc:PaymentDueDate', './cbc:DueDate', './cac:PaymentTerms/cbc:SettlementPeriod/cbc:EndDate'])
+        total_value = find_text_robust(['./cac:LegalMonetaryTotal/cbc:PayableAmount', './cac:RequestedMonetaryTotal/cbc:PayableAmount'])
 
-        due_date = find_text_robust([
-            './cac:PaymentMeans/cbc:PaymentDueDate',
-            './cbc:DueDate',
-            './cac:PaymentTerms/cbc:SettlementPeriod/cbc:EndDate'
-        ])
-        
-        total_value = find_text_robust([
-            './cac:LegalMonetaryTotal/cbc:PayableAmount',
-            './cac:TaxTotal/cbc:TaxAmount',
-            './cac:RequestedMonetaryTotal/cbc:PayableAmount'
-        ])
+        if not invoice_number or not supplier_name or not total_value: return None
 
-        if not invoice_number or not supplier_name or not total_value:
-            return None
-
-        return {
-            "num_factura": invoice_number.upper(),
-            "nombre_proveedor_correo": supplier_name,
-            "fecha_emision_correo": issue_date,
-            "fecha_vencimiento_correo": due_date,
-            "valor_total_correo": total_value
-        }
-    except ET.ParseError:
-        return None
-    except Exception:
+        return {"num_factura": invoice_number.upper(), "nombre_proveedor_correo": supplier_name, "fecha_emision_correo": issue_date, "fecha_vencimiento_correo": due_date, "valor_total_correo": total_value}
+    except (ET.ParseError, Exception):
         return None
 
 def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
@@ -297,33 +257,38 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         st.error("El análisis no puede continuar sin datos del ERP.")
         return pd.DataFrame()
 
+    # --- INICIO DE LA CORRECCIÓN ---
+    # AÑADIDO: Bloque de seguridad para garantizar que todas las columnas esperadas del correo existan.
+    # Si una columna no existe (porque no se encontró en ningún XML), se crea con valores nulos.
+    expected_email_cols = ['num_factura', 'nombre_proveedor_correo', 'fecha_emision_correo', 'fecha_vencimiento_correo', 'valor_total_correo']
+    for col in expected_email_cols:
+        if col not in email_df.columns:
+            if 'fecha' in col:
+                email_df[col] = pd.NaT
+            elif 'valor' in col:
+                email_df[col] = np.nan
+            else:
+                email_df[col] = ''
+    # --- FIN DE LA CORRECCIÓN ---
+
+    # El resto del código ahora puede ejecutarse de forma segura
     if not email_df.empty:
         email_df['valor_total_correo'] = email_df['valor_total_correo'].apply(clean_and_convert_numeric)
         email_df['fecha_emision_correo'] = email_df['fecha_emision_correo'].apply(robust_date_parser)
         email_df['fecha_vencimiento_correo'] = email_df['fecha_vencimiento_correo'].apply(robust_date_parser)
         email_df['num_factura'] = email_df['num_factura'].astype(str).str.strip().str.upper()
         email_df = email_df.drop_duplicates(subset=['num_factura'], keep='last')
-    else:
-        email_df = pd.DataFrame(columns=['num_factura', 'nombre_proveedor_correo', 'fecha_emision_correo', 'fecha_vencimiento_correo', 'valor_total_correo'])
 
     master_df = pd.merge(erp_df, email_df, on='num_factura', how='outer', indicator=True)
     
-    conditions_conciliacion = [
-        (master_df['_merge'] == 'right_only'),
-        (master_df['_merge'] == 'left_only'),
-        (~np.isclose(master_df['valor_total_erp'], master_df['valor_total_correo'], atol=1.0)),
-        (master_df['_merge'] == 'both')
-    ]
+    conditions_conciliacion = [(master_df['_merge'] == 'right_only'), (master_df['_merge'] == 'left_only'), (~np.isclose(master_df['valor_total_erp'], master_df['valor_total_correo'], atol=1.0)), (master_df['_merge'] == 'both')]
     choices_conciliacion = ['📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
     today = pd.to_datetime(datetime.now(COLOMBIA_TZ).date())
     master_df['dias_para_vencer'] = (master_df['fecha_vencimiento_erp'] - today).dt.days
     
-    conditions_pago = [
-        master_df['dias_para_vencer'] < 0,
-        (master_df['dias_para_vencer'] >= 0) & (master_df['dias_para_vencer'] <= 7)
-    ]
+    conditions_pago = [master_df['dias_para_vencer'] < 0, (master_df['dias_para_vencer'] >= 0) & (master_df['dias_para_vencer'] <= 7)]
     choices_pago = ["🔴 Vencida", "🟠 Por Vencer (7 días)"]
     master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
     master_df['estado_pago'] = np.where(master_df['fecha_vencimiento_erp'].isna(), 'Sin Fecha ERP', master_df['estado_pago'])
@@ -341,7 +306,7 @@ def main_app():
     load_css()
     
     with st.sidebar:
-        st.image("LOGO FERREINOX SAS BIC 2024.png", use_container_width=True)
+        st.image("LOGO FERREINOX SAS BIC 2024.png", use_container_width=True) # Corregido
         st.title("Panel de Control")
         
         if st.button("🔄 Sincronizar Todo", type="primary", use_container_width=True):
@@ -418,14 +383,12 @@ def main_app():
         st.subheader("🔴 Facturas Vencidas (Acción Inmediata)")
         if not vencidas_df.empty:
             st.dataframe(vencidas_df[['nombre_proveedor', 'num_factura', 'fecha_vencimiento_erp', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True)
-        else:
-            st.info("¡Excelente! No hay facturas vencidas.")
+        else: st.info("¡Excelente! No hay facturas vencidas.")
             
         st.subheader("🟠 Facturas por Vencer (Próximos 7 días)")
         if not por_vencer_df.empty:
             st.dataframe(por_vencer_df[['nombre_proveedor', 'num_factura', 'fecha_vencimiento_erp', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True)
-        else:
-            st.info("No hay facturas con vencimiento en los próximos 7 días.")
+        else: st.info("No hay facturas con vencimiento en los próximos 7 días.")
 
     st.divider()
 
@@ -436,49 +399,27 @@ def main_app():
         display_cols = ['nombre_proveedor', 'num_factura', 'fecha_emision_erp', 'fecha_vencimiento_erp', 'valor_total_erp', 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', 'valor_total_correo']
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
             column_config={
-                "valor_total_erp": st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"),
-                "valor_total_correo": st.column_config.NumberColumn("Valor Correo", format="$ {:,.2f}"),
-                "fecha_emision_erp": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-                "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+                "valor_total_erp": st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"), "valor_total_correo": st.column_config.NumberColumn("Valor Correo", format="$ {:,.2f}"),
+                "fecha_emision_erp": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"), "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
                 "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
             })
     
     with tab2:
         st.subheader("Análisis por Proveedor")
-        provider_summary = df.groupby('nombre_proveedor').agg(
-            total_facturado=('valor_total_erp', 'sum'),
-            numero_facturas=('num_factura', 'count'),
-            monto_vencido=('valor_total_erp', lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
-        ).reset_index().sort_values('total_facturado', ascending=False)
-        
-        st.dataframe(provider_summary, use_container_width=True, hide_index=True, 
-            column_config={
-                "total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ {:,.2f}"),
-                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ {:,.2f}")
-            })
+        provider_summary = df.groupby('nombre_proveedor').agg(total_facturado=('valor_total_erp', 'sum'), numero_facturas=('num_factura', 'count'), monto_vencido=('valor_total_erp', lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())).reset_index().sort_values('total_facturado', ascending=False)
+        st.dataframe(provider_summary, use_container_width=True, hide_index=True, column_config={"total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ {:,.2f}"), "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ {:,.2f}")})
         
         st.markdown("##### Top 15 Proveedores por Monto Facturado")
-        chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
-            x=alt.X('total_facturado:Q', title='Total Facturado ($)'),
-            y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format='$,.2f'), 'numero_facturas']
-        ).properties(height=400)
+        chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(x=alt.X('total_facturado:Q', title='Total Facturado ($)'), y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'), tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format='$,.2f'), 'numero_facturas']).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
     with tab3:
         st.subheader("Resumen del Estado de Conciliación")
         conc_summary = df.groupby('estado_conciliacion').agg(numero_facturas=('num_factura', 'count'), valor_total=('valor_total_erp', 'sum')).reset_index()
-        
         c1, c2 = st.columns([1,2])
-        with c1:
-            st.dataframe(conc_summary, use_container_width=True, hide_index=True,
-                column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="$ {:,.2f}")})
+        with c1: st.dataframe(conc_summary, use_container_width=True, hide_index=True, column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="$ {:,.2f}")})
         with c2:
-            pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
-                theta=alt.Theta(field="numero_facturas", type="quantitative"),
-                color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"),
-                tooltip=['estado_conciliacion', 'numero_facturas']
-            ).properties(title="Distribución de Facturas por Estado de Conciliación")
+            pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(theta=alt.Theta(field="numero_facturas", type="quantitative"), color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"), tooltip=['estado_conciliacion', 'numero_facturas']).properties(title="Distribución de Facturas por Estado de Conciliación")
             st.altair_chart(pie_chart, use_container_width=True)
 
 def run_full_sync():
