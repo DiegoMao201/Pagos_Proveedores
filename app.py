@@ -15,10 +15,11 @@ Funcionalidades principales:
 - Visualización de datos y reportes por proveedor.
 - Actualización de una base de datos y un reporte consolidado en Google Sheets.
 
-**NUEVAS FUNCIONALIDADES (Versión 2.0):**
+**NUEVAS FUNCIONALIDADES (Versión 2.1 - Corregida):**
 - Módulo de análisis de descuentos financieros por pronto pago.
 - Plan de pagos sugerido para maximizar ahorros.
 - Panel visual dedicado a la gestión de oportunidades de descuento.
+- Corrección de errores (KeyError) y advertencias de deprecación.
 """
 
 # ======================================================================================
@@ -186,7 +187,7 @@ def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str)
             return spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
             st.warning(f"Hoja '{worksheet_name}' no encontrada. Creando una nueva...")
-            return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="50") # Aumentado el número de columnas
+            return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="50")
     except gspread.exceptions.APIError as e:
         st.error(f"Error de API de Google al acceder a la hoja de cálculo: {e}")
     except Exception as e:
@@ -202,11 +203,9 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         worksheet.clear()
         df_to_upload = df.copy()
         
-        # Formatea columnas de fecha a string para evitar problemas de formato
         for col in df_to_upload.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[ns, America/Bogota]']).columns:
             df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Convierte todo a string y reemplaza valores nulos para la subida
         df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
 
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist())
@@ -258,18 +257,14 @@ def load_erp_data() -> pd.DataFrame:
         )
         _, response = dbx.files_download(DROPBOX_FILE_PATH)
 
-        # La lógica de carga se mantiene como la original, ya que indicaste que es "perfecta".
-        # Si el CSV tuviera más columnas, esta parte necesitaría ajustarse.
         column_names = [
             COL_PROVEEDOR_ERP, 'serie', 'num_entrada', COL_NUM_FACTURA,
             'doc_erp', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP
         ]
 
-        # Se cargan todas las columnas que el archivo contenga.
         df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
                                      sep='{', header=None, names=column_names, engine='python')
 
-        # --- Limpieza y transformación de datos ---
         df = df.dropna(subset=[COL_NUM_FACTURA, COL_PROVEEDOR_ERP])
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
@@ -401,21 +396,17 @@ def calculate_financial_discounts(df: pd.DataFrame) -> pd.DataFrame:
     today = datetime.now(COLOMBIA_TZ)
 
     for provider, tiers in DISCOUNT_PROVIDERS.items():
-        # Filtra las facturas del proveedor actual que no estén vencidas y tengan fecha de emisión
         provider_mask = (df['nombre_proveedor'] == provider) & (df[COL_FECHA_EMISION_ERP].notna()) & (df['estado_pago'] != '🔴 Vencida')
         
         if provider_mask.sum() > 0:
-            # Ordena los tiers por días para aplicar el mejor descuento posible (el de menos días)
             sorted_tiers = sorted(tiers, key=lambda x: x['days'])
             
             for tier in sorted_tiers:
                 days_limit = tier['days']
                 rate = tier['rate']
                 
-                # Calcula la fecha límite para este tier de descuento
                 fecha_limite = df.loc[provider_mask, COL_FECHA_EMISION_ERP] + timedelta(days=days_limit)
                 
-                # Aplica el descuento solo si la fecha límite no ha pasado y aún no se ha asignado un descuento a esa factura
                 eligible_mask = (fecha_limite >= today) & (df['estado_descuento'] == 'No Aplica') & provider_mask
                 
                 if eligible_mask.sum() > 0:
@@ -474,7 +465,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
     master_df.drop(columns=['_merge'], inplace=True)
 
-    # --- NUEVA LLAMADA: Aplicar lógica de descuentos ---
     if not master_df.empty:
         master_df = calculate_financial_discounts(master_df)
 
@@ -618,12 +608,11 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
 
-    # --- PESTAÑAS MEJORADAS ---
     tab1, tab2, tab3, tab4 = st.tabs([
         "📑 Explorador de Datos", 
         "🏢 Análisis de Proveedores", 
         "⚙️ Estado de Conciliación",
-        "💡 Descuentos y Pagos" # NUEVA PESTAÑA
+        "💡 Descuentos y Pagos"
     ])
 
     with tab1:
@@ -677,10 +666,14 @@ def display_dashboard(df: pd.DataFrame):
             ).properties(title="Distribución de Facturas por Estado")
             st.altair_chart(pie_chart, use_container_width=True)
             
-    # --- NUEVO CONTENIDO DE LA PESTAÑA DE DESCUENTOS ---
     with tab4:
         st.subheader("💰 Oportunidades de Descuento por Pronto Pago")
         
+        # --- CORRECCIÓN CLAVE: Verificar si la columna existe antes de usarla ---
+        if 'estado_descuento' not in df.columns:
+            st.warning("No se pudieron calcular los descuentos. Asegúrate de que los datos del ERP se hayan cargado correctamente.")
+            st.stop()
+            
         descuentos_df = df[df['estado_descuento'] != 'No Aplica'].copy()
         
         if descuentos_df.empty:
