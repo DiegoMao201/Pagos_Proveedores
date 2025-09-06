@@ -217,7 +217,9 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         # Se asegura de que todas las columnas de fecha/hora se conviertan a string
         # en un formato estándar (ISO 8601) para evitar problemas de localización y formato.
         for col in df_to_upload.select_dtypes(include=['datetimelike', 'datetime64[ns]', 'datetime64[ns, UTC]', f'datetime64[ns, {COLOMBIA_TZ.zone}]']).columns:
-            df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Corrección para manejar correctamente NaT (Not a Time)
+            if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
+                 df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
 
         # Convierte todo a string y reemplaza valores nulos para la subida
         df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
@@ -453,15 +455,25 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         st.error("El análisis no puede continuar sin datos del ERP.")
         return pd.DataFrame()
 
-    # Prepara los DataFrames antes de la unión
     erp_df_proc = erp_df.copy()
     erp_df_proc[COL_VALOR_ERP] = pd.to_numeric(erp_df_proc[COL_VALOR_ERP], errors='coerce')
 
     if not email_df.empty:
         email_df_proc = email_df.copy()
         email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
-        email_df_proc[COL_FECHA_EMISION_CORREO] = pd.to_datetime(email_df_proc[COL_FECHA_EMISION_CORREO], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-        email_df_proc[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df_proc[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+        
+        # --- INICIO DE LA CORRECCIÓN DEL ValueError ---
+        # Procesa las columnas de fecha de forma robusta, manejando mezclas de tipos y zonas horarias.
+        date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
+        for col in date_cols_correo:
+            if col in email_df_proc.columns:
+                date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
+                if date_series.dt.tz is None:
+                    email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+                else:
+                    email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+        # --- FIN DE LA CORRECCIÓN ---
+
         email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
         email_df_proc = pd.DataFrame(columns=[COL_NUM_FACTURA, COL_PROVEEDOR_CORREO, COL_VALOR_CORREO, COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO])
@@ -471,7 +483,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
     master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
 
-    # --- Lógica de conciliación ---
     erp_vals = master_df[COL_VALOR_ERP].fillna(0)
     email_vals = master_df[COL_VALOR_CORREO].fillna(0)
     conditions_conciliacion = [
@@ -483,7 +494,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    # --- Lógica de estado de pago ---
     today = datetime.now(COLOMBIA_TZ)
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
@@ -495,11 +505,9 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
     master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna(), 'Sin Fecha ERP', master_df['estado_pago'])
 
-    # Unifica el nombre del proveedor
     master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
     master_df.drop(columns=['_merge'], inplace=True)
 
-    # Aplica lógica de descuentos
     if not master_df.empty:
         master_df = calculate_financial_discounts(master_df)
 
@@ -532,18 +540,11 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            # --- INICIO DE LA CORRECCIÓN DEL TypeError ---
-                            # Convierte la columna a datetime primero
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
-                            
-                            # Revisa si la serie de fechas NO tiene zona horaria (es "naive")
                             if date_series.dt.tz is None:
-                                # Si es naive, ASIGNA la zona horaria
                                 historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                             else:
-                                # Si ya tiene zona horaria (es "aware"), CONVIÉRTELA a la correcta
                                 historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-                            # --- FIN DE LA CORRECCIÓN ---
 
             except gspread.exceptions.GSpreadException as e:
                 st.warning(f"No se pudo leer la base de datos histórica de correos: {e}")
@@ -634,7 +635,7 @@ def display_dashboard(df: pd.DataFrame):
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
 
-    # --- CAMBIO DE FORMATO EN MÉTRICAS ---
+    # Formato de Métricas sin decimales ni símbolo de $
     c1.metric("Deuda Total (en ERP)", f"{int(total_deuda):,}")
     c2.metric("Monto Vencido", f"{int(monto_vencido):,}")
     c3.metric("Monto por Vencer (7 días)", f"{int(por_vencer_monto):,}")
@@ -670,7 +671,6 @@ def display_dashboard(df: pd.DataFrame):
     with tab1:
         st.subheader("Explorador de Datos Consolidados")
         display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
-        # --- CAMBIO DE FORMATO EN DATAFRAME ---
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
           column_config={
               COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="%d"),
@@ -687,7 +687,6 @@ def display_dashboard(df: pd.DataFrame):
             numero_facturas=(COL_NUM_FACTURA, 'count'),
             monto_vencido=(COL_VALOR_ERP, lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
         ).reset_index().sort_values('total_facturado', ascending=False)
-        # --- CAMBIO DE FORMATO EN DATAFRAME ---
         st.dataframe(provider_summary, use_container_width=True, hide_index=True,
             column_config={
                 "total_facturado": st.column_config.NumberColumn("Total Facturado", format="%d"),
@@ -710,7 +709,6 @@ def display_dashboard(df: pd.DataFrame):
         ).reset_index()
         c1, c2 = st.columns([1, 2])
         with c1:
-            # --- CAMBIO DE FORMATO EN DATAFRAME ---
             st.dataframe(conc_summary, use_container_width=True, hide_index=True,
                 column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="%d")})
         with c2:
@@ -734,7 +732,6 @@ def display_dashboard(df: pd.DataFrame):
             st.info("Actualmente no hay facturas con oportunidades de descuento por pronto pago en la selección.")
         else:
             total_ahorro_potencial = descuentos_df['valor_descuento'].sum()
-            # --- CAMBIO DE FORMATO EN MÉTRICA ---
             st.metric("Ahorro Potencial Total", f"{int(total_ahorro_potencial):,}", help="Suma de todos los descuentos disponibles en la selección actual.")
 
             st.markdown("---")
@@ -756,7 +753,6 @@ def display_dashboard(df: pd.DataFrame):
                     'nombre_proveedor', COL_NUM_FACTURA, COL_VALOR_ERP, 
                     'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
                 ]
-                # --- CAMBIO DE FORMATO EN DATAFRAME ---
                 st.dataframe(plan_pagos_df[display_cols_plan], use_container_width=True, hide_index=True,
                     column_config={
                         COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="%d"),
@@ -774,7 +770,6 @@ def display_dashboard(df: pd.DataFrame):
                     'nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_VALOR_ERP, 
                     'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
                 ]
-                # --- CAMBIO DE FORMATO EN DATAFRAME ---
                 st.dataframe(descuentos_df[descuentos_df['fecha_limite_descuento'].notna()].sort_values('fecha_limite_descuento'), use_container_width=True, hide_index=True,
                     column_config={
                         COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
