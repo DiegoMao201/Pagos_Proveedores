@@ -9,6 +9,7 @@ oauth2client
 altair
 pytz
 lxml
+xlsxwriter
 
 
 
