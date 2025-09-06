@@ -57,7 +57,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread import Client, Worksheet
 # ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
-from gspread.utils import column_letter
+from openpyxl.utils import get_column_letter
 # ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
 
 # ======================================================================================
