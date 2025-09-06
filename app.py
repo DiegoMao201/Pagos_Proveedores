@@ -31,6 +31,7 @@ pytz==2024.1
 streamlit==1.35.0
 google-oauth2-tool==1.1.0
 gspread-pandas==3.3.0
+openpyxl==3.1.2
 """
 
 # ======================================================================================
@@ -57,6 +58,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread import Client, Worksheet
 # ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
+# Se importa la función 'get_column_letter' para obtener la letra de una columna (ej. 1 -> A)
 from openpyxl.utils import get_column_letter
 # ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
 
@@ -239,9 +241,10 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         num_cols_data = len(df_to_upload.columns)
         
         # 2. Obtener la letra de la última columna que el script manejará.
-        # ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
-        last_col_letter = column_letter(num_cols_data)
-        # ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
+        # ### INICIO DE LA CORRECCIÓN DEL NAME ERROR ###
+        # Se corrige el nombre de la función 'column_letter' a 'get_column_letter'
+        last_col_letter = get_column_letter(num_cols_data)
+        # ### FIN DE LA CORRECCIÓN DEL NAME ERROR ###
         
         # 3. Primero, actualiza el contenido nuevo desde la celda A1.
         worksheet.update(data_to_upload, 'A1')
@@ -313,15 +316,17 @@ def load_erp_data() -> pd.DataFrame:
         
         try:
             df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                     sep='{', header=None, names=column_names, engine='python')
+                                          sep='{', header=None, names=column_names, engine='python')
         except Exception as csv_error:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
 
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
         df.dropna(subset=[COL_PROVEEDOR_ERP, COL_VALOR_ERP], inplace=True)
-
-        credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | df[COL_NUM_FACTURA].str.strip() == '')
+        
+        # Lógica para manejar Notas Crédito: si el valor es negativo y no hay número de factura,
+        # se crea un identificador único para poder procesarla.
+        credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | (df[COL_NUM_FACTURA].str.strip() == ''))
         
         if credit_note_mask.any():
             df.loc[credit_note_mask, COL_NUM_FACTURA] = 'NC-' + \
@@ -499,14 +504,20 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
         
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
+        # ### INICIO DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS ###
         for col in date_cols_correo:
             if col in email_df_proc.columns:
+                # Se reemplazan cadenas vacías o con solo espacios por NaN para una conversión segura
+                email_df_proc[col] = email_df_proc[col].replace(r'^\s*$', np.nan, regex=True)
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
-                if date_series.dt.tz is None:
-                    email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-                else:
-                    email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+                # Asignar zona horaria solo si la conversión fue exitosa
+                if pd.api.types.is_datetime64_any_dtype(date_series):
+                    if date_series.dt.tz is None:
+                        email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+                    else:
+                        email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+        # ### FIN DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS ###
 
         email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
@@ -576,14 +587,18 @@ def run_full_sync():
                 historical_df = pd.DataFrame(db_sheet.get_all_records())
                 if not historical_df.empty:
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
+                    # ### INICIO DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS (HISTÓRICO) ###
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
+                            historical_df[col] = historical_df[col].replace(r'^\s*$', np.nan, regex=True)
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
-                            if date_series.dt.tz is None:
-                                historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-                            else:
-                                historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+                            if pd.api.types.is_datetime64_any_dtype(date_series):
+                                if date_series.dt.tz is None:
+                                    historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+                                else:
+                                    historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
+                    # ### FIN DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS (HISTÓRICO) ###
 
             except gspread.exceptions.GSpreadException as e:
                 st.warning(f"No se pudo leer la base de datos histórica de correos: {e}")
@@ -595,7 +610,8 @@ def run_full_sync():
             
             combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
             if db_sheet:
-                update_gsheet_from_df(db_sheet, combined_df)
+                if not update_gsheet_from_df(db_sheet, combined_df):
+                    st.error("Fallo al actualizar la base de datos de correos en Google Sheets.")
             st.session_state.email_df = combined_df
         else:
             st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
@@ -774,8 +790,8 @@ def display_dashboard(df: pd.DataFrame):
             st.markdown("---")
             st.markdown("### 🧠 Plan de Pagos Sugerido (Próximos 15 días)")
             
-            today = datetime.now(COLOMBIA_TZ).date()
-            limite_sugerencia = today + timedelta(days=15)
+            today_date = datetime.now(COLOMBIA_TZ).date()
+            limite_sugerencia = today_date + timedelta(days=15)
             
             plan_pagos_df = descuentos_df[
                 (descuentos_df['fecha_limite_descuento'].notna()) &
