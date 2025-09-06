@@ -7,18 +7,22 @@ import uuid
 import gspread
 import re
 import urllib.parse
+import pytz
 
 # Se importa directamente desde el archivo que ya tienes en tu proyecto.
 # Asegúrate de que este archivo exista en la ruta common/utils.py
 from common.utils import connect_to_google_sheets, load_data_from_gsheet
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-# Usamos un layout ancho para mejor visualización de datos y un título descriptivo.
+# --- CONFIGURACIÓN DE PÁGINA Y CONSTANTES ---
 st.set_page_config(
     layout="wide",
     page_title="Centro de Control de Pagos Inteligente",
     page_icon="🧠"
 )
+
+# --- Constantes (Sincronizadas con el Dashboard General) ---
+GSHEET_REPORT_NAME = "ReporteConsolidado_Activo" # Hoja de cálculo de origen
+COLOMBIA_TZ = pytz.timezone('America/Bogota')
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -53,7 +57,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         historial_ws.append_row(valores_fila)
 
         # --- 2. Actualizar el estado de las facturas en la hoja principal ---
-        reporte_ws = spreadsheet.worksheet("ReporteConsolidado_Activo")
+        reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
 
         # IDs únicos de las facturas que se van a actualizar.
         ids_a_actualizar = facturas_seleccionadas['id_factura_unico'].tolist()
@@ -94,7 +98,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
 
         return True, None
     except gspread.exceptions.WorksheetNotFound:
-        return False, "Error: No se encontró una de las hojas requeridas ('Historial_Lotes_Pago' o 'ReporteConsolidado_Activo')."
+        return False, f"Error: No se encontró una de las hojas requeridas ('Historial_Lotes_Pago' o '{GSHEET_REPORT_NAME}')."
     except Exception as e:
         # Capturamos cualquier otro error para dar un feedback claro.
         st.error(f"Error inesperado en la comunicación con Google Sheets: {e}")
@@ -115,7 +119,9 @@ def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -
     elif estrategia == "Evitar Vencimientos":
         df_sugerencias = df_sugerencias.sort_values(by='dias_para_vencer', ascending=True)
     elif estrategia == "Priorizar Antigüedad":
-        df_sugerencias = df_sugerencias.sort_values(by='fecha_factura', ascending=True)
+        # Asegurarse de que la columna de fecha existe y no es NaT para ordenar
+        if 'fecha_factura' in df_sugerencias.columns and df_sugerencias['fecha_factura'].notna().any():
+            df_sugerencias = df_sugerencias.sort_values(by='fecha_factura', ascending=True)
 
     # Seleccionar facturas hasta alcanzar el presupuesto.
     total_acumulado = 0
@@ -135,55 +141,57 @@ Utiliza el **Motor de Sugerencias** para optimizar tus pagos según tu presupues
 """)
 
 # --- Carga y Cacheo de Datos ---
-# Se utiliza el caché de la función para eficiencia.
 try:
     gs_client = connect_to_google_sheets()
+    # Esta hoja ya contiene los cálculos de descuento hechos por el Dashboard General.
     df_full = load_data_from_gsheet(gs_client)
 except Exception as e:
     st.error(f"No se pudo conectar o cargar los datos desde Google Sheets. Error: {e}")
     st.stop()
 
 if df_full.empty:
-    st.warning("No hay datos disponibles en la hoja 'ReporteConsolidado_Activo'. Por favor, verifica la fuente de datos.")
+    st.warning(f"No hay datos disponibles en la hoja '{GSHEET_REPORT_NAME}'. Por favor, ejecuta una sincronización en el 'Dashboard General'.")
     st.stop()
 
-# --- PRE-PROCESAMIENTO Y LIMPIEZA DE DATOS ---
-# Asegura que las columnas críticas existan.
+# --- PRE-PROCESAMIENTO Y LIMPIEZA DE DATOS (SINCRONIZADO CON DASHBOARD) ---
 required_cols = ['nombre_proveedor', 'num_factura', 'valor_total_erp', 'estado_factura']
 for col in required_cols:
     if col not in df_full.columns:
         st.error(f"La columna requerida '{col}' no se encuentra en tu Google Sheet. La aplicación no puede continuar.")
         st.stop()
         
-# Rellenar 'estado_factura' vacío con 'Pendiente' por defecto.
 df_full['estado_factura'] = df_full['estado_factura'].replace('', 'Pendiente').fillna('Pendiente')
 
-# Crear un ID único y robusto para cada factura. Es VITAL para la actualización.
 df_full['id_factura_unico'] = df_full.apply(
     lambda row: f"{row['nombre_proveedor']}-{row['num_factura']}-{row['valor_total_erp']}-{row.get('fecha_factura', '')}",
     axis=1
-).str.replace(r'\s+', '-', regex=True) # Reemplazar espacios para evitar problemas
+).str.replace(r'\s+', '-', regex=True)
 
-# Conversión de tipos de datos para asegurar cálculos correctos.
 numeric_cols = ['valor_total_erp', 'valor_con_descuento', 'valor_descuento', 'dias_para_vencer']
 for col in numeric_cols:
-    df_full[col] = pd.to_numeric(df_full[col], errors='coerce').fillna(0)
+    if col in df_full.columns:
+        df_full[col] = pd.to_numeric(df_full[col], errors='coerce').fillna(0)
+    else:
+        st.warning(f"La columna '{col}' no se encontró. Se asumirá un valor de 0. Asegúrate de que el Dashboard General se haya sincronizado.")
+        df_full[col] = 0
 
-date_cols = ['fecha_factura', 'fecha_limite_descuento']
+date_cols = ['fecha_factura', 'fecha_limite_descuento', 'fecha_vencimiento_erp', 'fecha_emision_erp']
 for col in date_cols:
-    df_full[col] = pd.to_datetime(df_full[col], errors='coerce')
+     if col in df_full.columns:
+        date_series = pd.to_datetime(df_full[col], errors='coerce')
+        if pd.api.types.is_datetime64_any_dtype(date_series):
+            if date_series.dt.tz is None:
+                df_full[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
+            else:
+                df_full[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
 
-
-# Filtrar solo facturas PENDIENTES. Esta es la lógica principal del planificador.
 df_pendientes = df_full[df_full['estado_factura'] == 'Pendiente'].copy()
-# Excluir Notas de Crédito o valores negativos que no son pagos.
 df_pendientes = df_pendientes[df_pendientes['valor_total_erp'] >= 0]
 
 
 # --- BARRA LATERAL (SIDEBAR) CON FILTROS Y MOTOR DE SUGERENCIAS ---
 st.sidebar.header("⚙️ Filtros y Sugerencias")
 
-# Filtros estándar
 proveedores_lista = sorted(df_pendientes['nombre_proveedor'].dropna().unique().tolist())
 selected_suppliers = st.sidebar.multiselect("Filtrar por Proveedor:", proveedores_lista)
 
@@ -191,7 +199,6 @@ estado_pago_lista = df_pendientes['estado_pago'].unique().tolist()
 default_status = [s for s in ["🟢 Vigente", "🟠 Por Vencer (7 días)"] if s in estado_pago_lista]
 selected_status = st.sidebar.multiselect("Filtrar por Estado de Pago:", estado_pago_lista, default=default_status)
 
-# Aplicar filtros al DataFrame
 df_filtrado = df_pendientes.copy()
 if selected_suppliers:
     df_filtrado = df_filtrado[df_filtrado['nombre_proveedor'].isin(selected_suppliers)]
@@ -200,16 +207,11 @@ if selected_status:
 
 st.sidebar.divider()
 
-# Motor de Sugerencias Inteligente
 st.sidebar.subheader("🤖 Motor de Sugerencias")
 presupuesto = st.sidebar.number_input(
     "Ingresa tu Presupuesto de Pago:",
-    min_value=0.0,
-    value=10000000.0, # Valor por defecto
-    step=500000.0,
-    format="%.2f"
+    min_value=0.0, value=10000000.0, step=500000.0, format="%.2f"
 )
-
 estrategia = st.sidebar.selectbox(
     "Selecciona tu Estrategia de Pago:",
     ["Maximizar Ahorro", "Evitar Vencimientos", "Priorizar Antigüedad"],
@@ -219,7 +221,6 @@ estrategia = st.sidebar.selectbox(
 if st.sidebar.button("💡 Generar Sugerencia", type="primary"):
     ids_sugeridos = generar_sugerencias(df_filtrado, presupuesto, estrategia)
     if ids_sugeridos:
-        # Guardamos los IDs sugeridos en el estado de la sesión para que persistan.
         st.session_state['sugerencia_ids'] = ids_sugeridos
         st.toast(f"¡Sugerencia generada! Se han pre-seleccionado {len(ids_sugeridos)} facturas.", icon="💡")
     else:
@@ -227,11 +228,8 @@ if st.sidebar.button("💡 Generar Sugerencia", type="primary"):
         st.warning("No se pudieron generar sugerencias con los criterios actuales.")
 
 # --- CUERPO PRINCIPAL DE LA APLICACIÓN ---
-
-# Insertamos la columna de selección.
 df_filtrado.insert(0, "seleccionar", False)
 
-# Pre-seleccionar filas basadas en la sugerencia del motor
 if 'sugerencia_ids' in st.session_state and st.session_state['sugerencia_ids']:
     df_filtrado['seleccionar'] = df_filtrado['id_factura_unico'].isin(st.session_state['sugerencia_ids'])
 
@@ -241,12 +239,8 @@ st.markdown("Marca las casillas de las facturas que deseas incluir. Puedes usar 
 if df_filtrado.empty:
     st.info("No hay facturas pendientes que coincidan con los filtros actuales.")
 else:
-    # El data_editor es la herramienta principal para la interacción del usuario.
     edited_df = st.data_editor(
-        df_filtrado,
-        key="data_editor_pagos",
-        use_container_width=True,
-        hide_index=True,
+        df_filtrado, key="data_editor_pagos", use_container_width=True, hide_index=True,
         column_config={
             "seleccionar": st.column_config.CheckboxColumn(required=True, help="Selecciona las facturas a pagar"),
             "valor_total_erp": st.column_config.NumberColumn("Valor Original", format="$ {:,.0f}"),
@@ -256,21 +250,27 @@ else:
             "fecha_limite_descuento": st.column_config.DateColumn("Límite Descuento", format="YYYY-MM-DD"),
             "dias_para_vencer": st.column_config.NumberColumn("Días Vence", format="%d días"),
         },
-        # Deshabilitamos la edición de todas las columnas excepto 'seleccionar'.
         disabled=[col for col in df_filtrado.columns if col != 'seleccionar']
     )
-
-    # Filtramos las filas que el usuario ha seleccionado.
     selected_rows = edited_df[edited_df['seleccionar']]
     st.divider()
 
-    # --- PESTAÑAS PARA RESUMEN Y ACCIONES ---
-    tab1, tab2 = st.tabs(["📊 Resumen del Plan de Pago", "🚀 Confirmar y Ejecutar Acciones"])
+    # --- Generar ID de lote proactivamente y guardarlo en la sesión ---
+    if not selected_rows.empty:
+        selection_key = tuple(sorted(selected_rows['id_factura_unico'].tolist()))
+        if st.session_state.get('current_selection_key') != selection_key:
+            st.session_state['id_lote_propuesto'] = f"LOTE-{uuid.uuid4().hex[:8].upper()}"
+            st.session_state['current_selection_key'] = selection_key
+    elif 'id_lote_propuesto' in st.session_state:
+        del st.session_state['id_lote_propuesto']
+        if 'current_selection_key' in st.session_state:
+            del st.session_state['current_selection_key']
 
+    tab1, tab2 = st.tabs(["📊 Resumen del Plan de Pago", "🚀 Confirmar y Ejecutar Acciones"])
     with tab1:
         st.subheader("Análisis del Lote Propuesto")
         if selected_rows.empty:
-            st.info("Selecciona una o más facturas en la tabla de arriba para ver el resumen del pago.")
+            st.info("Selecciona una o más facturas para ver el resumen del pago.")
         else:
             total_original = selected_rows['valor_total_erp'].sum()
             ahorro_total = selected_rows['valor_descuento'].sum()
@@ -296,64 +296,40 @@ else:
              st.warning("Debes seleccionar al menos una factura para poder generar un lote de pago.")
         else:
             col1, col2 = st.columns([1, 1])
-
             with col1:
                 st.markdown("#### ✅ Confirmación y Registro")
                 st.info("Al confirmar, se registrará el lote en el historial y se actualizará el estado de las facturas en Google Sheets.")
-
                 if st.button("Confirmar y Generar Lote", type="primary", use_container_width=True):
                     with st.spinner("Procesando y guardando el lote de pago... Este proceso es irreversible."):
-                        # Crear la información del lote.
-                        id_lote = f"LOTE-{uuid.uuid4().hex[:8].upper()}"
+                        id_lote = st.session_state.get('id_lote_propuesto', f"LOTE-ERROR-{uuid.uuid4().hex[:4]}")
                         lote_info = {
-                            "id_lote": id_lote,
-                            "fecha_creacion": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "num_facturas": num_facturas,
-                            "valor_original_total": total_original,
-                            "ahorro_total_lote": ahorro_total,
-                            "total_pagado_lote": total_a_pagar,
-                            "creado_por": "Usuario App (Gerencia)",
-                            "estado_lote": "Pendiente de Pago en Tesorería"
+                            "id_lote": id_lote, "fecha_creacion": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            "num_facturas": len(selected_rows), "valor_original_total": selected_rows['valor_total_erp'].sum(),
+                            "ahorro_total_lote": selected_rows['valor_descuento'].sum(), "total_pagado_lote": selected_rows['valor_con_descuento'].sum(),
+                            "creado_por": "Usuario App (Gerencia)", "estado_lote": "Pendiente de Pago en Tesorería"
                         }
-
-                        # Llamar a la función para guardar en Google Sheets.
                         success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows)
-
                         if success:
                             st.success(f"¡Éxito! Lote de pago `{id_lote}` generado y guardado correctamente.")
                             st.info("Las facturas seleccionadas ya no aparecerán como pendientes. La página se recargará para reflejar los cambios.")
                             st.balloons()
-                            # Limpiar la selección para evitar re-envíos accidentales.
                             st.session_state['sugerencia_ids'] = []
-                            # Forzar recarga con un botón para que el usuario controle
                             st.rerun()
                         else:
                             st.error(f"Error Crítico al guardar el lote: {error_msg}")
-
             with col2:
                 st.markdown("#### 📲 Notificación a Tesorería")
-                numero_tesoreria = st.text_input(
-                    "Número de WhatsApp de Tesorería (ej: 573001234567)",
-                    st.secrets.get("whatsapp_default_number", ""), # Usa un secreto para el número por defecto
-                    key="whatsapp_num"
-                )
-
-                # Se define lote_info aquí también para que esté disponible aunque no se presione el botón de generar lote
-                total_original = selected_rows['valor_total_erp'].sum()
-                ahorro_total = selected_rows['valor_descuento'].sum()
-                total_a_pagar = selected_rows['valor_con_descuento'].sum()
-                num_facturas = len(selected_rows)
+                numero_tesoreria = st.text_input("Número de WhatsApp de Tesorería (ej: 573001234567)", st.secrets.get("whatsapp_default_number", ""), key="whatsapp_num")
                 
+                id_lote_mensaje = st.session_state.get('id_lote_propuesto', 'LOTE-POR-CONFIRMAR')
                 mensaje_base = (
                     f"¡Hola! 👋 Se ha generado un nuevo lote de pago para tu gestión.\n\n"
-                    f"*{'LOTE-POR-CONFIRMAR'}*\n\n"
-                    f"🔹 *Total a Pagar:* ${total_a_pagar:,.0f}\n"
-                    f"🔹 *Nº Facturas:* {num_facturas}\n"
-                    f"🔹 *Ahorro Obtenido:* ${ahorro_total:,.0f}\n\n"
-                    f"Por favor, ingresa a la pestaña 'Historial de Pagos' en la plataforma para revisar el detalle y descargar el soporte para la transacción."
+                    f"*{id_lote_mensaje}*\n\n"
+                    f"🔹 *Total a Pagar:* ${selected_rows['valor_con_descuento'].sum():,.0f}\n"
+                    f"🔹 *Nº Facturas:* {len(selected_rows)}\n"
+                    f"🔹 *Ahorro Obtenido:* ${selected_rows['valor_descuento'].sum():,.0f}\n\n"
+                    "Por favor, ingresa a la pestaña 'Historial de Pagos' en la plataforma para revisar el detalle y descargar el soporte para la transacción."
                 )
-                
-                # Codificar el mensaje para la URL de forma segura.
                 mensaje_codificado = urllib.parse.quote(mensaje_base)
                 link_whatsapp = f"https://wa.me/{numero_tesoreria}?text={mensaje_codificado}"
                 
@@ -363,19 +339,10 @@ else:
                 st.markdown("""
                 <style>
                 .button {
-                    display: inline-block;
-                    padding: 0.75rem 1.25rem;
-                    border-radius: 0.5rem;
-                    background-color: #25D366;
-                    color: white;
-                    text-align: center;
-                    text-decoration: none;
-                    font-weight: bold;
-                    width: 100%;
-                    box-sizing: border-box;
+                    display: inline-block; padding: 0.75rem 1.25rem; border-radius: 0.5rem;
+                    background-color: #25D366; color: white; text-align: center;
+                    text-decoration: none; font-weight: bold; width: 100%; box-sizing: border-box;
                 }
-                .button:hover {
-                    background-color: #128C7E;
-                }
+                .button:hover { background-color: #128C7E; }
                 </style>
                 """, unsafe_allow_html=True)
