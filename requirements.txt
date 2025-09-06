@@ -1,13 +1,14 @@
 streamlit
 pandas
+numpy
 dropbox
-beautifulsoup4
-lxml
-bcrypt
-altair
 gspread
-matplotlib
+google-auth-oauthlib
+google-api-python-client
+oauth2client
+altair
 pytz
+lxml
 
 
 
