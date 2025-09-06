@@ -56,7 +56,9 @@ import pytz
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread import Client, Worksheet
-from gspread.utils import get_column_letter
+# ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
+from gspread.utils import column_letter
+# ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN INICIAL Y CONSTANTES GLOBALES ---
@@ -236,24 +238,21 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         num_rows_data = len(data_to_upload)
         num_cols_data = len(df_to_upload.columns)
         
-        # 2. Obtener la letra de la última columna que el script manejará (ej. 22 -> 'V').
-        last_col_letter = get_column_letter(num_cols_data)
+        # 2. Obtener la letra de la última columna que el script manejará.
+        # ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
+        last_col_letter = column_letter(num_cols_data)
+        # ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
         
         # 3. Primero, actualiza el contenido nuevo desde la celda A1.
-        #    Esto sobrescribe los datos antiguos hasta donde lleguen los nuevos.
         worksheet.update(data_to_upload, 'A1')
 
         # 4. Limpiar las filas sobrantes DEBAJO de los nuevos datos.
-        #    Si los datos anteriores eran más largos, este paso borra los residuos
-        #    sin afectar columnas como la W, X, Y.
         start_row_to_clear = num_rows_data + 1
         total_sheet_rows = worksheet.row_count
         
         if start_row_to_clear <= total_sheet_rows:
-            # Definir el rango exacto a limpiar.
             range_to_clear = f'A{start_row_to_clear}:{last_col_letter}{total_sheet_rows}'
             
-            # Crear una matriz de celdas vacías para limpiar el rango.
             rows_to_clear_count = total_sheet_rows - start_row_to_clear + 1
             if rows_to_clear_count > 0:
                 empty_data = [[''] * num_cols_data for _ in range(rows_to_clear_count)]
@@ -279,15 +278,12 @@ def clean_and_convert_numeric(value: Any) -> float:
     
     cleaned_str = str(value).strip().replace('$', '').replace('COP', '').strip()
     try:
-        # Lógica mejorada para manejar separadores de miles y decimales
         if '.' in cleaned_str and ',' in cleaned_str:
-            # Asume que el último separador es el decimal
             if cleaned_str.rfind('.') > cleaned_str.rfind(','):
                 cleaned_str = cleaned_str.replace(',', '')
             else:
                 cleaned_str = cleaned_str.replace('.', '').replace(',', '.')
         else:
-            # Si solo hay comas, se asume que son separadores decimales
             cleaned_str = cleaned_str.replace(',', '.')
         return float(cleaned_str)
     except (ValueError, TypeError):
@@ -297,7 +293,6 @@ def normalize_invoice_number(inv_num: Any) -> str:
     """Limpia y estandariza el número de factura para un cruce más efectivo."""
     if not isinstance(inv_num, str):
         inv_num = str(inv_num)
-    # Elimina todos los caracteres no alfanuméricos para una coincidencia más precisa.
     return re.sub(r'[^A-Z0-9]', '', inv_num.upper()).strip()
 
 @st.cache_data(show_spinner="Descargando datos del ERP (Dropbox)...", ttl=600)
@@ -323,28 +318,20 @@ def load_erp_data() -> pd.DataFrame:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
 
-        # --- Limpieza y transformación de datos ---
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
         df.dropna(subset=[COL_PROVEEDOR_ERP, COL_VALOR_ERP], inplace=True)
 
-        # ### INICIO DE LA CORRECCIÓN PARA CARGAR NOTAS CRÉDITO ###
-        # Esta sección identifica las notas crédito (valor negativo y sin num_factura)
-        # y les asigna un ID único para que no sean descartadas.
         credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | df[COL_NUM_FACTURA].str.strip() == '')
         
-        # Generar un ID único usando 'NC' (Nota Crédito) + doc_erp + valor.
         if credit_note_mask.any():
             df.loc[credit_note_mask, COL_NUM_FACTURA] = 'NC-' + \
                 df.loc[credit_note_mask, 'doc_erp'].astype(str) + '-' + \
                 df.loc[credit_note_mask, COL_VALOR_ERP].abs().astype(int).astype(str)
 
-        # Ahora, se eliminan las filas que AÚN no tengan un número de factura (datos malformados)
         df.dropna(subset=[COL_NUM_FACTURA], inplace=True)
-        # ### FIN DE LA CORRECCIÓN ###
 
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         
-        # Se estandariza la conversión de fechas, asegurando la localización correcta.
         df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         
@@ -362,7 +349,6 @@ def load_erp_data() -> pd.DataFrame:
 def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
     """Parsea de forma robusta el contenido de un XML de factura electrónica DIAN."""
     try:
-        # Limpia cualquier texto o metadato antes del tag XML principal
         xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
         root = ET.fromstring(xml_content.encode('utf-8'))
         
@@ -371,16 +357,14 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
             'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
         }
         
-        # Se busca recursivamente en el XML anidado si existe
         description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
         if description_node is not None and description_node.text and '<Invoice' in description_node.text:
             try:
                 inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
                 root = ET.fromstring(inner_xml_text.encode('utf-8'))
             except ET.ParseError:
-                pass # Si el XML interno falla, continúa con el XML principal
+                pass
 
-        # Función auxiliar para buscar texto en varias rutas posibles
         def find_text_robust(element, paths: List[str]) -> Optional[str]:
             for path in paths:
                 node = element.find(path, ns)
@@ -449,7 +433,7 @@ def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
                                     if details:
                                         invoices_data.append(details)
                     except (zipfile.BadZipFile, io.UnsupportedOperation):
-                        continue # Ignora archivos zip corruptos o no válidos
+                        continue
             progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {i+1}/{len(message_ids)} correos...")
         
         mail.logout()
@@ -514,11 +498,9 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         email_df_proc = email_df.copy()
         email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
         
-        # Procesa las columnas de fecha de forma robusta, manejando mezclas de tipos y zonas horarias.
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                # Se convierte toda la columna a datetime de forma vectorizada.
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
                 if date_series.dt.tz is None:
@@ -535,10 +517,8 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
     master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
 
-    ### LÓGICA DE ESTADOS (INCLUYENDO NOTAS CRÉDITO) ###
     is_credit_note_mask = (master_df[COL_VALOR_ERP] < 0)
 
-    # Lógica de Conciliación
     erp_vals = master_df[COL_VALOR_ERP].fillna(0)
     email_vals = master_df[COL_VALOR_CORREO].fillna(0)
     conditions_conciliacion = [
@@ -551,7 +531,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    # Lógica de Estado de Pago
     today = datetime.now(COLOMBIA_TZ)
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
@@ -599,7 +578,6 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            # Se convierte toda la columna a datetime de forma vectorizada.
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
                             if date_series.dt.tz is None:
@@ -622,7 +600,6 @@ def run_full_sync():
         else:
             st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
             st.session_state.email_df = historical_df
-
 
         st.info("Paso 4/5: Cargando datos del ERP y conciliando...")
         st.session_state.erp_df = load_erp_data()
@@ -677,11 +654,10 @@ def display_sidebar(master_df: pd.DataFrame):
                     min_value=min_date, max_value=max_date
                 )
             
-            # Aplica los filtros al DataFrame
             filtered_df = master_df[master_df['nombre_proveedor'].isin(selected_suppliers)]
             if len(date_range) == 2:
                 start_date = pd.to_datetime(date_range[0]).tz_localize(COLOMBIA_TZ)
-                end_date = pd.to_datetime(date_range[1]).tz_localize(COLOMBIA_TZ) + timedelta(days=1) # Incluir el día final
+                end_date = pd.to_datetime(date_range[1]).tz_localize(COLOMBIA_TZ) + timedelta(days=1)
                 erp_dates_mask = filtered_df[COL_FECHA_EMISION_ERP].notna()
                 filtered_df = filtered_df[erp_dates_mask & (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & (filtered_df[COL_FECHA_EMISION_ERP] < end_date)]
 
@@ -692,12 +668,10 @@ def display_dashboard(df: pd.DataFrame):
     st.header("📊 Resumen Financiero y de Gestión")
     c1, c2, c3, c4 = st.columns(4)
 
-    # El cálculo de la deuda total ahora resta automáticamente las notas crédito
     total_deuda = df.loc[df['estado_conciliacion'] != '📧 Solo en Correo', COL_VALOR_ERP].sum()
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
 
-    # Formato de Métricas sin decimales ni símbolo de $
     c1.metric("Deuda Total (en ERP)", f"{int(total_deuda):,}")
     c2.metric("Monto Vencido", f"{int(monto_vencido):,}")
     c3.metric("Monto por Vencer (7 días)", f"{int(por_vencer_monto):,}")
@@ -723,7 +697,6 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
 
-    # SE AÑADE LA NUEVA PESTAÑA PARA NOTAS CRÉDITO
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📑 Explorador de Datos", 
         "🏢 Análisis de Proveedores", 
@@ -844,7 +817,6 @@ def display_dashboard(df: pd.DataFrame):
                     }
                 )
 
-    # NUEVO CONTENIDO DE LA PESTAÑA DE NOTAS CRÉDITO
     with tab5:
         st.subheader("Notas Crédito Pendientes de Aplicar")
         st.info("Aquí se listan todas las notas crédito registradas en el ERP que están pendientes por cruzar. Estos valores ya se descuentan de la 'Deuda Total'.")
@@ -880,14 +852,12 @@ def display_dashboard(df: pd.DataFrame):
 def main_app():
     """Función principal que construye y renderiza la interfaz de la aplicación."""
     load_css()
-    # Pasa el DataFrame del estado de la sesión a la barra lateral
     master_df = st.session_state.get("master_df", pd.DataFrame())
     display_sidebar(master_df)
 
     st.title("Plataforma de Gestión Inteligente de Facturas")
     st.markdown("Bienvenido al centro de control de cuentas por pagar. **Esta es la página principal para actualizar los datos desde el correo y Dropbox.**")
 
-    # Muestra un indicador de la última sincronización
     if 'last_sync_time' in st.session_state:
         st.success(f"Última sincronización completada a las: {st.session_state.last_sync_time}")
 
@@ -895,7 +865,6 @@ def main_app():
         st.info("👋 Presiona 'Sincronizar Todo' en la barra lateral para cargar y procesar los datos más recientes.")
         st.stop()
 
-    # Usa el DataFrame filtrado desde el estado de la sesión
     filtered_df = st.session_state.get('filtered_df')
     if filtered_df is None or filtered_df.empty:
         st.warning("No hay datos que coincidan con los filtros seleccionados o no hay datos cargados.")
