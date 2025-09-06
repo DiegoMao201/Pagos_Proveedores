@@ -213,20 +213,30 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
     try:
         worksheet.clear()
         df_to_upload = df.copy()
-        
-        # Se asegura de que todas las columnas de fecha/hora se conviertan a string
-        # en un formato estándar (ISO 8601) para evitar problemas de localización y formato.
-        for col in df_to_upload.select_dtypes(include=['datetimelike', 'datetime64[ns]', 'datetime64[ns, UTC]', f'datetime64[ns, {COLOMBIA_TZ.zone}]']).columns:
-            # Corrección para manejar correctamente NaT (Not a Time)
+
+        ### INICIO DE LA CORRECCIÓN ###
+        # Bucle robusto para convertir todas las columnas de fecha a texto.
+        # Itera sobre las columnas del DataFrame y comprueba si su tipo es de fecha/hora.
+        # Este método es más seguro que .select_dtypes().
+        for col in df_to_upload.columns:
             if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
-                 df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                # Se aplica el formato estándar ISO 8601. Los valores NaT (Not a Time) se ignorarán.
+                df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        ### FIN DE LA CORRECCIÓN ###
 
-        # Convierte todo a string y reemplaza valores nulos para la subida
-        df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
+        # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
+        # 'NaT' (de las fechas), 'None' y 'nan' (de los números) se convierten en celdas vacías.
+        df_to_upload = df_to_upload.astype(str).replace({
+            'nan': '',
+            'NaT': '',
+            'None': ''
+        })
 
+        # Prepara la lista de valores y la envía a Google Sheets.
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist())
         return True
     except Exception as e:
+        # Muestra el error específico si la actualización falla.
         st.error(f"❌ Error al actualizar la hoja '{worksheet.title}': {e}")
         return False
 
@@ -462,7 +472,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         email_df_proc = email_df.copy()
         email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
         
-        # --- INICIO DE LA CORRECCIÓN DEL ValueError ---
         # Procesa las columnas de fecha de forma robusta, manejando mezclas de tipos y zonas horarias.
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
@@ -472,7 +481,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
                     email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                 else:
                     email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-        # --- FIN DE LA CORRECCIÓN ---
 
         email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
@@ -572,7 +580,7 @@ def run_full_sync():
         report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
         if report_sheet and not final_df.empty:
             if update_gsheet_from_df(report_sheet, final_df):
-                st.success("✅ ¡Sincronización completada con éxito!")
+                st.success(f"✅ ¡Reporte '{GSHEET_REPORT_NAME}' actualizado en Google Sheets!")
         else:
             st.warning("No se actualizó el reporte en Google Sheets (sin datos finales o sin acceso a la hoja).")
 
