@@ -53,10 +53,17 @@ def check_password():
 @st.cache_resource(show_spinner="Conectando a Google Sheets...")
 def connect_to_google_sheets():
     try:
-        creds = Credentials.from_service_account_info(st.secrets["google_credentials"])
+        # ✅ CORRECCIÓN: Se añaden los scopes (permisos) necesarios para que la API de Google funcione.
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_info(
+            st.secrets["google_credentials"], scopes=scopes
+        )
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"❌ Error crítico al conectar con Google Sheets: {e}")
+        st.error(f"❌ Error crítico al autenticar con Google Sheets: {e}")
         return None
 
 def get_or_create_worksheet(client, sheet_key, worksheet_name):
@@ -65,6 +72,7 @@ def get_or_create_worksheet(client, sheet_key, worksheet_name):
         try:
             return spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
+            st.warning(f"Hoja '{worksheet_name}' no encontrada. Creando una nueva...")
             return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="20")
     except Exception as e:
         st.error(f"Error accediendo a la hoja de cálculo: {e}")
@@ -110,30 +118,24 @@ def load_erp_data():
         return pd.DataFrame()
 
 def parse_invoice_xml_robust(xml_content):
-    """Lector de XML mejorado para encontrar datos clave en múltiples rutas comunes."""
     try:
         xml_content = re.sub(r'xmlns="[^"]+"', '', xml_content, count=1)
         root = ET.fromstring(xml_content.encode('utf-8'))
         ns = { 'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2", 'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" }
-
         def find_text_robust(paths):
             for path in paths:
                 node = root.find(path, ns)
                 if node is not None and node.text: return node.text.strip()
             return None
-
-        # ✅ BÚSQUEDA MEJORADA: Se prueban múltiples rutas para cada dato
         invoice_number = find_text_robust(['.//cbc:ID'])
         supplier_name = find_text_robust(['.//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', './/cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name'])
         due_date = find_text_robust(['.//cac:PaymentMeans/cbc:PaymentDueDate', './/cbc:DueDate'])
         total_value = find_text_robust(['.//cac:LegalMonetaryTotal/cbc:PayableAmount', './/cac:TaxInclusiveAmount', './/cac:LineExtensionAmount'])
-
         if not invoice_number: return None
         return { "num_factura": invoice_number, "nombre_proveedor_correo": supplier_name, "fecha_vencimiento_correo": due_date, "valor_total_correo": total_value or "0" }
     except Exception: return None
 
 def fetch_new_invoices_from_email(start_date):
-    """Busca y extrae datos de facturas desde los correos a partir de una fecha dada."""
     invoices = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -142,12 +144,10 @@ def fetch_new_invoices_from_email(start_date):
         search_query = f'(SINCE "{start_date.strftime("%d-%b-%Y")}")'
         _, messages = mail.search(None, search_query)
         if not messages[0]:
-            st.info(f"📨 No se encontraron correos nuevos desde {start_date.strftime('%Y-%m-%d')}.")
+            st.info(f"✅ No se encontraron correos nuevos desde {start_date.strftime('%Y-%m-%d')}.")
             mail.logout()
             return pd.DataFrame()
-
         message_ids = messages[0].split()
-        st.info(f"📨 Procesando {len(message_ids)} correo(s) nuevo(s)...")
         for num in message_ids:
             _, data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
@@ -172,7 +172,6 @@ def process_and_reconcile(erp_df, email_df):
     if erp_df.empty:
         st.error("El análisis no puede continuar sin datos del ERP.")
         return pd.DataFrame()
-    
     if not email_df.empty:
         email_df['valor_total_correo'] = email_df['valor_total_correo'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         email_df['fecha_vencimiento_correo'] = email_df['fecha_vencimiento_correo'].apply(parse_date)
@@ -181,22 +180,14 @@ def process_and_reconcile(erp_df, email_df):
     else:
         master_df = erp_df.copy()
         for col in ['nombre_proveedor_correo', 'fecha_vencimiento_correo', 'valor_total_correo']: master_df[col] = np.nan
-    
-    # --- Lógica de Conciliación ---
-    conditions = [
-        master_df['valor_total_correo'].isnull(),
-        ~np.isclose(master_df['valor_total'], master_df['valor_total_correo'], atol=1.0) # Tolerancia de $1
-    ]
+    conditions = [ master_df['valor_total_correo'].isnull(), ~np.isclose(master_df['valor_total'], master_df['valor_total_correo'], atol=1.0) ]
     choices = ['📬 Pendiente de Correo', '⚠️ Discrepancia de Valor']
     master_df['estado_conciliacion'] = np.select(conditions, choices, default='✅ Conciliada')
-    
-    # --- Lógica de Estado de Pago ---
     today = pd.to_datetime(datetime.now(COLOMBIA_TZ).date())
     master_df['dias_para_vencer'] = (master_df['fecha_vencimiento'] - today).dt.days
     conditions_pago = [master_df['dias_para_vencer'] < 0, master_df['dias_para_vencer'] <= 7]
     choices_pago = ["🔴 Vencida", "🟠 Por Vencer"]
     master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
-    
     return master_df
 
 # --- 7. APLICACIÓN PRINCIPAL DE STREAMLIT ---
@@ -208,68 +199,72 @@ def main_app():
 
     if 'data_loaded' not in st.session_state: st.session_state.data_loaded = False
 
-    # --- Botón de Sincronización ---
     if st.sidebar.button("🔄 Sincronizar Todo", type="primary", use_container_width=True):
         with st.spinner('Iniciando sincronización completa...'):
+            st.info("Paso 1/6: Conectando a servicios de Google...")
             gs_client = connect_to_google_sheets()
-            if gs_client:
-                # 1. Cargar base de datos de correos histórica desde GSheets
-                db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
-                historical_email_df = pd.DataFrame(db_sheet.get_all_records())
-                
-                # 2. Determinar desde qué fecha buscar nuevos correos
-                if not historical_email_df.empty:
-                    historical_email_df['fecha_lectura'] = pd.to_datetime(historical_email_df['fecha_lectura'])
-                    last_date = historical_email_df['fecha_lectura'].max()
-                    # ✅ BÚSQUEDA AMPLIADA: 10 días hacia atrás desde la última lectura
-                    search_start_date = last_date - timedelta(days=10)
-                else:
-                    search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=10)
-
-                # 3. Buscar solo correos nuevos
-                new_email_df = fetch_new_invoices_from_email(search_start_date)
-                
-                # 4. Combinar y actualizar la base de datos de correos
-                if not new_email_df.empty:
-                    new_email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
-                    combined_email_df = pd.concat([historical_email_df, new_email_df]).drop_duplicates(subset=['num_factura'], keep='last')
-                    update_gsheet_from_df(db_sheet, combined_email_df)
-                    st.session_state.email_df = combined_email_df
-                else:
-                    st.session_state.email_df = historical_email_df
+            if not gs_client:
+                st.error("Fallo en la conexión con Google. No se puede continuar.")
+                st.stop()
             
-                # 5. Cargar ERP y procesar
-                st.session_state.erp_df = load_erp_data()
-                final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
-                st.session_state.master_df = final_df
-                
-                # 6. Actualizar el reporte consolidado en GSheets
-                report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
-                if update_gsheet_from_df(report_sheet, final_df):
-                    st.success(f"✅ Reporte consolidado actualizado en Google Sheets.")
-                
-                st.session_state.data_loaded = True
-                st.rerun()
+            st.info(f"Paso 2/6: Accediendo a la base de datos de correos '{GSHEET_DB_NAME}'...")
+            db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
+            if not db_sheet:
+                st.error(f"No se pudo acceder a la hoja '{GSHEET_DB_NAME}'. No se puede continuar.")
+                st.stop()
+            
+            historical_email_df = pd.DataFrame(db_sheet.get_all_records())
+            
+            if not historical_email_df.empty and 'fecha_lectura' in historical_email_df.columns:
+                historical_email_df['fecha_lectura'] = pd.to_datetime(historical_email_df['fecha_lectura'], errors='coerce')
+                last_date = historical_email_df['fecha_lectura'].max()
+                search_start_date = (last_date - timedelta(days=10)) if pd.notna(last_date) else (datetime.now(COLOMBIA_TZ) - timedelta(days=10))
+            else:
+                search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=10)
+            
+            st.info(f"Paso 3/6: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
+            new_email_df = fetch_new_invoices_from_email(search_start_date)
+            
+            if not new_email_df.empty:
+                st.success(f"¡Se encontraron {len(new_email_df)} facturas nuevas en el correo!")
+                new_email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ).isoformat()
+                combined_email_df = pd.concat([historical_email_df, new_email_df]).drop_duplicates(subset=['num_factura'], keep='last')
+                st.info(f"Paso 4/6: Actualizando base de datos '{GSHEET_DB_NAME}'...")
+                update_gsheet_from_df(db_sheet, combined_email_df)
+                st.session_state.email_df = combined_email_df
+            else:
+                st.session_state.email_df = historical_email_df
+        
+            st.info("Paso 5/6: Cargando datos del ERP y conciliando...")
+            st.session_state.erp_df = load_erp_data()
+            final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
+            st.session_state.master_df = final_df
+            
+            st.info(f"Paso 6/6: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
+            report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
+            if report_sheet and update_gsheet_from_df(report_sheet, final_df):
+                st.success("✅ ¡Sincronización completada con éxito!")
+            
+            st.session_state.data_loaded = True
+            st.rerun()
 
     if not st.session_state.get('data_loaded'):
         st.info("👋 Bienvenido. Presiona 'Sincronizar Todo' para comenzar.")
         st.stop()
     
     master_df = st.session_state.master_df
-    if master_df.empty: st.stop()
+    if master_df.empty: st.warning("No hay datos del ERP para mostrar."); st.stop()
 
-    # --- Filtros Globales ---
     st.sidebar.header("Filtros Globales 🔎")
-    # ... (código de filtros sin cambios)
     proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
     selected_suppliers = st.sidebar.multiselect("Proveedor:", proveedores_lista, default=proveedores_lista)
-    min_date, max_date = master_df['fecha_emision'].min().date(), master_df['fecha_emision'].max().date()
+    min_date = master_df['fecha_emision'].dropna().min().date()
+    max_date = master_df['fecha_emision'].dropna().max().date()
     date_range = st.sidebar.date_input("Fecha de Emisión:", value=(min_date, max_date), min_value=min_date, max_value=max_date)
     start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
     filtered_df = master_df[(master_df['nombre_proveedor'].isin(selected_suppliers)) & (master_df['fecha_emision'] >= start_date) & (master_df['fecha_emision'] <= end_date)]
     st.success(f"Mostrando {len(filtered_df)} de {len(master_df)} facturas.")
     
-    # --- Pestañas de la Interfaz ---
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard Principal", "🚨 Alertas de Pago", "🔍 Explorador de Datos", "🏢 Análisis de Proveedores"])
 
     with tab1:
@@ -280,7 +275,6 @@ def main_app():
         c2.markdown(f'<div class="metric-card"><h3>Monto Vencido</h3><p>${vencido_df["valor_total"].sum():,.2f}</p></div>', unsafe_allow_html=True)
         c3.markdown(f'<div class="metric-card"><h3>Facturas Vencidas</h3><p>{len(vencido_df)}</p></div>', unsafe_allow_html=True)
         c4.markdown(f'<div class="metric-card"><h3>Por Vencer (7 días)</h3><p>{len(filtered_df[filtered_df["estado_pago"] == "🟠 Por Vencer"])}</p></div>', unsafe_allow_html=True)
-        
         st.subheader("Indicadores de Conciliación")
         c1, c2, c3 = st.columns(3)
         conc_df = filtered_df[filtered_df['estado_conciliacion'] == '✅ Conciliada']
@@ -300,7 +294,6 @@ def main_app():
     with tab3:
         st.subheader("Explorador de Datos Consolidados")
         display_cols = ['nombre_proveedor', 'num_factura', 'fecha_emision', 'fecha_vencimiento', 'valor_total', 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', 'valor_total_correo']
-        # ✅ FORMATO CORREGIDO Y MEJORAS VISUALES
         st.data_editor(filtered_df[display_cols], use_container_width=True, hide_index=True,
             column_config={
                 "valor_total": st.column_config.NumberColumn("Valor ERP", format="$ {:,.2f}"),
@@ -312,22 +305,11 @@ def main_app():
 
     with tab4:
         st.subheader("Análisis por Proveedor")
-        provider_summary = filtered_df.groupby('nombre_proveedor').agg(
-            total_facturado=('valor_total', 'sum'),
-            numero_facturas=('num_factura', 'count'),
-            numero_discrepancias=('estado_conciliacion', lambda x: (x == '⚠️ Discrepancia de Valor').sum())
-        ).reset_index().sort_values('total_facturado', ascending=False)
-        
+        provider_summary = filtered_df.groupby('nombre_proveedor').agg(total_facturado=('valor_total', 'sum'), numero_facturas=('num_factura', 'count'), numero_discrepancias=('estado_conciliacion', lambda x: (x == '⚠️ Discrepancia de Valor').sum())).reset_index().sort_values('total_facturado', ascending=False)
         st.markdown("##### Resumen de Facturación por Proveedor")
-        st.dataframe(provider_summary, use_container_width=True, hide_index=True,
-            column_config={"total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ {:,.2f}")})
-        
+        st.dataframe(provider_summary, use_container_width=True, hide_index=True, column_config={"total_facturado": st.column_config.NumberColumn("Total Facturado", format="$ {:,.2f}")})
         st.markdown("##### Distribución de la Facturación")
-        chart = alt.Chart(provider_summary).mark_bar().encode(
-            x=alt.X('total_facturado:Q', title='Total Facturado ($)'),
-            y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=['nombre_proveedor', alt.Tooltip('total_facturado:Q', format='$,.2f'), 'numero_facturas']
-        ).properties(height=400)
+        chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(x=alt.X('total_facturado:Q', title='Total Facturado ($)'), y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'), tooltip=['nombre_proveedor', alt.Tooltip('total_facturado:Q', format='$,.2f'), 'numero_facturas']).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
 # --- 8. PUNTO DE ENTRADA ---
