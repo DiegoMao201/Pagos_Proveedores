@@ -65,42 +65,54 @@ if master_df.empty:
     st.warning("🚨 No se pudieron cargar los datos. Asegúrate de haber ejecutado una sincronización en la página principal 'Dashboard General'.")
     st.stop()
 
-# --- 3. BARRA LATERAL Y FILTROS ---
+# --- 3. BARRA LATERAL Y FILTRO INTELIGENTE ---
 st.sidebar.header("Filtros de Análisis 🔎")
-proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
 
-default_provider = "PINTUCO COLOMBIA S.A.S"
-default_provider_index = 0
-if default_provider in proveedores_lista:
-    default_provider_index = proveedores_lista.index(default_provider)
+# Se calculan los proveedores que tienen deuda real
+proveedores_con_deuda = master_df.groupby('nombre_proveedor')['valor_total_erp'].sum()
+proveedores_activos = proveedores_con_deuda[proveedores_con_deuda > 0].index.tolist()
+proveedores_lista_filtrada = sorted(proveedores_activos)
 
+# Se añade la opción de consolidado
+opciones_filtro = ["TODOS (Vista Consolidada)"] + proveedores_lista_filtrada
+
+# Selección del proveedor
 selected_supplier = st.sidebar.selectbox(
     "Selecciona un Proveedor:",
-    proveedores_lista,
-    index=default_provider_index
+    opciones_filtro
 )
 
-supplier_df = master_df[master_df['nombre_proveedor'] == selected_supplier].copy()
+# --- 4. LÓGICA DE FILTRADO Y TÍTULO DINÁMICO ---
 
-# --- 4. TÍTULO PRINCIPAL Y BOTÓN DE DESCARGA ---
-st.title(f"🏢 Centro de Análisis: {selected_supplier}")
+# Se ajusta el DataFrame y el título según la selección
+if selected_supplier == "TODOS (Vista Consolidada)":
+    # Se usa el dataframe con todos los proveedores que tienen deuda
+    supplier_df = master_df[master_df['nombre_proveedor'].isin(proveedores_lista_filtrada)].copy()
+    titulo_pagina = "🏢 Centro de Análisis: Consolidado de Proveedores"
+    nombre_archivo = f"Reporte_Consolidado_{datetime.now().strftime('%Y%m%d')}.xlsx"
+else:
+    # Se filtra por el proveedor específico
+    supplier_df = master_df[master_df['nombre_proveedor'] == selected_supplier].copy()
+    titulo_pagina = f"🏢 Centro de Análisis: {selected_supplier}"
+    nombre_archivo = f"Reporte_{selected_supplier.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+
+st.title(titulo_pagina)
 
 if supplier_df.empty:
-    st.info(f"No se encontraron datos para el proveedor '{selected_supplier}'.")
+    st.info("No se encontraron datos para la selección actual.")
     st.stop()
 
-# Convertir DF a Excel para el botón de descarga
+# Botón de descarga con nombre de archivo dinámico
 excel_data = to_excel(supplier_df)
 st.download_button(
     label="📥 Descargar Reporte en Excel",
     data=excel_data,
-    file_name=f"Reporte_{selected_supplier.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+    file_name=nombre_archivo,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-
 # --- 5. ESTRUCTURA DE PESTAÑAS ---
-tab1, tab2, tab3 = st.tabs(["📊 Resumen Ejecutivo", "💰 Análisis Financiero", "📑 Detalle de Facturas"])
+tab1, tab2, tab3 = st.tabs(["📊 Resumen Ejecutivo", "💰 Diagnóstico Financiero Profundo", "📑 Detalle de Facturas"])
 
 with tab1:
     st.header("🧠 Sugerencias Inteligentes para Tesorería")
@@ -119,20 +131,19 @@ with tab1:
             st.subheader("💰 Maximizar Ahorro")
             if not descuentos_df.empty:
                 total_ahorro = descuentos_df['valor_descuento'].sum()
-                st.success(f"Oportunidad de ahorrar **{int(total_ahorro):,}**! Pagar estas facturas antes de su fecha límite:")
+                st.success(f"Oportunidad de ahorrar **${int(total_ahorro):,}**! Pagar estas facturas antes de su fecha límite:")
                 st.dataframe(
                     descuentos_df[['num_factura', 'valor_con_descuento', 'fecha_limite_descuento', 'valor_descuento']],
                     hide_index=True,
-                    width='stretch',
                     column_config={
                         "num_factura": "N° Factura",
-                        "valor_con_descuento": st.column_config.NumberColumn("Pagar", format="%d"),
+                        "valor_con_descuento": st.column_config.NumberColumn("Pagar", format="$ %d"),
                         "fecha_limite_descuento": st.column_config.DateColumn("Fecha Límite", format="YYYY-MM-DD"),
-                        "valor_descuento": st.column_config.NumberColumn("Ahorro", format="%d")
+                        "valor_descuento": st.column_config.NumberColumn("Ahorro", format="$ %d")
                     }
                 )
             else:
-                st.info("No hay descuentos por pronto pago activos para este proveedor.")
+                st.info("No hay descuentos por pronto pago activos para esta selección.")
 
     with s2:
         with st.container(border=True):
@@ -142,16 +153,15 @@ with tab1:
                 st.dataframe(
                     vencidas_df[['num_factura', 'valor_total_erp', 'fecha_vencimiento_erp', 'dias_para_vencer']],
                     hide_index=True,
-                    width='stretch',
                     column_config={
                         "num_factura": "N° Factura",
-                        "valor_total_erp": st.column_config.NumberColumn("Valor", format="%d"),
+                        "valor_total_erp": st.column_config.NumberColumn("Valor", format="$ %d"),
                         "fecha_vencimiento_erp": st.column_config.DateColumn("Venció", format="YYYY-MM-DD"),
                         "dias_para_vencer": st.column_config.NumberColumn("Días Vencida")
                     }
                 )
             else:
-                st.success("¡Excelente! No hay facturas vencidas con este proveedor.")
+                st.success("¡Excelente! No hay facturas vencidas en esta selección.")
     
     st.divider()
     st.header("📊 Resumen Financiero y Operativo")
@@ -163,82 +173,152 @@ with tab1:
     avg_plazo = supplier_df['plazo_dias'].mean()
 
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Deuda Total Actual", f"{int(total_deuda):,}", help="Suma de todas las facturas pendientes de pago en el ERP.")
-    kpi2.metric("Monto Vencido", f"{int(monto_vencido):,}", delta_color="inverse", help="Valor total de las facturas que ya pasaron su fecha de vencimiento.")
-    kpi3.metric("Ahorro Potencial", f"{int(descuento_potencial):,}", delta_color="off", help="Suma de todos los descuentos por pronto pago disponibles.")
+    kpi1.metric("Deuda Total Actual", f"${int(total_deuda):,}", help="Suma de todas las facturas pendientes de pago.")
+    kpi2.metric("Monto Vencido", f"${int(monto_vencido):,}", delta_color="inverse", help="Valor total de las facturas que ya pasaron su fecha de vencimiento.")
+    kpi3.metric("Ahorro Potencial", f"${int(descuento_potencial):,}", delta_color="off", help="Suma de todos los descuentos por pronto pago disponibles.")
     kpi4.metric("Plazo Promedio (Días)", f"{avg_plazo:.0f}" if pd.notna(avg_plazo) else "N/A", help="Días promedio entre la emisión y el vencimiento de las facturas.")
 
 
 with tab2:
-    st.header("📈 Análisis Histórico y Tendencias")
-    v1, v2 = st.columns([1, 2])
+    st.header("📈 Análisis de Antigüedad de Saldos (Aged Debt)")
 
-    with v1:
-        st.subheader("Estado de la Cartera")
-        pago_summary = supplier_df.groupby('estado_pago').agg(
-            numero_facturas=('num_factura', 'count'),
-            valor_total=('valor_total_erp', 'sum')
-        ).reset_index()
+    # --- Lógica de Antigüedad de Saldos ---
+    def categorize_age(days):
+        if days < 0:
+            if days <= -61: return "4. Vencida (+60 días)"
+            if days <= -31: return "3. Vencida (31-60 días)"
+            return "2. Vencida (1-30 días)"
+        return "1. Por Vencer"
 
-        pie_chart = alt.Chart(pago_summary).mark_arc(innerRadius=60).encode(
-            theta=alt.Theta(field="valor_total", type="quantitative", title="Valor Total"),
-            color=alt.Color(field="estado_pago", type="nominal", title="Estado",
-                            scale=alt.Scale(domain=['🔴 Vencida', '🟠 Por Vencer (7 días)', '🟢 Vigente'],
-                                            range=['#E74C3C', '#F39C12', '#2ECC71'])),
-            tooltip=[
-                alt.Tooltip('estado_pago', title='Estado'),
-                alt.Tooltip('numero_facturas', title='N° Facturas'),
-                alt.Tooltip('valor_total', title='Valor Total', format=',.0f')
-            ]
-        ).properties(title="Distribución de la Deuda por Estado")
-        st.altair_chart(pie_chart, use_container_width=True)
+    supplier_df['categoria_antiguedad'] = supplier_df['dias_para_vencer'].apply(categorize_age)
+    
+    aging_summary = supplier_df.groupby('categoria_antiguedad').agg(
+        valor_total=('valor_total_erp', 'sum'),
+        numero_facturas=('num_factura', 'count')
+    ).reset_index()
 
-    with v2:
-        st.subheader("Facturación Mensual")
-        chart_df = supplier_df.dropna(subset=['fecha_emision_erp']).copy()
-        chart_df['mes_emision'] = chart_df['fecha_emision_erp'].dt.to_period('M').astype(str)
+    total_deuda_tab2 = aging_summary['valor_total'].sum()
 
-        monthly_summary = chart_df.groupby('mes_emision').agg(
-            total_facturado=('valor_total_erp', 'sum'),
-            numero_facturas=('num_factura', 'count')
-        ).reset_index()
+    # --- Visualización Avanzada ---
+    st.markdown("Esta vista descompone la deuda total en bloques de tiempo para identificar riesgos y priorizar pagos.")
+    
+    kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+    
+    # Calcular % Vencido
+    monto_total_vencido = supplier_df[supplier_df['dias_para_vencer'] < 0]['valor_total_erp'].sum()
+    porc_vencido = (monto_total_vencido / total_deuda_tab2 * 100) if total_deuda_tab2 > 0 else 0
+    kpi_col1.metric("Porcentaje de Cartera Vencida", f"{porc_vencido:.1f}%")
 
-        base = alt.Chart(monthly_summary).encode(
-            x=alt.X('mes_emision:O', title='Mes de Emisión', axis=alt.Axis(labelAngle=-45))
-        )
-        bars = base.mark_bar().encode(
-            y=alt.Y('total_facturado:Q', title='Total Facturado', axis=alt.Axis(format=',.0f')),
-            tooltip=[
-                alt.Tooltip('mes_emision', title='Mes'),
-                alt.Tooltip('total_facturado', title='Total Facturado', format=',.0f'),
-                alt.Tooltip('numero_facturas', title='N° Facturas')
-            ]
-        )
-        st.altair_chart(bars.interactive(), use_container_width=True)
+    # Calcular Días Promedio de Vencimiento
+    df_vencidas_calc = supplier_df[supplier_df['dias_para_vencer'] < 0]
+    if not df_vencidas_calc.empty:
+        avg_days_overdue = abs(df_vencidas_calc['dias_para_vencer']).mean()
+        kpi_col2.metric("Días Promedio de Vencimiento", f"{avg_days_overdue:.0f} días")
+    else:
+        kpi_col2.metric("Días Promedio de Vencimiento", "0 días")
+        
+    # Calcular Factura más crítica
+    if not df_vencidas_calc.empty:
+        factura_critica = df_vencidas_calc.sort_values('dias_para_vencer', ascending=True).iloc[0]
+        kpi_col3.metric("Factura más Crítica (N°)", f"{factura_critica['num_factura']}", help=f"Vencida hace {abs(int(factura_critica['dias_para_vencer']))} días por un valor de ${int(factura_critica['valor_total_erp']):,}")
+    else:
+        kpi_col3.metric("Factura más Crítica (N°)", "N/A")
+
+
+    # Gráfico de Antigüedad
+    chart = alt.Chart(aging_summary).mark_bar().encode(
+        x=alt.X('valor_total:Q', title='Valor Total de la Deuda ($)', axis=alt.Axis(format='$,.0f')),
+        y=alt.Y('categoria_antiguedad:N', title='Categoría de Antigüedad', sort='descending'),
+        color=alt.Color('categoria_antiguedad:N', 
+            legend=None,
+            scale=alt.Scale(
+                domain=["1. Por Vencer", "2. Vencida (1-30 días)", "3. Vencida (31-60 días)", "4. Vencida (+60 días)"],
+                range=['#2ECC71', '#F39C12', '#E67E22', '#C0392B']
+            )
+        ),
+        tooltip=[
+            alt.Tooltip('categoria_antiguedad', title='Categoría'),
+            alt.Tooltip('valor_total', title='Valor Total', format='$,.0f'),
+            alt.Tooltip('numero_facturas', title='N° Facturas')
+        ]
+    ).properties(
+        title='Distribución de la Deuda por Antigüedad'
+    )
+    
+    text = chart.mark_text(
+        align='left',
+        baseline='middle',
+        dx=3,
+        expr="datum.valor_total / 1000000" # Muestra texto si el valor es > 0, para no sobrecargar
+    ).encode(
+        text=alt.Text('valor_total:Q', format='$,.1s') # Formato compacto (e.g., $1M, $500k)
+    )
+
+    st.altair_chart((chart + text).interactive(), use_container_width=True)
+
+    # --- Comentarios y Diagnóstico Automático ---
+    st.subheader("💡 Diagnóstico y Recomendaciones Automáticas")
+    with st.container(border=True):
+        # Encontrar la categoría con más dinero
+        categoria_max_valor = aging_summary.loc[aging_summary['valor_total'].idxmax()]
+        valor_max = categoria_max_valor['valor_total']
+        cat_max = categoria_max_valor['categoria_antiguedad']
+        porc_max = (valor_max / total_deuda_tab2) * 100 if total_deuda_tab2 > 0 else 0
+        
+        st.write(f"🔹 **Foco Principal**: La mayor concentración de la deuda, **${int(valor_max):,}** ({porc_max:.0f}%), se encuentra en la categoría **'{cat_max.split('. ')[1]}'**.")
+
+        # Analizar la cartera vencida
+        if monto_total_vencido > 0:
+            st.write(f"🔸 **Salud de la Cartera**: Un **{porc_vencido:.0f}%** de la deuda está vencida. Esto representa un total de **${int(monto_total_vencido):,}** que requiere atención.")
+            
+            # Revisar deuda muy antigua
+            deuda_muy_antigua_df = aging_summary[aging_summary['categoria_antiguedad'] == '4. Vencida (+60 días)']
+            if not deuda_muy_antigua_df.empty:
+                valor_muy_antiguo = deuda_muy_antigua_df['valor_total'].sum()
+                if valor_muy_antiguo > 0:
+                    porc_muy_antiguo = (valor_muy_antiguo / total_deuda_tab2) * 100
+                    st.error(f"🚨 **Alerta Crítica**: Hay **${int(valor_muy_antiguo):,}** ({porc_muy_antiguo:.0f}%) en facturas con más de 60 días de vencimiento. Esto representa un alto riesgo financiero y para la relación con el proveedor. **Acción inmediata es requerida.**")
+        else:
+            st.success("✅ **¡Felicitaciones!** Toda la cartera se encuentra al día. La gestión de pagos es excelente.")
+        
+        # Analizar oportunidades de descuento
+        if descuento_potencial > 0:
+             st.info(f"📈 **Oportunidad de Ahorro**: No olvides que tienes un potencial de ahorro de **${int(descuento_potencial):,}** por pronto pago. Revisa el 'Resumen Ejecutivo' para ver los detalles.")
+
 
 with tab3:
     st.header("📑 Detalle Completo de Facturas")
-    st.markdown("Explora, ordena y filtra todas las facturas registradas para este proveedor.")
+    st.markdown("Explora, ordena y filtra todas las facturas registradas para esta selección.")
     
     display_cols = [
         'num_factura', 'fecha_emision_erp', 'fecha_vencimiento_erp',
         'valor_total_erp', 'estado_pago', 'dias_para_vencer',
         'estado_conciliacion', 'estado_descuento', 'valor_descuento', 'fecha_limite_descuento'
     ]
+    # Si estamos en vista consolidada, mostrar el nombre del proveedor
+    if selected_supplier == "TODOS (Vista Consolidada)":
+        display_cols.insert(1, 'nombre_proveedor')
+
+    # Configuración de columnas base
+    column_config_base = {
+        "num_factura": st.column_config.TextColumn("N° Factura"),
+        "valor_total_erp": st.column_config.NumberColumn("Valor Original", format="$ %d"),
+        "fecha_emision_erp": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
+        "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+        "estado_pago": st.column_config.TextColumn("Estado Cartera"),
+        "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
+        "estado_conciliacion": st.column_config.TextColumn("Estado Conciliación"),
+        "estado_descuento": st.column_config.TextColumn("Descuento"),
+        "valor_descuento": st.column_config.NumberColumn("Ahorro Potencial", format="$ %d"),
+        "fecha_limite_descuento": st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
+    }
+    
+    # Añadir configuración para la columna de proveedor si es necesario
+    if selected_supplier == "TODOS (Vista Consolidada)":
+        column_config_base["nombre_proveedor"] = st.column_config.TextColumn("Proveedor")
+
     st.dataframe(
         supplier_df[display_cols],
-        width='stretch',
         hide_index=True,
-        column_config={
-            "num_factura": st.column_config.TextColumn("N° Factura"),
-            "valor_total_erp": st.column_config.NumberColumn("Valor Original", format="%d"),
-            "fecha_emision_erp": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-            "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
-            "estado_pago": st.column_config.TextColumn("Estado Cartera"),
-            "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
-            "estado_conciliacion": st.column_config.TextColumn("Estado Conciliación"),
-            "estado_descuento": st.column_config.TextColumn("Descuento"),
-            "valor_descuento": st.column_config.NumberColumn("Ahorro Potencial", format="%d"),
-            "fecha_limite_descuento": st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
-        }
+        column_config=column_config_base
     )
