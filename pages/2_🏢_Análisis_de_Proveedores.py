@@ -18,19 +18,36 @@ st.set_page_config(
 # --- FUNCIÓN DE UTILIDAD PARA DESCARGA DE EXCEL ---
 @st.cache_data
 def to_excel(df: pd.DataFrame) -> bytes:
-    """Convierte un DataFrame a un archivo Excel en memoria."""
+    """Convierte un DataFrame a un archivo Excel en memoria, manejando las zonas horarias."""
     output = io.BytesIO()
+    
+    # --- INICIO DE LA CORRECCIÓN (ValueError) ---
+    # Se crea una copia para no modificar el DataFrame original que usa la app.
+    df_export = df.copy()
+
+    # Se itera sobre cada columna del DataFrame a exportar.
+    for col in df_export.columns:
+        # Se comprueba si la columna es de tipo datetime y tiene información de zona horaria.
+        if pd.api.types.is_datetime64_any_dtype(df_export[col]) and df_export[col].dt.tz is not None:
+            # Si cumple, se elimina la información de la zona horaria.
+            # Esto convierte la fecha a "naive", que es compatible con Excel.
+            df_export[col] = df_export[col].dt.tz_localize(None)
+    # --- FIN DE LA CORRECCIÓN ---
+
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='DetalleProveedor')
+        # Se usa el DataFrame sin zonas horarias para la exportación.
+        df_export.to_excel(writer, index=False, sheet_name='DetalleProveedor')
+        
         # Auto-ajustar columnas
         worksheet = writer.sheets['DetalleProveedor']
-        for idx, col in enumerate(df):
-            series = df[col]
+        for idx, col in enumerate(df_export):
+            series = df_export[col]
             max_len = max((
                 series.astype(str).map(len).max(),
                 len(str(series.name))
             )) + 2
             worksheet.set_column(idx, idx, max_len)
+            
     processed_data = output.getvalue()
     return processed_data
 
