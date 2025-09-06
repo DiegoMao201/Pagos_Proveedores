@@ -215,25 +215,43 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
 # ======================================================================================
 # --- 5. LECTURA Y PROCESAMIENTO DE DATOS (ERP & CORREO) ---
 # ======================================================================================
-# **MEJORA**: Se elimina la función `robust_date_parser` que causaba el error.
-# La conversión de fechas se hará de forma vectorizada y más eficiente directamente
-# en las funciones de carga y procesamiento de datos.
 
+# --- CORRECCIÓN CLAVE ---
+# Esta nueva función es mucho más robusta para convertir diferentes formatos de
+# texto a números, que era la causa principal de tu problema.
 def clean_and_convert_numeric(value: Any) -> float:
     """
-    Limpia una cadena de texto que representa un número (formato colombiano) y la
-    convierte a float. Maneja valores nulos o no-string de forma segura.
+    Limpia una cadena de texto que representa un número y la convierte a float.
+    Maneja de forma inteligente formatos colombianos (ej: "1.234,56") y
+    estándar (ej: "1234.56").
+    Retorna np.nan si el valor no se puede convertir.
     """
-    if pd.isna(value) or not isinstance(value, str):
-        return 0.0
+    # Si el valor ya es numérico o es nulo/vacío, lo devuelve o convierte a nan.
+    if pd.isna(value) or value is None or value == '':
+        return np.nan
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return np.nan
+
+    # Normaliza la cadena de texto
+    cleaned_str = str(value).strip()
+    cleaned_str = cleaned_str.replace('$', '').strip()
+
     try:
-        # Elimina símbolos de moneda, espacios y puntos de miles
-        cleaned_str = re.sub(r'[$\s\.]', '', value)
-        # Reemplaza la coma decimal por un punto
-        cleaned_str = cleaned_str.replace(',', '.')
+        # Detecta el formato colombiano (punto como miles, coma como decimal)
+        if ',' in cleaned_str and '.' in cleaned_str:
+            # Elimina los puntos de miles y reemplaza la coma decimal
+            cleaned_str = cleaned_str.replace('.', '').replace(',', '.')
+        # Maneja el caso de solo coma decimal
+        elif ',' in cleaned_str:
+            cleaned_str = cleaned_str.replace(',', '.')
+        
+        # En este punto, la cadena debería estar en formato estándar (ej: "1234.56")
         return float(cleaned_str)
     except (ValueError, TypeError):
-        return 0.0
+        # Si la conversión falla, retorna nan (Not a Number)
+        return np.nan
 
 @st.cache_data(show_spinner="Descargando datos del ERP (Dropbox)...", ttl=900)
 def load_erp_data() -> pd.DataFrame:
@@ -260,11 +278,11 @@ def load_erp_data() -> pd.DataFrame:
 
         # --- Limpieza y transformación de datos ---
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].astype(str).str.strip().str.upper()
+        
+        # **APLICACIÓN DE LA CORRECCIÓN**: Usa la nueva función para convertir los valores
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
         
-        # **MEJORA CLAVE**: Conversión de fechas vectorizada y segura.
-        # `errors='coerce'` convierte fechas inválidas a NaT (Not a Time) sin fallar.
-        # `.dt.normalize()` elimina la parte de la hora, dejando solo la fecha.
+        # Conversión de fechas vectorizada y segura.
         df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.normalize()
         df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.normalize()
         
@@ -326,7 +344,7 @@ def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
             COL_PROVEEDOR_CORREO: supplier_name,
             COL_FECHA_EMISION_CORREO: issue_date,
             COL_FECHA_VENCIMIENTO_CORREO: due_date,
-            COL_VALOR_CORREO: total_value
+            COL_VALOR_CORREO: total_value # Se mantiene como texto para ser limpiado después
         }
     except (ET.ParseError, Exception):
         # Captura errores de parseo XML o cualquier otro error inesperado
@@ -409,11 +427,11 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
             if col not in email_df.columns:
                 email_df[col] = default_val
 
-        # Limpieza y conversión de tipos
+        # **APLICACIÓN DE LA CORRECCIÓN**: Usa la nueva función para convertir los valores del correo
         email_df[COL_VALOR_CORREO] = email_df[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
         email_df[COL_NUM_FACTURA] = email_df[COL_NUM_FACTURA].astype(str).str.strip().str.upper()
         
-        # **MEJORA CLAVE**: Conversión de fechas vectorizada y segura, igual que en el ERP.
+        # Conversión de fechas vectorizada y segura
         email_df[COL_FECHA_EMISION_CORREO] = pd.to_datetime(email_df[COL_FECHA_EMISION_CORREO], errors='coerce').dt.normalize()
         email_df[COL_FECHA_VENCIMIENTO_CORREO] = pd.to_datetime(email_df[COL_FECHA_VENCIMIENTO_CORREO], errors='coerce').dt.normalize()
         
@@ -424,10 +442,13 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df = pd.merge(erp_df, email_df, on=COL_NUM_FACTURA, how='outer', indicator=True)
     
     # --- Cálculo de Estados de Conciliación ---
+    # **MEJORA**: Condición más robusta para discrepancia, ignora si uno de los valores es nulo.
+    are_both_values_present = master_df[COL_VALOR_ERP].notna() & master_df[COL_VALOR_CORREO].notna()
+    
     conditions_conciliacion = [
         (master_df['_merge'] == 'right_only'),
         (master_df['_merge'] == 'left_only'),
-        (~np.isclose(master_df[COL_VALOR_ERP], master_df[COL_VALOR_CORREO], atol=1.0) & (master_df['_merge'] == 'both')),
+        (are_both_values_present & ~np.isclose(master_df[COL_VALOR_ERP], master_df[COL_VALOR_CORREO], atol=1.0) & (master_df['_merge'] == 'both')),
         (master_df['_merge'] == 'both')
     ]
     choices_conciliacion = ['📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
@@ -458,14 +479,7 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 
 def run_full_sync():
     """
-    Orquesta el proceso completo de sincronización de datos:
-    1. Conecta a Google Sheets.
-    2. Lee el historial de correos.
-    3. Busca nuevos correos.
-    4. Combina y actualiza la base de datos de correos.
-    5. Carga datos del ERP.
-    6. Procesa y reconcilia los datos.
-    7. Actualiza el reporte final en Google Sheets.
+    Orquesta el proceso completo de sincronización de datos.
     """
     with st.spinner('Iniciando sincronización completa...'):
         st.info("Paso 1/6: Conectando a servicios de Google...")
@@ -516,8 +530,7 @@ def run_full_sync():
 # ======================================================================================
 # --- 8. COMPONENTES DE LA INTERFAZ DE USUARIO (STREAMLIT) ---
 # ======================================================================================
-# **MEJORA**: Se divide la interfaz en funciones más pequeñas y manejables
-# para mejorar la legibilidad y mantenimiento del código.
+# La interfaz se divide en funciones para mayor claridad.
 
 def display_sidebar(master_df: pd.DataFrame):
     """Renderiza la barra lateral con el logo, botón de sincronización y filtros."""
@@ -555,6 +568,7 @@ def display_sidebar(master_df: pd.DataFrame):
             filtered_df = master_df[master_df['nombre_proveedor'].isin(selected_suppliers)]
             if len(date_range) == 2:
                 start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+                # Filtra de forma segura incluso con fechas nulas en la columna
                 filtered_df = filtered_df[
                     (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & 
                     (filtered_df[COL_FECHA_EMISION_ERP] <= end_date)
@@ -566,7 +580,7 @@ def display_dashboard(df: pd.DataFrame):
     st.header("📊 Resumen Financiero y de Gestión")
     c1, c2, c3, c4 = st.columns(4)
     
-    # Cálculos para las métricas
+    # Cálculos para las métricas (sum() ignora los NaN automáticamente)
     total_deuda = df.loc[df['estado_conciliacion'] != '📧 Solo en Correo', COL_VALOR_ERP].sum()
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
@@ -637,7 +651,7 @@ def display_dashboard(df: pd.DataFrame):
         st.subheader("Resumen del Estado de Conciliación")
         conc_summary = df.groupby('estado_conciliacion').agg(
             numero_facturas=(COL_NUM_FACTURA, 'count'),
-            valor_total=(COL_VALOR_ERP, 'sum')
+            valor_total=(COL_VALOR_ERP, 'sum') # Suma el valor del ERP que es la fuente principal
         ).reset_index()
         c1, c2 = st.columns([1, 2])
         with c1:
