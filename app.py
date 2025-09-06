@@ -317,7 +317,7 @@ def load_erp_data() -> pd.DataFrame:
         
         try:
             df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                     sep='{', header=None, names=column_names, engine='python')
+                                         sep='{', header=None, names=column_names, engine='python')
         except Exception as csv_error:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
@@ -548,7 +548,10 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    today = datetime.now(COLOMBIA_TZ).normalize()
+    # ### INICIO DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
+    # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    # ### FIN DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
     conditions_pago = [
@@ -612,7 +615,10 @@ def run_full_sync():
 
         if not email_df.empty:
             st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            email_df['fecha_lectura'] = datetime.now(COLOMBIA_TZ).normalize()
+            # ### INICIO DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
+            # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
+            email_df['fecha_lectura'] = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+            # ### FIN DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
             st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
             
             combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
