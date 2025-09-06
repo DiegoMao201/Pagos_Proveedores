@@ -214,7 +214,6 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         worksheet.clear()
         df_to_upload = df.copy()
 
-        ### INICIO DE LA CORRECCIÓN ###
         # Bucle robusto para convertir todas las columnas de fecha a texto.
         # Itera sobre las columnas del DataFrame y comprueba si su tipo es de fecha/hora.
         # Este método es más seguro que .select_dtypes().
@@ -222,7 +221,6 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
             if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
                 # Se aplica el formato estándar ISO 8601. Los valores NaT (Not a Time) se ignorarán.
                 df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-        ### FIN DE LA CORRECCIÓN ###
 
         # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
         # 'NaT' (de las fechas), 'None' y 'nan' (de los números) se convierten en celdas vacías.
@@ -292,15 +290,31 @@ def load_erp_data() -> pd.DataFrame:
         
         try:
             df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                 sep='{', header=None, names=column_names, engine='python')
+                                     sep='{', header=None, names=column_names, engine='python')
         except Exception as csv_error:
             st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
             return pd.DataFrame()
 
         # --- Limpieza y transformación de datos ---
-        df = df.dropna(subset=[COL_NUM_FACTURA, COL_PROVEEDOR_ERP])
-        df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
+        df.dropna(subset=[COL_PROVEEDOR_ERP, COL_VALOR_ERP], inplace=True)
+
+        ### INICIO DE LA CORRECCIÓN PARA NOTAS CRÉDITO ###
+        # Identificar notas crédito (valor negativo y sin num_factura)
+        credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | df[COL_NUM_FACTURA].str.strip() == '')
+        
+        # Generar un ID único para las notas crédito para que no sean descartadas
+        # Se usa 'NC' (Nota Crédito) + doc_erp + valor absoluto para crear un ID robusto
+        if credit_note_mask.any():
+            df.loc[credit_note_mask, COL_NUM_FACTURA] = 'NC-' + \
+                df.loc[credit_note_mask, 'doc_erp'].astype(str) + '-' + \
+                df.loc[credit_note_mask, COL_VALOR_ERP].abs().astype(int).astype(str)
+
+        # Ahora, se eliminan las filas que AÚN no tengan un número de factura (datos malformados)
+        df.dropna(subset=[COL_NUM_FACTURA], inplace=True)
+        ### FIN DE LA CORRECCIÓN ###
+
+        df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         
         # Se estandariza la conversión de fechas, asegurando la localización correcta.
         df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
@@ -491,27 +505,34 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
     master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
 
+    ### LÓGICA DE ESTADOS (INCLUYENDO NOTAS CRÉDITO) ###
+    is_credit_note_mask = (master_df[COL_VALOR_ERP] < 0)
+
+    # Lógica de Conciliación
     erp_vals = master_df[COL_VALOR_ERP].fillna(0)
     email_vals = master_df[COL_VALOR_CORREO].fillna(0)
     conditions_conciliacion = [
+        (is_credit_note_mask),
         (master_df['_merge'] == 'right_only'),
         (master_df['_merge'] == 'left_only'),
         (master_df[COL_VALOR_ERP].notna() & master_df[COL_VALOR_CORREO].notna() & ~np.isclose(erp_vals, email_vals, atol=1.0)),
         (master_df['_merge'] == 'both')
     ]
-    choices_conciliacion = ['📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
+    choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
+    # Lógica de Estado de Pago
     today = datetime.now(COLOMBIA_TZ)
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
     conditions_pago = [
+        (is_credit_note_mask),
         master_df['dias_para_vencer'] < 0,
         (master_df['dias_para_vencer'] >= 0) & (master_df['dias_para_vencer'] <= 7)
     ]
-    choices_pago = ["🔴 Vencida", "🟠 Por Vencer (7 días)"]
+    choices_pago = ["N/A (Nota Crédito)", "🔴 Vencida", "🟠 Por Vencer (7 días)"]
     master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
-    master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna(), 'Sin Fecha ERP', master_df['estado_pago'])
+    master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna() & ~is_credit_note_mask, 'Sin Fecha ERP', master_df['estado_pago'])
 
     master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
     master_df.drop(columns=['_merge'], inplace=True)
@@ -639,6 +660,7 @@ def display_dashboard(df: pd.DataFrame):
     st.header("📊 Resumen Financiero y de Gestión")
     c1, c2, c3, c4 = st.columns(4)
 
+    # El cálculo de la deuda total ahora resta automáticamente las notas crédito
     total_deuda = df.loc[df['estado_conciliacion'] != '📧 Solo en Correo', COL_VALOR_ERP].sum()
     monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
     por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
@@ -647,7 +669,7 @@ def display_dashboard(df: pd.DataFrame):
     c1.metric("Deuda Total (en ERP)", f"{int(total_deuda):,}")
     c2.metric("Monto Vencido", f"{int(monto_vencido):,}")
     c3.metric("Monto por Vencer (7 días)", f"{int(por_vencer_monto):,}")
-    c4.metric("Total Facturas Gestionadas", f"{len(df)}")
+    c4.metric("Total Documentos Gestionados", f"{len(df)}")
 
     st.divider()
     
@@ -669,11 +691,13 @@ def display_dashboard(df: pd.DataFrame):
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # SE AÑADE LA NUEVA PESTAÑA PARA NOTAS CRÉDITO
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📑 Explorador de Datos", 
         "🏢 Análisis de Proveedores", 
         "⚙️ Estado de Conciliación",
-        "💡 Descuentos y Pagos"
+        "💡 Descuentos y Pagos",
+        "📝 Notas Crédito Pendientes"
     ])
 
     with tab1:
@@ -692,27 +716,27 @@ def display_dashboard(df: pd.DataFrame):
         st.subheader("Análisis por Proveedor")
         provider_summary = df.groupby('nombre_proveedor').agg(
             total_facturado=(COL_VALOR_ERP, 'sum'),
-            numero_facturas=(COL_NUM_FACTURA, 'count'),
+            numero_documentos=(COL_NUM_FACTURA, 'count'),
             monto_vencido=(COL_VALOR_ERP, lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
         ).reset_index().sort_values('total_facturado', ascending=False)
         st.dataframe(provider_summary, use_container_width=True, hide_index=True,
             column_config={
-                "total_facturado": st.column_config.NumberColumn("Total Facturado", format="%d"),
+                "total_facturado": st.column_config.NumberColumn("Saldo Neto (Facturas - NC)", format="%d"),
                 "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="%d")
             })
         
-        st.markdown("##### Top 15 Proveedores por Monto Facturado")
+        st.markdown("##### Top 15 Proveedores por Saldo Neto")
         chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
-            x=alt.X('total_facturado:Q', title='Total Facturado'),
+            x=alt.X('total_facturado:Q', title='Saldo Neto'),
             y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Facturado', format=',.0f'), 'numero_facturas']
+            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Saldo', format=',.0f'), 'numero_documentos']
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
 
     with tab3:
         st.subheader("Resumen del Estado de Conciliación")
         conc_summary = df.groupby('estado_conciliacion').agg(
-            numero_facturas=(COL_NUM_FACTURA, 'count'),
+            numero_documentos=(COL_NUM_FACTURA, 'count'),
             valor_total=(COL_VALOR_ERP, 'sum')
         ).reset_index()
         c1, c2 = st.columns([1, 2])
@@ -721,10 +745,10 @@ def display_dashboard(df: pd.DataFrame):
                 column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="%d")})
         with c2:
             pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
-                theta=alt.Theta(field="numero_facturas", type="quantitative"),
+                theta=alt.Theta(field="numero_documentos", type="quantitative"),
                 color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"),
-                tooltip=['estado_conciliacion', 'numero_facturas', alt.Tooltip('valor_total:Q', title='Valor', format=',.0f')]
-            ).properties(title="Distribución de Facturas por Estado")
+                tooltip=['estado_conciliacion', 'numero_documentos', alt.Tooltip('valor_total:Q', title='Valor', format=',.0f')]
+            ).properties(title="Distribución de Documentos por Estado")
             st.altair_chart(pie_chart, use_container_width=True)
             
     with tab4:
@@ -787,6 +811,35 @@ def display_dashboard(df: pd.DataFrame):
                         'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
                     }
                 )
+
+    # NUEVO CONTENIDO DE LA PESTAÑA DE NOTAS CRÉDITO
+    with tab5:
+        st.subheader("Notas Crédito Pendientes de Aplicar")
+        st.info("Aquí se listan todas las notas crédito registradas en el ERP que están pendientes por cruzar. Estos valores ya se descuentan de la 'Deuda Total'.")
+        
+        credit_notes_df = df[df['estado_conciliacion'] == '📝 Nota Crédito ERP'].copy()
+        
+        if credit_notes_df.empty:
+            st.success("No hay notas crédito pendientes en la selección de datos actual.")
+        else:
+            display_cols_nc = [
+                'nombre_proveedor',
+                COL_FECHA_EMISION_ERP,
+                'doc_erp',
+                COL_VALOR_ERP,
+                'serie'
+            ]
+            st.dataframe(
+                credit_notes_df[display_cols_nc].sort_values(COL_FECHA_EMISION_ERP, ascending=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    COL_VALOR_ERP: st.column_config.NumberColumn("Valor Nota Crédito", format="%d"),
+                    COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Fecha Emisión", format="YYYY-MM-DD"),
+                    "doc_erp": "Documento ERP",
+                    "serie": "Serie"
+                }
+            )
 
 # ======================================================================================
 # --- 9. APLICACIÓN PRINCIPAL (PUNTO DE ENTRADA) ---
