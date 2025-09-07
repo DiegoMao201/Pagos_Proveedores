@@ -1,12 +1,11 @@
 # pages/2_🧠_Centro_de_Pagos.py
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.0 - Módulo Gerencia).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.1 - Módulo Gerencia con Diagnóstico).
 
 Este módulo es utilizado por Gerencia para crear lotes de pago a partir de
-facturas que están en estado 'Pendiente'. Una vez un lote es creado, las
-facturas pasan al estado 'En Lote de Pago' y desaparecen de esta vista,
-pasando al módulo de Tesorería para su procesamiento final.
+facturas que están en estado 'Pendiente'. Incluye un panel de diagnóstico
+para verificar la carga de datos.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -20,7 +19,7 @@ import gspread
 import urllib.parse
 import pytz
 
-# Se importa desde el archivo utils.py que ya existe en tu proyecto.
+# Se importa desde el archivo utils.py ya actualizado.
 from common.utils import connect_to_google_sheets, load_data_from_gsheet
 
 # --- 1. CONFIGURACIÓN DE PÁGINA Y CONSTANTES ---
@@ -34,7 +33,7 @@ st.set_page_config(
 GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 
-# --- 2. FUNCIONES AUXILIARES ---
+# --- 2. FUNCIONES AUXILIARES (sin cambios) ---
 def to_excel(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -44,23 +43,24 @@ def to_excel(df: pd.DataFrame) -> bytes:
 def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas_seleccionadas: pd.DataFrame):
     try:
         spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
-        # 1. Guardar en historial
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         headers = historial_ws.row_values(1)
         valores_fila = [lote_info.get(col) for col in headers]
         historial_ws.append_row(valores_fila)
 
-        # 2. Actualizar reporte principal
         reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        reporte_df = pd.DataFrame(reporte_ws.get_all_records())
+        # Usamos get_all_values para evitar problemas de tipos con get_all_records
+        reporte_data = reporte_ws.get_all_values()
+        reporte_headers_list = reporte_data[0]
+        reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
+        
         reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce')
         facturas_seleccionadas['valor_total_erp'] = pd.to_numeric(facturas_seleccionadas['valor_total_erp'], errors='coerce')
 
-        reporte_headers = reporte_ws.row_values(1)
         try:
-            estado_col_idx = reporte_headers.index('estado_factura') + 1
-            lote_col_idx = reporte_headers.index('id_lote_pago') + 1
-            id_unico_col_idx = reporte_headers.index('id_factura_unico') + 1
+            estado_col_idx = reporte_headers_list.index('estado_factura') + 1
+            lote_col_idx = reporte_headers_list.index('id_lote_pago') + 1
+            id_unico_col_idx = reporte_headers_list.index('id_factura_unico') + 1
         except ValueError as e:
             error_col = str(e).split("'")[1]
             st.error(f"Error Crítico: La columna '{error_col}' no existe en '{GSHEET_REPORT_NAME}'.")
@@ -71,7 +71,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
             match = reporte_df[
                 (reporte_df['nombre_proveedor'] == factura_a_actualizar['nombre_proveedor']) &
                 (reporte_df['num_factura'] == factura_a_actualizar['num_factura']) &
-                (np.isclose(reporte_df['valor_total_erp'], factura_a_actualizar['valor_total_erp']))
+                (np.isclose(reporte_df['valor_total_erp'].fillna(0), factura_a_actualizar['valor_total_erp']))
             ]
             if not match.empty:
                 row_index_to_update = match.index[0] + 2
@@ -115,29 +115,56 @@ except Exception as e:
     st.error(f"No se pudo conectar o cargar datos desde Google Sheets. Error: {e}")
     st.stop()
 
+# --- 4. PANEL DE DIAGNÓSTICO DE DATOS ---
+st.divider()
+with st.expander("🩺 Diagnóstico de Datos Cargados"):
+    if df_full.empty:
+        st.error("No se cargó ningún dato desde Google Sheets.")
+    else:
+        st.info(f"Se cargaron un total de **{len(df_full)}** facturas desde la hoja '{GSHEET_REPORT_NAME}'.")
+        
+        # Muestra un resumen de los estados encontrados
+        st.markdown("#### Conteo de facturas por estado:")
+        estado_counts = df_full['estado_factura'].value_counts()
+        st.dataframe(estado_counts)
+
+        if 'Pendiente' not in estado_counts:
+            st.warning("¡Atención! No se encontró ninguna factura con el estado 'Pendiente'. El planificador estará vacío.")
+        else:
+            st.success(f"Se encontraron **{estado_counts['Pendiente']}** facturas 'Pendiente' para gestionar.")
+st.divider()
+# --- FIN DEL PANEL DE DIAGNÓSTICO ---
+
+
 if df_full.empty:
     st.warning(f"No hay datos en '{GSHEET_REPORT_NAME}'. Ejecuta una sincronización en el 'Dashboard General'.")
     st.stop()
 
-# --- 4. PRE-PROCESAMIENTO Y SEGMENTACIÓN DE DATOS ---
-# !! CAMBIO CLAVE: AHORA SOLO SE TRABAJA CON FACTURAS EN ESTADO 'Pendiente' !!
+# --- 5. PRE-PROCESAMIENTO Y SEGMENTACIÓN DE DATOS ---
+df_full['id_factura_unico'] = df_full.apply(
+    lambda row: f"{row.get('nombre_proveedor', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', '')}",
+    axis=1
+).str.replace(r'[\s/]+', '-', regex=True)
+
+# El filtro clave ahora funciona gracias a la limpieza en utils.py
 df_pendientes_full = df_full[df_full['estado_factura'] == 'Pendiente'].copy()
 
-# El resto de la lógica de segmentación permanece igual, pero parte de una base ya filtrada
 df_notas_credito = df_pendientes_full[df_pendientes_full['valor_total_erp'] < 0].copy()
-df_vencidas = df_pendientes_full[(df_pendientes_full['estado_pago'] == '🔴 Vencida') & (df_pendientes_full['valor_total_erp'] >= 0)].copy()
-df_para_pagar = df_pendientes_full[(df_pendientes_full['valor_total_erp'] >= 0) & (df_pendientes_full['estado_pago'].isin(['🟢 Vigente', '🟠 Por Vencer (7 días)']))].copy()
+df_vencidas = df_pendientes_full[(df_pendientes_full.get('estado_pago') == '🔴 Vencida') & (df_pendientes_full['valor_total_erp'] >= 0)].copy()
+df_para_pagar = df_pendientes_full[(df_pendientes_full['valor_total_erp'] >= 0) & (df_pendientes_full.get('estado_pago', pd.Series(dtype=str)).isin(['🟢 Vigente', '🟠 Por Vencer (7 días)']))].copy()
 
-# --- 5. BARRA LATERAL (SIDEBAR) ---
+
+# --- 6. BARRA LATERAL (SIDEBAR) ---
 st.sidebar.header("⚙️ Filtros y Sugerencias")
 st.sidebar.info("Los filtros y el motor de sugerencias se aplican únicamente a la pestaña 'Plan de Pagos'.")
+# (El resto del código de la barra lateral y las pestañas permanece igual)
 proveedores_lista = sorted(df_para_pagar['nombre_proveedor'].dropna().unique().tolist())
 selected_suppliers = st.sidebar.multiselect("Filtrar por Proveedor:", proveedores_lista)
-estado_pago_lista = df_para_pagar['estado_pago'].unique().tolist()
+estado_pago_lista = df_para_pagar.get('estado_pago', pd.Series(dtype=str)).unique().tolist()
 selected_status = st.sidebar.multiselect("Filtrar por Estado de Pago:", estado_pago_lista, default=estado_pago_lista)
 df_pagar_filtrado = df_para_pagar.copy()
 if selected_suppliers: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['nombre_proveedor'].isin(selected_suppliers)]
-if selected_status: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['estado_pago'].isin(selected_status)]
+if selected_status and 'estado_pago' in df_pagar_filtrado.columns: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['estado_pago'].isin(selected_status)]
 st.sidebar.divider()
 st.sidebar.subheader("🤖 Motor de Sugerencias")
 presupuesto = st.sidebar.number_input("Ingresa tu Presupuesto de Pago:", min_value=0.0, value=20000000.0, step=1000000.0)
@@ -147,19 +174,14 @@ if st.sidebar.button("💡 Generar Sugerencia", type="primary"):
     if ids_sugeridos: st.session_state['sugerencia_ids'] = ids_sugeridos
     else: st.session_state.pop('sugerencia_ids', None)
 
-# --- 6. CUERPO PRINCIPAL CON PESTAÑAS ---
+# --- 7. CUERPO PRINCIPAL CON PESTAÑAS ---
 tab_pagos, tab_credito, tab_vencidas = st.tabs([
     f"✅ Plan de Pagos ({len(df_para_pagar)})",
     f"📝 Gestión de Notas Crédito ({len(df_notas_credito)})",
     f"🚨 Gestión de Facturas Críticas ({len(df_vencidas)})"
 ])
 
-# El resto del código de esta página (las pestañas) permanece idéntico al que ya tenías,
-# ya que su lógica de creación de lotes es correcta. Se omite por brevedad pero debe
-# permanecer en tu archivo tal como estaba en la versión 2.2.
-# ... (Pegar aquí todo el código de las pestañas de la versión anterior)
-
-# (A continuación se pega el código de las pestañas para que lo tengas completo)
+# (Pega aquí el código completo de las pestañas que ya tenías, no necesita cambios)
 with tab_pagos:
     st.header("1. Selección de Facturas para el Plan de Pago")
     st.markdown("Marca las facturas que deseas incluir. Usa el **Motor de Sugerencias** en la barra lateral para una pre-selección inteligente.")
