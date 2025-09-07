@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.7 - Módulo Gerencia).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.9 - Módulo Gerencia).
 
 Este módulo permite a Gerencia crear lotes de pago tanto para facturas
 vigentes como para facturas críticas (vencidas), con notificaciones directas
-a Tesorería. Lógica de sesión mejorada y corrección para manejar columnas duplicadas.
-Utiliza la lógica de carga de datos robusta de utils.py.
+a Tesorería. Se corrige la lógica de guardado para buscar facturas por
+múltiples campos, evitando depender de un ID único preexistente y resolviendo
+errores de reindexación.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -133,17 +134,24 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         # 2. Actualizar el reporte principal
         reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
         reporte_data = reporte_ws.get_all_values()
+        if len(reporte_data) < 2:
+            st.error("La hoja de reporte está vacía. No se pueden actualizar las facturas.")
+            return False, "Hoja de reporte vacía."
+
         reporte_headers_list = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
-        
         reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
-        
+
+        # --- INICIO DE LA CORRECCIÓN ---
+        # Limpieza robusta del DataFrame leído directamente para evitar errores de reindexación
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
 
         if 'nombre_proveedor_erp' in reporte_df.columns:
             reporte_df.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
 
-        reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce')
-        facturas_seleccionadas['valor_total_erp'] = pd.to_numeric(facturas_seleccionadas['valor_total_erp'], errors='coerce')
+        # Asegurar que las columnas clave para la búsqueda tengan el tipo de dato correcto
+        reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce').fillna(0)
+        reporte_df['nombre_proveedor'] = reporte_df.get('nombre_proveedor', pd.Series(dtype=str)).astype(str).str.strip()
+        reporte_df['num_factura'] = reporte_df.get('num_factura', pd.Series(dtype=str)).astype(str).str.strip()
 
         try:
             estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
@@ -155,18 +163,21 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
 
         updates = []
         for _, factura_a_actualizar in facturas_seleccionadas.iterrows():
+            # Búsqueda por múltiples campos para encontrar la fila correcta
             match = reporte_df[
-                (reporte_df['nombre_proveedor'] == factura_a_actualizar['nombre_proveedor']) &
-                (reporte_df['num_factura'] == factura_a_actualizar['num_factura']) &
-                (np.isclose(reporte_df['valor_total_erp'].fillna(0), factura_a_actualizar['valor_total_erp']))
+                (reporte_df['nombre_proveedor'] == str(factura_a_actualizar['nombre_proveedor']).strip()) &
+                (reporte_df['num_factura'] == str(factura_a_actualizar['num_factura']).strip()) &
+                (np.isclose(reporte_df['valor_total_erp'], float(factura_a_actualizar['valor_total_erp'])))
             ]
             
             if not match.empty:
-                row_index_to_update = match.index[0] + 2
+                # Si hay múltiples coincidencias, toma la primera.
+                row_index_to_update = match.index[0] + 2 # +2 por el encabezado y el índice base 0
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, estado_col_idx), 'values': [['En Lote de Pago']]})
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
             else:
-                st.warning(f"No se encontró coincidencia para factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'.")
+                st.warning(f"No se encontró coincidencia para factura '{factura_a_actualizar['num_factura']}' de '{factura_a_actualizar['nombre_proveedor']}'. No se actualizará.")
+        # --- FIN DE LA CORRECCIÓN ---
         
         if updates:
             reporte_ws.batch_update(updates)
