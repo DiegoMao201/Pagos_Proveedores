@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.7 - Definitiva).
+Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.8 - Mejorada).
 
 Este módulo es una herramienta de análisis gerencial diseñada para:
 1.  Sincronizar de forma independiente e inteligente todas las facturas de PINTUCO,
@@ -10,16 +10,14 @@ Este módulo es una herramienta de análisis gerencial diseñada para:
 4.  Almacenar un historial completo en una pestaña dedicada dentro del libro principal.
 5.  Calcular y visualizar en tiempo real el progreso del acuerdo de rebate.
 
-Mejoras en v1.7:
-- **Análisis de XML Avanzado:** La función de parsing ahora maneja la estructura de
-  'AttachedDocument' que contiene la 'Invoice' real dentro de un CDATA, basado en la
-  muestra proporcionada.
-- **Mapeo de Alias de Proveedor:** Se utiliza una lista de nombres conocidos para Pintuco
-  ("PINTUCO", "COMPANIA GLOBAL DE PINTURAS") para asegurar la captura de todas las facturas.
-- **Corrección Definitiva de `KeyError`:** La lógica de sincronización es ahora
-  completamente robusta frente al escenario de no encontrar facturas nuevas.
-- **Sincronización Incremental Optimizada:** Se mantiene la lógica de buscar solo los
-  correos más recientes para garantizar una alta velocidad en sincronizaciones subsecuentes.
+Mejoras en v1.8:
+- **Flujo de Sincronización Mejorado:** Se garantiza la correcta consolidación de datos
+  históricos y nuevos, eliminando redundancias y asegurando que los datos se escriban.
+- **Manejo de Errores Más Robusto:** La lógica de manejo de errores ha sido refinada
+  para ofrecer mensajes más claros al usuario.
+- **Eficiencia en la Sincronización:** Se optimiza la actualización de la hoja de Google
+  Sheets para asegurar que todos los datos, incluso si no hay facturas nuevas,
+  se procesen y se actualice el estado de pago.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -112,7 +110,11 @@ def update_gsheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame):
         df_to_upload = df.copy()
         for col in df_to_upload.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, America/Bogota]']).columns:
             df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d')
+        
+        # Asegurarse de que todas las columnas son strings para la carga
         df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
+        
+        # Limpiar y actualizar la hoja
         worksheet.clear()
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist(), 'A1')
         return True
@@ -125,7 +127,7 @@ def normalize_invoice_number(inv_num: any) -> str:
 
 def clean_and_convert_numeric(value: any) -> float:
     if pd.isna(value) or value is None: return np.nan
-    cleaned_str = str(value).strip().replace('$', '').replace(',', '.')
+    cleaned_str = str(value).strip().replace('$', '').replace(',', '')  # Corregido para quitar la coma
     try: return float(cleaned_str)
     except (ValueError, TypeError): return np.nan
 
@@ -150,35 +152,29 @@ def load_pending_documents_from_dropbox() -> set:
 
 def parse_invoice_xml(xml_content: str) -> dict or None:
     try:
-        # Define namespaces para buscar en el XML
         ns = {'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2", 'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"}
-        
-        # Limpia el contenido XML de caracteres extraños al inicio
         xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
         root = ET.fromstring(xml_content.encode('utf-8'))
-        
-        # La factura real está dentro de un CDATA en el nodo Description
         description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
         if description_node is not None and description_node.text and '<Invoice' in description_node.text:
             inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
             invoice_root = ET.fromstring(inner_xml_text.encode('utf-8'))
         else:
-            # Si no está anidado, el root principal es la factura
             invoice_root = root
-
         supplier_name_node = invoice_root.find('.//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', ns)
         if supplier_name_node is None: return None
         supplier_name = supplier_name_node.text.strip()
-        
-        # **MEJORA CLAVE**: Usa la lista de alias para identificar al proveedor
         if not any(alias in supplier_name.upper() for alias in PINTUCO_ALIASES):
             return None
-
-        invoice_number = invoice_root.find('./cbc:ID', ns).text.strip()
-        issue_date = invoice_root.find('./cbc:IssueDate', ns).text.strip()
+        invoice_number_node = invoice_root.find('./cbc:ID', ns)
+        issue_date_node = invoice_root.find('./cbc:IssueDate', ns)
         net_value_node = invoice_root.find('.//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount', ns)
-        if net_value_node is None: net_value_node = invoice_root.find('.//cac:LegalMonetaryTotal/cbc:LineExtensionAmount', ns)
-        if net_value_node is None: return None
+        
+        if invoice_number_node is None or issue_date_node is None or net_value_node is None:
+            return None
+            
+        invoice_number = invoice_number_node.text.strip()
+        issue_date = issue_date_node.text.strip()
         
         return {
             "Fecha_Factura": issue_date,
@@ -190,7 +186,6 @@ def parse_invoice_xml(xml_content: str) -> dict or None:
         return None
 
 def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
-    # (Esta función no necesita cambios, su lógica interna es correcta)
     invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -231,52 +226,63 @@ def run_pintuco_sync():
         
         st.info("Paso 2/4: Conectando a Google Sheets para optimizar búsqueda...")
         gs_client = connect_to_google_sheets()
-        if not gs_client: st.error("Sincronización cancelada. No se pudo conectar a Google."); st.stop()
+        if not gs_client:
+            st.error("Sincronización cancelada. No se pudo conectar a Google.")
+            st.stop()
         worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
+        
+        historical_df = pd.DataFrame()
+        start_date = INITIAL_START_DATE_SYNC
         
         try:
             records = worksheet.get_all_records()
-            if not records:
-                historical_df = pd.DataFrame()
-                start_date = INITIAL_START_DATE_SYNC
-            else:
+            if records:
                 historical_df = pd.DataFrame(records)
                 historical_df['Fecha_Factura'] = pd.to_datetime(historical_df['Fecha_Factura'])
                 last_sync_date = historical_df['Fecha_Factura'].max().date()
-                start_date = last_sync_date - timedelta(days=3) # Margen de seguridad de 3 días
-        except Exception:
-            historical_df = pd.DataFrame()
-            start_date = INITIAL_START_DATE_SYNC
+                start_date = last_sync_date - timedelta(days=3) # Margen de seguridad
+        except Exception as e:
+            st.warning(f"No se pudieron cargar datos históricos de Google Sheets. Sincronizando desde el inicio. Error: {e}")
 
         st.info(f"Paso 3/4: Buscando facturas en el correo desde {start_date.strftime('%Y-%m-%d')}...")
         new_invoices_df = fetch_pintuco_invoices_from_email(start_date)
 
-        if new_invoices_df.empty:
-            st.success("No se encontraron **nuevas** facturas de Pintuco en el correo.")
-            if not historical_df.empty:
-                st.info("Actualizando estado de pago de documentos existentes...")
-                historical_df['Estado_Pago'] = historical_df['Numero_Factura'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
-                update_gsheet_from_df(worksheet, historical_df)
-            st.session_state['last_pintuco_sync'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
-            return
-
-        st.info(f"Paso 4/4: Se encontraron {len(new_invoices_df)} facturas nuevas. Consolidando y guardando...")
-        new_invoices_df['Fecha_Factura'] = pd.to_datetime(new_invoices_df['Fecha_Factura'])
-        new_invoices_df['Valor_Neto'] = pd.to_numeric(new_invoices_df['Valor_Neto'])
-        
-        if not historical_df.empty:
-             historical_df['Valor_Neto'] = pd.to_numeric(historical_df['Valor_Neto'])
-        
-        combined_df = pd.concat([historical_df, new_invoices_df]).drop_duplicates(subset=['Numero_Factura'], keep='last')
-        combined_df['Estado_Pago'] = combined_df['Numero_Factura'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
-        
-        if update_gsheet_from_df(worksheet, combined_df.sort_values(by="Fecha_Factura")):
-            st.success("✅ ¡Base de datos de Pintuco actualizada exitosamente!")
+        combined_df = historical_df.copy()
+        if not new_invoices_df.empty:
+            new_invoices_df['Fecha_Factura'] = pd.to_datetime(new_invoices_df['Fecha_Factura'])
+            new_invoices_df['Valor_Neto'] = pd.to_numeric(new_invoices_df['Valor_Neto'])
+            
+            # Combinar datos históricos y nuevos, eliminando duplicados
+            combined_df = pd.concat([historical_df, new_invoices_df], ignore_index=True)
+            combined_df.drop_duplicates(subset=['Numero_Factura'], keep='last', inplace=True)
+            
+            st.info(f"Se encontraron y consolidaron {len(new_invoices_df)} facturas nuevas.")
         else:
-            st.error("Falló la actualización en Google Sheets.")
+            st.success("No se encontraron **nuevas** facturas de Pintuco en el correo.")
         
+        if not combined_df.empty:
+            st.info("Paso 4/4: Actualizando estado de pago y guardando en Google Sheets...")
+            # Normalizar números de factura para la comparación
+            combined_df['Numero_Factura_Normalized'] = combined_df['Numero_Factura'].apply(normalize_invoice_number)
+            
+            # Actualizar el estado de pago
+            combined_df['Estado_Pago'] = combined_df['Numero_Factura_Normalized'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
+            combined_df.drop(columns=['Numero_Factura_Normalized'], inplace=True) # Eliminar columna auxiliar
+            
+            # Asegurarse de que el orden de las columnas sea consistente
+            final_columns = ["Fecha_Factura", "Numero_Factura", "Valor_Neto", "Proveedor_Correo", "Estado_Pago"]
+            combined_df = combined_df.reindex(columns=final_columns)
+            
+            if update_gsheet_from_df(worksheet, combined_df.sort_values(by="Fecha_Factura")):
+                st.success("✅ ¡Base de datos de Pintuco actualizada exitosamente!")
+            else:
+                st.error("❌ Falló la actualización en Google Sheets.")
+        else:
+            st.warning("No hay documentos para subir a la hoja de cálculo. La base de datos está vacía.")
+            
         st.session_state['last_pintuco_sync'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
         st.balloons()
+
 
 # --- 5. LÓGICA DE CÁLCULO Y VISUALIZACIÓN ---
 @st.cache_data(ttl=300)
@@ -297,6 +303,8 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty: return pd.DataFrame()
     df = df.copy(); df['Mes'] = df['Fecha_Factura'].dt.month
     summary_data = []
+    
+    # Cálculos de Estacionalidad por Mes
     for month in range(7, 13):
         monthly_df = df[df['Mes'] == month]
         total_month_purchase = monthly_df['Valor_Neto'].sum()
@@ -308,6 +316,8 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
                 if total_month_purchase >= meta_est.get("Escala 2", float('inf')): rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 2", 0)
                 elif total_month_purchase >= meta_est.get("Escala 1", float('inf')): rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 1", 0)
         summary_data.append({"Período": f"Mes {month} (Estacionalidad)", "Meta": 0, "Compra Real": total_month_purchase, "Rebate Calculado": rebate_estacionalidad, "Tipo": "Estacionalidad"})
+    
+    # Cálculos de Volumen por Período
     period_map = { "Julio-Agosto": [7, 8], "Agosto-Sept.": [8, 9], "3er Trimestre (3Q)": [7, 8, 9], "Octubre-Nov.": [10, 11], "Noviembre-Dic.": [11, 12], "4to Trimestre (4Q)": [10, 11, 12], "2do Semestre (2Sem)": list(range(7, 13)) }
     for period, months in period_map.items():
         period_df = df[df['Mes'].isin(months)]
@@ -320,6 +330,7 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
         if "Q" in period:
             rebate_profundidad = total_period_purchase * 0.01
             summary_data.append({"Período": period, "Meta": 0, "Compra Real": total_period_purchase, "Rebate Calculado": rebate_profundidad, "Tipo": "Profundidad"})
+    
     return pd.DataFrame(summary_data)
 
 # --- 6. APLICACIÓN PRINCIPAL (STREAMLIT UI) ---
@@ -334,6 +345,7 @@ if st.button("🔄 Sincronizar Facturas de Pintuco", type="primary"):
 
 if 'last_pintuco_sync' in st.session_state:
     st.success(f"Última sincronización de Pintuco: {st.session_state.last_pintuco_sync}")
+    
 pintuco_df = load_pintuco_data_from_gsheet()
 if pintuco_df.empty:
     st.warning("No hay datos de Pintuco para analizar. Realiza la primera sincronización.")
