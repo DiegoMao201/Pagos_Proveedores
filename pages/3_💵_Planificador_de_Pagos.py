@@ -135,8 +135,17 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         
         # 1. Guardar en el historial de lotes
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
-        headers = historial_ws.row_values(1)
-        valores_fila = [lote_info.get(col) for col in headers]
+        
+        # --- INICIO DE LA CORRECCIÓN ---
+        # Se leen los encabezados reales de la hoja para asegurar el orden correcto.
+        raw_headers = historial_ws.row_values(1)
+        # Se normalizan los encabezados (minúsculas, sin espacios) para que coincidan con las claves del diccionario 'lote_info'.
+        normalized_headers = [str(h).strip().lower().replace(' ', '_') for h in raw_headers]
+        # Se construye la fila de valores en el orden exacto de los encabezados de la hoja.
+        # lote_info.get(col, None) busca la clave correspondiente; si no la encuentra, inserta un valor vacío.
+        valores_fila = [lote_info.get(col, None) for col in normalized_headers]
+        # --- FIN DE LA CORRECCIÓN ---
+        
         historial_ws.append_row(valores_fila)
 
         # 2. Actualizar el reporte principal
