@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.9 - Módulo Gerencia).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 4.0 - Módulo Gerencia).
 
 Este módulo permite a Gerencia crear lotes de pago tanto para facturas
 vigentes como para facturas críticas (vencidas), con notificaciones directas
-a Tesorería. Se corrige la lógica de guardado para buscar facturas por
-múltiples campos, evitando depender de un ID único preexistente y resolviendo
-errores de reindexación.
+a Tesorería. Se ha mejorado la lógica de guardado para manejar de forma robusta
+columnas duplicadas en el origen de datos, evitando errores de tipo.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -138,20 +137,22 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
             st.error("La hoja de reporte está vacía. No se pueden actualizar las facturas.")
             return False, "Hoja de reporte vacía."
 
-        reporte_headers_list = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
-        reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
-
         # --- INICIO DE LA CORRECCIÓN ---
-        # Limpieza robusta del DataFrame leído directamente para evitar errores de reindexación
+        # Paso 1: Limpiar los encabezados originales y renombrar 'nombre_proveedor_erp'
+        original_headers = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
+        processed_headers = ['nombre_proveedor' if h == 'nombre_proveedor_erp' else h for h in original_headers]
+        
+        # Paso 2: Crear el DataFrame con los encabezados procesados
+        reporte_df = pd.DataFrame(reporte_data[1:], columns=processed_headers)
+        
+        # Paso 3: Eliminar cualquier columna duplicada que pueda haber resultado o existido previamente.
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
-
-        if 'nombre_proveedor_erp' in reporte_df.columns:
-            reporte_df.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
 
         # Asegurar que las columnas clave para la búsqueda tengan el tipo de dato correcto
         reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce').fillna(0)
-        reporte_df['nombre_proveedor'] = reporte_df.get('nombre_proveedor', pd.Series(dtype=str)).astype(str).str.strip()
-        reporte_df['num_factura'] = reporte_df.get('num_factura', pd.Series(dtype=str)).astype(str).str.strip()
+        reporte_df['nombre_proveedor'] = reporte_df['nombre_proveedor'].astype(str).str.strip()
+        reporte_df['num_factura'] = reporte_df['num_factura'].astype(str).str.strip()
+        # --- FIN DE LA CORRECCIÓN ---
 
         try:
             estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
@@ -177,7 +178,6 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
             else:
                 st.warning(f"No se encontró coincidencia para factura '{factura_a_actualizar['num_factura']}' de '{factura_a_actualizar['nombre_proveedor']}'. No se actualizará.")
-        # --- FIN DE LA CORRECCIÓN ---
         
         if updates:
             reporte_ws.batch_update(updates)
