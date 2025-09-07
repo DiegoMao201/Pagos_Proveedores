@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 3.1 - Gerencial Corregida).
+Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 4.0 - Gerencial Premium UI).
 
 Este módulo es una herramienta de análisis gerencial diseñada para:
 1.  Sincronizar de forma independiente e inteligente todas las facturas de PINTUCO,
@@ -11,23 +11,25 @@ Este módulo es una herramienta de análisis gerencial diseñada para:
 5.  Calcular y visualizar en tiempo real el progreso del acuerdo de rebate,
     enfocándose en la toma de decisiones con proyecciones claras.
 
-Mejoras en v3.1 (Gerencial Corregida):
-- **Corrección de Error Crítico (KeyError):** Se solucionó un error que impedía la visualización
-  del panel de decisión gerencial al no encontrar los porcentajes de rebate. Ahora la lógica
-  consulta correctamente la configuración inicial del acuerdo.
-- **Análisis Gerencial por Trimestre (Q):** Se mantiene el dashboard de alto nivel
-  enfocado en los resultados trimestrales (3Q y 4Q). Este panel presenta de forma
-  clara e intuitiva:
-    - El total comprado y el monto aplicable al rebate.
-    - Mensajes de acción directos: "Te falta X para la meta" y "Si cumples, tu
-      Nota de Crédito TOTAL para el trimestre será Y".
-    - El cálculo de la Nota de Crédito potencial totaliza TODOS los rebates
-      posibles para el trimestre (Volumen, Estacionalidad de los 3 meses y Profundidad),
-      ofreciendo una visión 360° del impacto de una decisión de compra.
-- **Exclusión de Compras No Aplicables:** Se mantiene la regla de negocio clave donde
-  un 5% de las compras netas se excluye del cálculo para el cumplimiento de metas.
-- **Interfaz Intuitiva y Reportes:** Se conservan la UI optimizada para la toma de
-  decisiones y la funcionalidad de descarga de reportes profesionales en Excel.
+Mejoras en v4.0 (Gerencial Premium UI):
+- **Rediseño Completo de la UI Gerencial:** Se ha realizado un rediseño significativo
+  de la sección "Panel de Decisión Gerencial por Trimestre" para una estética
+  mucho más limpia, moderna y profesional.
+- **Uso de Expanders para Organización:** Los análisis trimestrales (3Q y 4Q)
+  ahora se presentan dentro de `st.expander` para una vista inicial concisa
+  y la posibilidad de desplegar detalles solo cuando sea necesario.
+- **Indicadores Clave de Rendimiento (KPIs) Mejorados:** Uso de `st.metric` con
+  iconos y colores para resaltar la información más importante de forma visual.
+- **Mensajes de Proyección Claros y Atractivos:** Los mensajes sobre el faltante
+  para las metas y la Nota de Crédito potencial se han formateado con mayor
+  énfasis visual (colores, iconos, tamaños de texto) para guiar la decisión.
+- **Barras de Progreso Dinámicas:** Visualización clara del progreso hacia las
+  metas de volumen y estacionalidad.
+- **Consistencia Visual:** Armonización de colores, fuentes y espaciado para
+  una experiencia de usuario superior.
+- **Mantener Funcionalidad Base:** Todas las capacidades de sincronización,
+  cálculo de rebates (volumen, estacionalidad, profundidad) y generación
+  de reportes en Excel se conservan y mejoran indirectamente con la claridad de la UI.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -425,7 +427,7 @@ def generate_excel_report(analysis_df: pd.DataFrame):
 # --- 6. APLICACIÓN PRINCIPAL (STREAMLIT UI) ---
 st.title("🎯 Módulo de Seguimiento de Rebate: PINTUCO")
 st.markdown("Herramienta analítica para la planificación y seguimiento del acuerdo de desempeño comercial con **PINTUCO COLOMBIA S.A.S**.")
-st.warning("**Regla de negocio importante:** El análisis se basa en el **95%** del valor neto de las compras, ya que hay un 5% que no aplica para el cumplimiento de metas de rebate.", icon="ℹ️")
+st.warning("⚠️ **Regla de negocio importante:** El análisis se basa en el **95%** del valor neto de las compras, ya que hay un 5% que no aplica para el cumplimiento de metas de rebate.", icon="ℹ️")
 
 if st.button("🔄 Sincronizar Facturas de Pintuco", type="primary"):
     run_pintuco_sync()
@@ -464,131 +466,224 @@ st.metric("📈 Progreso Meta Semestral (Escala 1)", f"{progreso_semestral:.1f}%
 st.progress(int(progreso_semestral) if progreso_semestral <= 100 else 100)
 st.divider()
 
-# --- PANEL DE DECISIÓN GERENCIAL POR TRIMESTRE (CON CORRECCIÓN) ---
+# --- PANEL DE DECISIÓN GERENCIAL POR TRIMESTRE (MEJORADO UI) ---
 st.header("🚀 Panel de Decisión Gerencial por Trimestre")
+st.markdown("<p style='font-size: 1.1em; color: gray;'>Planifica tus compras y visualiza el impacto inmediato en tu Nota de Crédito.</p>", unsafe_allow_html=True)
 
-def display_quarterly_analysis(quarter_name: str, months: list, analysis_df: pd.DataFrame, pintuco_df: pd.DataFrame):
-    with st.container(border=True):
-        st.subheader(f"Análisis Consolidado del {quarter_name}")
 
-        vol_q_data = analysis_df[(analysis_df['Tipo'] == 'Volumen') & (analysis_df['Periodo'] == quarter_name)].iloc[0]
-        prof_q_data = analysis_df[(analysis_df['Tipo'] == 'Profundidad') & (analysis_df['Periodo'] == quarter_name)].iloc[0]
-        est_q_df = analysis_df[(analysis_df['Tipo'] == 'Estacionalidad') & (analysis_df['Periodo'].isin([META_ESTACIONALIDAD[m]['Nombre'] for m in months]))]
+def display_quarterly_analysis_premium(quarter_name: str, months: list, analysis_df: pd.DataFrame, pintuco_df: pd.DataFrame):
+    
+    # Obtener la información de metas y rebates del diccionario original
+    meta_info_q = META_VOLUMEN.get(quarter_name, {})
+    rebate_1_percent = meta_info_q.get("Rebate 1", 0)
+    rebate_2_percent = meta_info_q.get("Rebate 2", 0)
+
+    # Datos del rebate de Volumen para el Q
+    vol_q_data = analysis_df[(analysis_df['Tipo'] == 'Volumen') & (analysis_df['Periodo'] == quarter_name)].iloc[0]
+
+    # Datos de Profundidad para el Q
+    prof_q_data = analysis_df[(analysis_df['Tipo'] == 'Profundidad') & (analysis_df['Periodo'] == quarter_name)].iloc[0]
+    rebate_ganado_profundidad = prof_q_data['Rebate_Ganado_Actual']
+
+    # Datos de Estacionalidad para los meses del Q
+    est_q_df = analysis_df[(analysis_df['Tipo'] == 'Estacionalidad') & (analysis_df['Periodo'].isin([META_ESTACIONALIDAD[m]['Nombre'] for m in months]))]
+    rebate_ganado_estacionalidad = est_q_df[est_q_df['Rebate_Ganado_Actual'] >= 0]['Rebate_Ganado_Actual'].sum()
+
+    # Totales de compra del Q
+    total_comprado_q_neto = pintuco_df[pintuco_df['Fecha_Factura'].dt.month.isin(months)]['Valor_Neto'].sum()
+    compra_aplicable_q = vol_q_data['Compra_Aplicable']
+
+    with st.expander(f"✨ **Detalle y Proyección del {quarter_name}**", expanded=False):
+        st.markdown(f"### Análisis Consolidado del {quarter_name}")
         
-        # **INICIO DE LA CORRECCIÓN**
-        # Obtener la información de metas y rebates del diccionario original
-        meta_info_q = META_VOLUMEN.get(quarter_name, {})
-        rebate_1_percent = meta_info_q.get("Rebate 1", 0)
-        rebate_2_percent = meta_info_q.get("Rebate 2", 0)
-        # **FIN DE LA CORRECCIÓN**
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("🛒 Compra Neta Total", f"${int(total_comprado_q_neto):,}", help="Valor total de facturas Pintuco sin aplicar el 5% de exclusión.")
+        with col2:
+            st.metric("🎯 Compra Aplicable a Metas", f"${int(compra_aplicable_q):,}", help="Valor de compras que efectivamente cuentan para el cálculo de rebates (95% del valor neto).")
 
-        rebate_ganado_profundidad = prof_q_data['Rebate_Ganado_Actual']
-        rebate_ganado_estacionalidad = est_q_df[est_q_df['Rebate_Ganado_Actual'] >= 0]['Rebate_Ganado_Actual'].sum()
-        total_comprado_q_neto = pintuco_df[pintuco_df['Fecha_Factura'].dt.month.isin(months)]['Valor_Neto'].sum()
-        compra_aplicable_q = vol_q_data['Compra_Aplicable']
-
-        c1, c2 = st.columns(2)
-        c1.metric(f"🛒 Compra Neta Total ({quarter_name})", f"${int(total_comprado_q_neto):,}")
-        c2.metric(f"🎯 Compra Aplicable a Metas ({quarter_name})", f"${int(compra_aplicable_q):,}")
-
-        st.info(f"**Rebates ya ganados este trimestre:** Profundidad (${int(rebate_ganado_profundidad):,}) + Estacionalidad (${int(rebate_ganado_estacionalidad):,}) = **${int(rebate_ganado_profundidad + rebate_ganado_estacionalidad):,}**")
+        st.markdown(f"""
+            <div style="
+                background-color: #e0f2f7;  /* Light blue background */
+                padding: 15px;
+                border-radius: 10px;
+                border-left: 5px solid #007bff; /* Blue left border */
+                margin-top: 15px;
+                margin-bottom: 20px;
+            ">
+                <h4 style="margin-top: 0; color: #007bff;">💰 Rebates Ya Ganados en el {quarter_name}:</h4>
+                <p style="font-size: 1.1em; margin-bottom: 5px;">
+                    <strong>Profundidad:</strong> ${int(rebate_ganado_profundidad):,} <br>
+                    <strong>Estacionalidad:</strong> ${int(rebate_ganado_estacionalidad):,}
+                </p>
+                <h3 style="margin-top: 10px; color: #28a745;">Total Ganado: <strong>${int(rebate_ganado_profundidad + rebate_ganado_estacionalidad):,}</strong></h3>
+            </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("---")
-        st.subheader("Proyecciones de Ganancia (Rebate por Volumen)")
+        st.markdown("### 📈 Proyecciones de Ganancia por Volumen")
 
         # Proyección Escala 1
         faltante_e1 = vol_q_data['Faltante_E1']
         nc_potencial_volumen_e1 = vol_q_data['Rebate_Potencial_E1']
         nc_total_proyectada_e1 = nc_potencial_volumen_e1 + rebate_ganado_profundidad + rebate_ganado_estacionalidad
+        progreso_e1 = (compra_aplicable_q / vol_q_data['Meta_E1']) * 100 if vol_q_data['Meta_E1'] > 0 else 0
+
+        st.markdown("#### Meta de Volumen: Escala 1")
+        st.info(f"Objetivo: Alcanzar **${int(vol_q_data['Meta_E1']):,}** en compras aplicables para un **{rebate_1_percent*100:.1f}%** de rebate por volumen.")
+        st.progress(min(100, int(progreso_e1)), text=f"Progreso: **{progreso_e1:.1f}%**")
 
         if compra_aplicable_q >= vol_q_data['Meta_E1']:
-            st.success(f"✅ **¡Meta Escala 1 Superada!** | NC por Volumen: **${int(vol_q_data['Rebate_Ganado_Actual']):,}**")
+            st.success(f"🎉 **¡Meta de Volumen (Escala 1) SUPERADA!** "
+                       f"Rebate por Volumen asegurado: **${int(vol_q_data['Rebate_Ganado_Actual']):,}**")
         else:
-            st.markdown(f"**Para alcanzar la Escala 1 ({rebate_1_percent*100:.1f}% de rebate):**")
-            msg1 = f"Te falta comprar **${int(faltante_e1):,}** (valor aplicable)."
-            msg2 = f"Al lograrlo, tu Nota de Crédito **TOTAL** para el {quarter_name} será de **${int(nc_total_proyectada_e1):,}**."
-            st.markdown(f"<h3>{msg1}<br>{msg2}</h3>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style="
+                    background-color: #fff3cd; /* Light yellow background */
+                    padding: 15px;
+                    border-radius: 10px;
+                    border-left: 5px solid #ffc107; /* Yellow left border */
+                    margin-bottom: 15px;
+                ">
+                    <p style="font-size: 1.2em; margin-top: 0;">
+                        Necesitas comprar <strong><span style="color: #dc3545;">${int(faltante_e1):,}</span></strong> adicionales (valor aplicable)
+                        para alcanzar la Escala 1.
+                    </p>
+                    <p style="font-size: 1.2em;">
+                        Si logras esta meta, tu <strong>Nota de Crédito TOTAL</strong> proyectada para el {quarter_name} será de
+                        <strong><span style="color: #007bff;">${int(nc_total_proyectada_e1):,}</span></strong>
+                        (sumando volumen, estacionalidad y profundidad).
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("---")
 
         # Proyección Escala 2
         faltante_e2 = vol_q_data['Faltante_E2']
         nc_potencial_volumen_e2 = vol_q_data['Rebate_Potencial_E2']
         nc_total_proyectada_e2 = nc_potencial_volumen_e2 + rebate_ganado_profundidad + rebate_ganado_estacionalidad
+        progreso_e2 = (compra_aplicable_q / vol_q_data['Meta_E2']) * 100 if vol_q_data['Meta_E2'] > 0 else 0
+
+        st.markdown("#### Meta de Volumen: Escala 2 (Máximo Potencial)")
+        st.info(f"Objetivo: Alcanzar **${int(vol_q_data['Meta_E2']):,}** en compras aplicables para un **{rebate_2_percent*100:.1f}%** de rebate por volumen.")
+        st.progress(min(100, int(progreso_e2)), text=f"Progreso: **{progreso_e2:.1f}%**")
 
         if compra_aplicable_q >= vol_q_data['Meta_E2']:
-            st.success(f"🎉 **¡Meta Escala 2 Superada!** | NC por Volumen: **${int(vol_q_data['Rebate_Ganado_Actual']):,}**")
+            st.success(f"🚀 **¡Felicidades! Meta de Volumen (Escala 2) ALCANZADA.** "
+                       f"Rebate por Volumen asegurado: **${int(vol_q_data['Rebate_Ganado_Actual']):,}**")
         else:
-            st.markdown(f"**Para alcanzar la Escala 2 ({rebate_2_percent*100:.1f}% de rebate):**")
-            msg1_e2 = f"Te falta comprar **${int(faltante_e2):,}** (valor aplicable)."
-            msg2_e2 = f"Al lograrlo, tu Nota de Crédito **TOTAL** para el {quarter_name} será de **${int(nc_total_proyectada_e2):,}**."
-            st.markdown(f"<h3>{msg1_e2}<br>{msg2_e2}</h3>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style="
+                    background-color: #e2fce4; /* Light green background */
+                    padding: 15px;
+                    border-radius: 10px;
+                    border-left: 5px solid #28a745; /* Green left border */
+                ">
+                    <p style="font-size: 1.2em; margin-top: 0;">
+                        Para maximizar tus ganancias, te falta comprar
+                        <strong><span style="color: #dc3545;">${int(faltante_e2):,}</span></strong> adicionales (valor aplicable)
+                        y así alcanzar la Escala 2.
+                    </p>
+                    <p style="font-size: 1.2em;">
+                        Si logras esta meta, tu <strong>Nota de Crédito TOTAL</strong> proyectada para el {quarter_name} será de
+                        <strong><span style="color: #007bff;">${int(nc_total_proyectada_e2):,}</span></strong>.
+                        ¡Este es tu máximo potencial de rebate para el trimestre!
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
 
 
-display_quarterly_analysis("3er Trimestre (3Q)", [7, 8, 9], analysis_df, pintuco_df)
-display_quarterly_analysis("4to Trimestre (4Q)", [10, 11, 12], analysis_df, pintuco_df)
+# Llamar a la función con el nuevo diseño
+display_quarterly_analysis_premium("3er Trimestre (3Q)", [7, 8, 9], analysis_df, pintuco_df)
+display_quarterly_analysis_premium("4to Trimestre (4Q)", [10, 11, 12], analysis_df, pintuco_df)
 
 st.divider()
 
 st.subheader("📥 Reporte Profesional en Excel")
+st.markdown("Descarga un archivo Excel con el análisis completo y detallado de todas las metas de rebate.")
 excel_data = generate_excel_report(analysis_df)
 st.download_button(
-    label="Descargar Análisis Detallado en Excel",
+    label="⬇️ Descargar Análisis Detallado en Excel",
     data=excel_data,
     file_name=f"Analisis_Rebate_Pintuco_{date.today()}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    help="Haz clic para descargar un reporte completo en formato Excel."
 )
 
+# --- PESTAÑAS DE ANÁLISIS DETALLADO ---
 tab_vol, tab_est, tab_prof, tab_docs = st.tabs(["💧 Análisis por Volumen", "☀️ Análisis por Estacionalidad", "💎 Análisis por Profundidad", "📑 Detalle de Documentos"])
 
 column_format_config = {
     "Compra_Aplicable": st.column_config.NumberColumn("Compra Aplicable (95%)", format="$ %d"),
     "Meta_E1": st.column_config.NumberColumn("Meta E1", format="$ %d"),
     "Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %d"),
-    "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=100),
+    "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=1),
     "Rebate_Potencial_E1": st.column_config.NumberColumn("NC Proyectada E1", format="$ %d"),
     "Meta_E2": st.column_config.NumberColumn("Meta E2", format="$ %d"),
     "Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %d"),
-    "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=100),
+    "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=1),
     "Rebate_Potencial_E2": st.column_config.NumberColumn("NC Proyectada E2", format="$ %d"),
     "Rebate_Ganado_Actual": st.column_config.NumberColumn("NC Ganada Actual", format="$ %d"),
 }
 
 with tab_vol:
     st.header("Análisis de Cumplimiento por Volumen de Compra")
+    st.markdown("Aquí puedes ver el detalle de tu progreso hacia las metas de volumen para cada período.")
     df_vol = analysis_df[analysis_df['Tipo'] == 'Volumen']
     st.dataframe(df_vol, use_container_width=True, hide_index=True, column_config=column_format_config)
 
 with tab_est:
     st.header("Análisis de Cumplimiento por Estacionalidad")
-    st.info("Condición: Se debe comprar al menos el 90% del total del mes antes del día 20. Si no se cumple, el rebate para ese mes es $0.")
+    st.info("ℹ️ **Condición Clave:** Para aplicar al rebate por estacionalidad, debes haber comprado al menos el **90% del total del mes** antes del día 20. Si esta condición no se cumple, el rebate para ese mes será $0.")
     df_est = analysis_df[analysis_df['Tipo'] == 'Estacionalidad'].copy()
 
-    def format_rebate_ganado(val):
-        if val < 0:
-            return "Condición No Cumplida"
+    def format_rebate_ganado_est(val):
+        if val == -1: # Usamos -1 como indicador de "condición no cumplida"
+            return "❌ Condición No Cumplida"
         return f"${int(val):,}"
 
-    df_est['Rebate_Ganado_Actual'] = df_est['Rebate_Ganado_Actual'].apply(format_rebate_ganado)
+    df_est['Rebate_Ganado_Actual_Formatted'] = df_est['Rebate_Ganado_Actual'].apply(format_rebate_ganado_est)
 
-    est_config = column_format_config.copy()
-    del est_config['Rebate_Ganado_Actual']
+    est_column_config = {
+        "Periodo": "Periodo",
+        "Compra_Aplicable": st.column_config.NumberColumn("Compra Aplicable (95%)", format="$ %d"),
+        "Meta_E1": st.column_config.NumberColumn("Meta E1", format="$ %d"),
+        "Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %d"),
+        "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=1),
+        "Rebate_Potencial_E1": st.column_config.NumberColumn("NC Proyectada E1", format="$ %d"),
+        "Meta_E2": st.column_config.NumberColumn("Meta E2", format="$ %d"),
+        "Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %d"),
+        "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=1),
+        "Rebate_Potencial_E2": st.column_config.NumberColumn("NC Proyectada E2", format="$ %d"),
+        "Rebate_Ganado_Actual_Formatted": "NC Ganada Actual" # Usar la columna formateada
+    }
+    
+    # Seleccionar las columnas en el orden deseado
+    display_cols_est = ["Periodo", "Compra_Aplicable", "Meta_E1", "Faltante_E1", "%_Cumplimiento_E1", "Rebate_Potencial_E1",
+                        "Meta_E2", "Faltante_E2", "%_Cumplimiento_E2", "Rebate_Potencial_E2", "Rebate_Ganado_Actual_Formatted"]
 
-    st.dataframe(df_est, use_container_width=True, hide_index=True, column_config=est_config)
+    st.dataframe(df_est[display_cols_est], use_container_width=True, hide_index=True, column_config=est_column_config)
 
 with tab_prof:
     st.header("Análisis de Rebate por Profundidad")
-    st.info("Este rebate corresponde al 1% sobre la compra neta aplicable (95%) de cada trimestre (3Q y 4Q).")
+    st.info("Este rebate corresponde a un **1% adicional** sobre la compra neta aplicable (95%) de cada trimestre (3Q y 4Q).")
     df_prof = analysis_df[analysis_df['Tipo'] == 'Profundidad']
     st.dataframe(df_prof[["Periodo", "Compra_Aplicable", "Rebate_Ganado_Actual"]], use_container_width=True, hide_index=True,
                  column_config={
                      "Compra_Aplicable": st.column_config.NumberColumn("Compra Aplicable Trimestre (95%)", format="$ %d"),
-                     "Rebate_Ganado_Actual": st.column_config.NumberColumn("Nota Crédito Ganada (1%)", format="$ %d"),
+                     "Rebate_Ganado_Actual": st.column_config.NumberColumn("Nota Crédito Ganada (1%)", format="$ %d", help="Calculado como el 1% de la Compra Aplicable del trimestre."),
                  })
 
 with tab_docs:
     st.subheader("Historial Completo de Documentos de Pintuco")
+    st.markdown("Aquí puedes revisar el detalle de todas las facturas y su estado de pago. Los valores de 'Compra Aplicable a Rebate' ya reflejan el 95%.")
     st.dataframe(pintuco_df.sort_values(by="Fecha_Factura", ascending=False), use_container_width=True, hide_index=True,
                  column_config={
                      "Fecha_Factura": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"),
-                     "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d"),
-                     "Compra_Aplicable_Rebate": st.column_config.NumberColumn("Valor Aplicable a Rebate (95%)", format="$ %d"),
+                     "Numero_Factura": "Número de Factura",
+                     "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d", help="Valor de la factura antes de aplicar el factor del 95%."),
+                     "Compra_Aplicable_Rebate": st.column_config.NumberColumn("Valor Aplicable a Rebate (95%)", format="$ %d", help="Valor que suma para las metas de rebate (95% del valor neto)."),
+                     "Proveedor_Correo": "Proveedor (Correo)",
+                     "Estado_Pago": st.column_config.TextColumn("Estado de Pago", help="Indica si la factura está Pendiente de pago (según Dropbox) o Pagada."),
                  })
