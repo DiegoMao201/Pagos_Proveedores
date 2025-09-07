@@ -57,8 +57,9 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
 
         updates = []
         for _, factura_a_actualizar in facturas_seleccionadas.iterrows():
+            # CORREGIDO: Se usa 'nombre_proveedor_erp' para la coincidencia.
             match = reporte_df[
-                (reporte_df['nombre_proveedor'] == factura_a_actualizar['nombre_proveedor']) &
+                (reporte_df['nombre_proveedor_erp'] == factura_a_actualizar['nombre_proveedor_erp']) &
                 (reporte_df['num_factura'] == factura_a_actualizar['num_factura']) &
                 (np.isclose(reporte_df['valor_total_erp'].fillna(0), factura_a_actualizar['valor_total_erp']))
             ]
@@ -68,7 +69,8 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, id_unico_col_idx), 'values': [[factura_a_actualizar['id_factura_unico']]]})
             else:
-                st.warning(f"No se encontró la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'. Se omitirá.")
+                # CORREGIDO: Se usa 'nombre_proveedor_erp' en el mensaje de advertencia.
+                st.warning(f"No se encontró la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor_erp']}'. Se omitirá.")
         if updates:
             reporte_ws.batch_update(updates)
         return True, None
@@ -108,8 +110,9 @@ if df_full.empty:
     st.stop()
 
 # --- 4. PRE-PROCESAMIENTO Y SEGMENTACIÓN DE DATOS ---
+# CORREGIDO: Se usa 'nombre_proveedor_erp' para crear el ID único.
 df_full['id_factura_unico'] = df_full.apply(
-    lambda row: f"{row.get('nombre_proveedor', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', '')}",
+    lambda row: f"{row.get('nombre_proveedor_erp', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', '')}",
     axis=1
 ).str.replace(r'[\s/]+', '-', regex=True)
 
@@ -123,15 +126,16 @@ df_para_pagar = df_pendientes_full[(df_pendientes_full['valor_total_erp'] >= 0) 
 st.sidebar.header("⚙️ Filtros y Sugerencias")
 st.sidebar.info("Los filtros y el motor de sugerencias se aplican únicamente a la pestaña 'Plan de Pagos'.")
 
-# La línea que causaba el error ahora funcionará gracias a la estandarización en utils.py
-proveedores_lista = sorted(df_para_pagar['nombre_proveedor'].dropna().unique().tolist())
+# CORREGIDO: La línea que causaba el error ahora usa 'nombre_proveedor_erp'.
+proveedores_lista = sorted(df_para_pagar['nombre_proveedor_erp'].dropna().unique().tolist())
 selected_suppliers = st.sidebar.multiselect("Filtrar por Proveedor:", proveedores_lista)
 
 estado_pago_lista = df_para_pagar.get('estado_pago', pd.Series(dtype=str)).dropna().unique().tolist()
 selected_status = st.sidebar.multiselect("Filtrar por Estado de Pago:", estado_pago_lista, default=estado_pago_lista)
 
 df_pagar_filtrado = df_para_pagar.copy()
-if selected_suppliers: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['nombre_proveedor'].isin(selected_suppliers)]
+# CORREGIDO: Se filtra usando 'nombre_proveedor_erp'.
+if selected_suppliers: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['nombre_proveedor_erp'].isin(selected_suppliers)]
 if selected_status and 'estado_pago' in df_pagar_filtrado.columns: df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['estado_pago'].isin(selected_status)]
 
 st.sidebar.divider()
@@ -144,7 +148,6 @@ if st.sidebar.button("💡 Generar Sugerencia", type="primary"):
     else: st.session_state.pop('sugerencia_ids', None)
 
 # --- 6. CUERPO PRINCIPAL CON PESTAÑAS ---
-# (El código de las pestañas no requiere cambios, es funcional como estaba)
 tab_pagos, tab_credito, tab_vencidas = st.tabs([
     f"✅ Plan de Pagos ({len(df_para_pagar)})",
     f"📝 Gestión de Notas Crédito ({len(df_notas_credito)})",
@@ -160,7 +163,6 @@ with tab_pagos:
     if df_pagar_filtrado.empty:
         st.info("No hay facturas para pagar que coincidan con los filtros actuales.")
     else:
-        # (El código del data_editor y las sub-pestañas permanece aquí, sin cambios)
         edited_df = st.data_editor(df_pagar_filtrado, key="data_editor_pagos", use_container_width=True, hide_index=True, column_config={"seleccionar": st.column_config.CheckboxColumn(required=True),"valor_total_erp": st.column_config.NumberColumn("Valor Original (COP)", format="%d"),"valor_con_descuento": st.column_config.NumberColumn("Valor a Pagar (COP)", format="%d"),"valor_descuento": st.column_config.NumberColumn("Ahorro (COP)", format="%d"),"fecha_emision_erp": st.column_config.DateColumn("Fecha Emisión", format="YYYY-MM-DD"),"fecha_limite_descuento": st.column_config.DateColumn("Límite Descuento", format="YYYY-MM-DD"),"dias_para_vencer": st.column_config.NumberColumn("Días Vence", format="%d días"),}, disabled=[col for col in df_pagar_filtrado.columns if col != 'seleccionar'])
         selected_rows = edited_df[edited_df['seleccionar']]
         st.divider()
@@ -172,7 +174,9 @@ with tab_pagos:
         elif 'id_lote_propuesto' in st.session_state:
             del st.session_state['id_lote_propuesto']
             if 'current_selection_key' in st.session_state: del st.session_state['current_selection_key']
+        
         sub_tab1, sub_tab2 = st.tabs(["📊 Resumen del Plan de Pago", "🚀 Confirmar y Ejecutar Acciones"])
+        
         with sub_tab1:
             st.subheader("Análisis del Lote Propuesto")
             if selected_rows.empty: st.info("Selecciona una o más facturas para ver el resumen del pago.")
@@ -183,7 +187,9 @@ with tab_pagos:
                 c2.metric("Valor Original Total (COP)", f"{total_original:,.0f}")
                 c3.metric("Ahorro Total (COP)", f"{ahorro_total:,.0f}")
                 c4.metric("💰 TOTAL A PAGAR (COP)", f"{total_a_pagar:,.0f}", delta_color="off")
-                st.dataframe(selected_rows[['nombre_proveedor', 'num_factura', 'valor_total_erp', 'estado_descuento','valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento', 'estado_pago']], use_container_width=True, hide_index=True)
+                # CORREGIDO: Se muestra 'nombre_proveedor_erp' en el resumen.
+                st.dataframe(selected_rows[['nombre_proveedor_erp', 'num_factura', 'valor_total_erp', 'estado_descuento','valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento', 'estado_pago']], use_container_width=True, hide_index=True)
+
         with sub_tab2:
             st.subheader("Acciones Finales del Lote")
             if selected_rows.empty: st.warning("Debes seleccionar al menos una factura para poder generar un lote de pago.")
@@ -204,9 +210,8 @@ with tab_pagos:
                     id_lote_mensaje = st.session_state.get('id_lote_propuesto', 'LOTE-POR-CONFIRMAR')
                     mensaje = urllib.parse.quote(f"¡Hola! 👋 Se ha generado un nuevo lote de pago (Vigentes).\n\nID Lote: *{id_lote_mensaje}*\n\n🔹 Total a Pagar: COP {selected_rows['valor_con_descuento'].sum():,.0f}\n🔹 Nº Facturas: {len(selected_rows)}\nPor favor, revisa la plataforma para ver el detalle.")
                     st.link_button("📲 Enviar Notificación por WhatsApp", f"https://wa.me/{numero_tesoreria}?text={mensaje}", use_container_width=True)
-# Las otras pestañas también permanecen igual
+
 with tab_credito:
-    # (código sin cambios)
     st.header("📝 Visor de Notas Crédito Pendientes")
     st.info("Aquí se listan todos los saldos a favor (notas crédito) pendientes por cruzar o aplicar.")
     if df_notas_credito.empty: st.success("¡Excelente! No hay notas crédito pendientes de gestión.")
@@ -214,9 +219,10 @@ with tab_credito:
         c1, c2 = st.columns(2)
         c1.metric("Saldo Total a Favor (COP)", f"{df_notas_credito['valor_total_erp'].sum():,.0f}")
         c2.metric("Cantidad de Notas Crédito", f"{len(df_notas_credito)}")
-        st.dataframe(df_notas_credito[[col for col in ['nombre_proveedor', 'num_factura', 'valor_total_erp', 'fecha_emision_erp', 'doc_erp', 'serie'] if col in df_notas_credito.columns]].sort_values('fecha_emision_erp', ascending=False), use_container_width=True, hide_index=True, column_config={"valor_total_erp": st.column_config.NumberColumn("Valor Nota Crédito (COP)", format="%d"),"fecha_emision_erp": st.column_config.DateColumn("Fecha Emisión", format="YYYY-MM-DD"),})
+        # CORREGIDO: Se usa 'nombre_proveedor_erp' en la lista de columnas a mostrar.
+        st.dataframe(df_notas_credito[[col for col in ['nombre_proveedor_erp', 'num_factura', 'valor_total_erp', 'fecha_emision_erp', 'doc_erp', 'serie'] if col in df_notas_credito.columns]].sort_values('fecha_emision_erp', ascending=False), use_container_width=True, hide_index=True, column_config={"valor_total_erp": st.column_config.NumberColumn("Valor Nota Crédito (COP)", format="%d"),"fecha_emision_erp": st.column_config.DateColumn("Fecha Emisión", format="YYYY-MM-DD"),})
+
 with tab_vencidas:
-    # (código sin cambios)
     st.header("🚨 Gestión y Pago de Facturas Críticas")
     st.warning("Esta sección aísla las facturas vencidas. Selecciónalas para generar un lote de pago y depurar la cartera pendiente.")
     if df_vencidas.empty: st.success("¡Muy bien! No hay facturas vencidas pendientes en el sistema.")
@@ -234,7 +240,9 @@ with tab_vencidas:
         elif 'id_lote_propuesto_vencidas' in st.session_state:
             del st.session_state['id_lote_propuesto_vencidas']
             if 'current_selection_key_vencidas' in st.session_state: del st.session_state['current_selection_key_vencidas']
+        
         sub_tab_ven1, sub_tab_ven2 = st.tabs(["📊 Resumen del Lote de Vencidas", "🚀 Confirmar y Pagar Lote de Vencidas"])
+        
         with sub_tab_ven1:
             st.subheader("Análisis del Lote de Vencidas Propuesto")
             if selected_rows_vencidas.empty: st.info("Selecciona una o más facturas vencidas para ver el resumen del pago.")
@@ -244,6 +252,7 @@ with tab_vencidas:
                 c1.metric("Nº Facturas Vencidas Seleccionadas", f"{num_facturas_vencidas}")
                 c2.metric("💰 TOTAL A PAGAR (COP)", f"{total_a_pagar_vencidas:,.0f}", delta_color="off")
                 st.dataframe(selected_rows_vencidas, use_container_width=True, hide_index=True)
+
         with sub_tab_ven2:
             st.subheader("Acciones Finales del Lote de Vencidas")
             if selected_rows_vencidas.empty: st.warning("Debes seleccionar al menos una factura vencida para poder generar un lote de pago.")
