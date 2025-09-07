@@ -136,7 +136,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         # 1. Guardar en el historial de lotes
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         
-        # --- INICIO DE LA CORRECCIÓN ---
+        # --- INICIO DE LA CORRECCIÓN DE ESCRITURA EN HISTORIAL ---
         # Se leen los encabezados reales de la hoja para asegurar el orden correcto.
         raw_headers = historial_ws.row_values(1)
         # Se normalizan los encabezados (minúsculas, sin espacios) para que coincidan con las claves del diccionario 'lote_info'.
@@ -144,7 +144,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         # Se construye la fila de valores en el orden exacto de los encabezados de la hoja.
         # lote_info.get(col, None) busca la clave correspondiente; si no la encuentra, inserta un valor vacío.
         valores_fila = [lote_info.get(col, None) for col in normalized_headers]
-        # --- FIN DE LA CORRECCIÓN ---
+        # --- FIN DE LA CORRECCIÓN DE ESCRITURA EN HISTORIAL ---
         
         historial_ws.append_row(valores_fila)
 
@@ -155,25 +155,34 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
             st.error("La hoja de reporte está vacía. No se pueden actualizar las facturas.")
             return False, "Hoja de reporte vacía."
 
-        # --- INICIO DE LA CORRECCIÓN MEJORADA ---
-        original_headers = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
-        processed_headers = ['nombre_proveedor' if h == 'nombre_proveedor_erp' else h for h in original_headers]
+        # --- INICIO DE LA CORRECCIÓN DE BÚSQUEDA DE COLUMNAS ---
+        # Leemos los encabezados originales y los normalizamos para buscar el índice
+        raw_report_headers = reporte_data[0]
+        normalized_report_headers = [str(h).strip().lower().replace(' ', '_') for h in raw_report_headers]
+
+        try:
+            # Buscamos el índice DIRECTAMENTE en la lista de encabezados normalizados.
+            # Esto evita problemas si pandas reordena, elimina o renombra columnas duplicadas.
+            # Se suma 1 porque las columnas en gspread son 1-indexed (A=1, B=2, etc.).
+            estado_col_idx = normalized_report_headers.index('estado_factura') + 1
+            lote_col_idx = normalized_report_headers.index('id_lote_pago') + 1
+        except ValueError as e:
+            # ValueError se lanza si .index() no encuentra el elemento en la lista.
+            missing_col = str(e).split("'")[1] if "'" in str(e) else "desconocida"
+            error_msg = f"Error Crítico: La columna requerida '{missing_col}' no se encuentra en los encabezados de la hoja '{GSHEET_REPORT_NAME}'."
+            st.error(error_msg)
+            return False, error_msg
+        
+        # Se crea el DataFrame como antes, ya que es necesario para buscar las filas a actualizar.
+        processed_headers = ['nombre_proveedor' if h == 'nombre_proveedor_erp' else h for h in normalized_report_headers]
         reporte_df = pd.DataFrame(reporte_data[1:], columns=processed_headers)
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
 
-        # Asegurar tipos de datos para la búsqueda
+        # Asegurar tipos de datos para la búsqueda de filas
         reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce').fillna(0)
         reporte_df['nombre_proveedor'] = reporte_df['nombre_proveedor'].astype(str).str.strip()
         reporte_df['num_factura'] = reporte_df['num_factura'].astype(str).str.strip()
-        # --- FIN DE LA CORRECCIÓN MEJORADA ---
-
-        try:
-            estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
-            lote_col_idx = reporte_df.columns.get_loc('id_lote_pago') + 1
-        except KeyError as e:
-            error_msg = f"Error Crítico: La columna '{e.args[0]}' no se encuentra en la hoja '{GSHEET_REPORT_NAME}'."
-            st.error(error_msg)
-            return False, error_msg
+        # --- FIN DE LA CORRECCIÓN DE BÚSQUEDA DE COLUMNAS ---
 
         updates = []
         for _, factura_a_actualizar in facturas_seleccionadas.iterrows():
