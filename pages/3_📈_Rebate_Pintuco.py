@@ -298,6 +298,7 @@ def load_pintuco_data_from_gsheet() -> pd.DataFrame:
         if not records: return pd.DataFrame()
         df = pd.DataFrame(records)
         df['Fecha_Factura'] = pd.to_datetime(df['Fecha_Factura'])
+        # **CONFIRMACIÓN IMPORTANTE**: Se usa 'Valor_Neto', que es el valor antes de IVA.
         df['Valor_Neto'] = pd.to_numeric(df['Valor_Neto'].astype(str).str.replace(',', ''), errors='coerce')
         return df
     except Exception as e:
@@ -492,10 +493,61 @@ column_format_config = {
     "Rebate_Ganado_Actual": st.column_config.NumberColumn("NC Ganada Actual", format="$ %d"),
 }
 
+# --- Función para comentarios automáticos ---
+def generate_insights(row):
+    insights = []
+    faltante_e1 = row['Faltante_E1']
+    rebate_potencial_e1 = row['Rebate_Potencial_E1']
+    faltante_e2 = row['Faltante_E2']
+    rebate_potencial_e2 = row['Rebate_Potencial_E2']
+    compra_real = row['Compra_Real']
+
+    if compra_real == 0:
+        insights.append(f"Aún no hay compras registradas para el período **{row['Periodo']}**.")
+    elif faltante_e1 > 0:
+        insights.append(f"💡 Para alcanzar la **Escala 1** en **{row['Periodo']}**, necesitas comprar **${int(faltante_e1):,}**. Al hacerlo, tu nota de crédito proyectada será de **${int(rebate_potencial_e1):,}**.")
+        if faltante_e2 > 0:
+            insights.append(f"🚀 Para la **Escala 2**, el faltante es de **${int(faltante_e2):,}** para una nota de crédito superior de **${int(rebate_potencial_e2):,}**.")
+    elif faltante_e2 > 0:
+        insights.append(f"✅ ¡Felicitaciones! Cumpliste la **Escala 1**. Ahora, para maximizar tus ganancias, compra **${int(faltante_e2):,}** adicionales para obtener el rebate de la **Escala 2** y una NC total de **${int(rebate_potencial_e2):,}**.")
+    else:
+        insights.append(f"🏆 ¡Excelente! Has superado la **Escala 2** en **{row['Periodo']}**. ¡Has asegurado el máximo rebate por volumen para este período!")
+    
+    return " ".join(insights)
+
+
 with tab_vol:
     st.header("Análisis de Cumplimiento por Volumen de Compra")
     df_vol = analysis_df[analysis_df['Tipo'] == 'Volumen']
-    st.dataframe(df_vol, use_container_width=True, hide_index=True, column_config=column_format_config)
+
+    st.subheader(" तृतीय Trimestre (3Q)")
+    with st.container(border=True):
+        df_vol_q3 = df_vol[df_vol['Periodo'].str.contains('Julio|Agosto|Sept|3Q')]
+        st.dataframe(df_vol_q3.drop(columns=['Tipo']), use_container_width=True, hide_index=True, column_config=column_format_config)
+        
+        # Comentarios para el 3Q
+        insight_q3 = df_vol[df_vol['Periodo'] == '3er Trimestre (3Q)'].iloc[0]
+        st.info(generate_insights(insight_q3))
+
+
+    st.subheader("IV Trimestre (4Q)")
+    with st.container(border=True):
+        df_vol_q4 = df_vol[df_vol['Periodo'].str.contains('Octubre|Noviembre|Dic|4Q')]
+        st.dataframe(df_vol_q4.drop(columns=['Tipo']), use_container_width=True, hide_index=True, column_config=column_format_config)
+
+        # Comentarios para el 4Q
+        insight_q4 = df_vol[df_vol['Periodo'] == '4to Trimestre (4Q)'].iloc[0]
+        st.info(generate_insights(insight_q4))
+
+    st.subheader("Análisis Semestral (2Sem)")
+    with st.container(border=True):
+        df_sem = df_vol[df_vol['Periodo'] == '2do Semestre (2Sem)']
+        st.dataframe(df_sem.drop(columns=['Tipo']), use_container_width=True, hide_index=True, column_config=column_format_config)
+
+        # Comentarios para el Semestre
+        insight_sem = df_sem.iloc[0]
+        st.info(generate_insights(insight_sem))
+
 
 with tab_est:
     st.header("Análisis de Cumplimiento por Estacionalidad")
@@ -508,28 +560,70 @@ with tab_est:
             return "Condición No Cumplida"
         return f"${int(val):,}"
     
-    df_est['Rebate_Ganado_Actual'] = df_est['Rebate_Ganado_Actual'].apply(format_rebate_ganado)
+    df_est_display = df_est.copy()
+    df_est_display['Rebate_Ganado_Actual'] = df_est_display['Rebate_Ganado_Actual'].apply(format_rebate_ganado)
     
     # Mostrar sin la columna de formato numérico para 'Rebate_Ganado_Actual'
     est_config = column_format_config.copy()
     del est_config['Rebate_Ganado_Actual']
 
-    st.dataframe(df_est, use_container_width=True, hide_index=True, column_config=est_config)
+    st.subheader(" तृतीय Trimestre (3Q)")
+    with st.container(border=True):
+        df_est_q3 = df_est_display[df_est_display['Periodo'].isin(['Julio', 'Agosto', 'Septiembre'])]
+        st.dataframe(df_est_q3.drop(columns=['Tipo']), use_container_width=True, hide_index=True, column_config=est_config)
+
+    st.subheader("IV Trimestre (4Q)")
+    with st.container(border=True):
+        df_est_q4 = df_est_display[df_est_display['Periodo'].isin(['Octubre', 'Noviembre', 'Diciembre'])]
+        st.dataframe(df_est_q4.drop(columns=['Tipo']), use_container_width=True, hide_index=True, column_config=est_config)
+    
+    # Comentario general de Estacionalidad
+    cumplidos = len(df_est[df_est['Rebate_Ganado_Actual'] > 0])
+    no_cumplidos = len(df_est[(df_est['Rebate_Ganado_Actual'] < 0) & (df_est['Compra_Real'] > 0)])
+    if no_cumplidos > 0:
+        st.warning(f"⚠️ **Atención:** En **{no_cumplidos}** mes(es) no se cumplió la condición del 90% antes del día 20, perdiendo el rebate de estacionalidad a pesar de haber compras.")
+    elif cumplidos > 0:
+        st.success(f"📈 Vas por buen camino, has cumplido la condición de estacionalidad en **{cumplidos}** mes(es).")
+
 
 with tab_prof:
     st.header("Análisis de Rebate por Profundidad")
-    st.info("Este rebate corresponde al 1% sobre la compra neta de cada trimestre (3Q y 4Q).")
+    st.info("Este rebate corresponde al 1% sobre la compra neta de cada trimestre (3Q y 4Q). Es una nota de crédito adicional que se suma a los otros rebates.")
     df_prof = analysis_df[analysis_df['Tipo'] == 'Profundidad']
-    st.dataframe(df_prof[["Periodo", "Compra_Real", "Rebate_Ganado_Actual"]], use_container_width=True, hide_index=True,
-                 column_config={
-                     "Compra_Real": st.column_config.NumberColumn("Compra Real Trimestre", format="$ %d"),
-                     "Rebate_Ganado_Actual": st.column_config.NumberColumn("Nota Crédito Ganada (1%)", format="$ %d"),
-                 })
+    
+    prof_config = {
+        "Compra_Real": st.column_config.NumberColumn("Compra Real Trimestre", format="$ %d"),
+        "Rebate_Ganado_Actual": st.column_config.NumberColumn("Nota Crédito Ganada (1%)", format="$ %d"),
+    }
+
+    st.subheader(" तृतीय Trimestre (3Q)")
+    with st.container(border=True):
+        df_prof_q3 = df_prof[df_prof['Periodo'] == '3er Trimestre (3Q)']
+        st.dataframe(df_prof_q3[["Periodo", "Compra_Real", "Rebate_Ganado_Actual"]], use_container_width=True, hide_index=True, column_config=prof_config)
+        compra_q3 = df_prof_q3['Compra_Real'].iloc[0]
+        rebate_q3 = df_prof_q3['Rebate_Ganado_Actual'].iloc[0]
+        if compra_q3 > 0:
+            st.success(f"🎉 Por tu compra de **${int(compra_q3):,}** en el 3Q, ya tienes asegurada una nota de crédito por profundidad de **${int(rebate_q3):,}**.")
+        else:
+            st.info("Aún no se registran compras para el 3Q.")
+
+    st.subheader("IV Trimestre (4Q)")
+    with st.container(border=True):
+        df_prof_q4 = df_prof[df_prof['Periodo'] == '4to Trimestre (4Q)']
+        st.dataframe(df_prof_q4[["Periodo", "Compra_Real", "Rebate_Ganado_Actual"]], use_container_width=True, hide_index=True, column_config=prof_config)
+        compra_q4 = df_prof_q4['Compra_Real'].iloc[0]
+        rebate_q4 = df_prof_q4['Rebate_Ganado_Actual'].iloc[0]
+        if compra_q4 > 0:
+            st.success(f"🎉 Por tu compra de **${int(compra_q4):,}** en el 4Q, ya tienes asegurada una nota de crédito por profundidad de **${int(rebate_q4):,}**.")
+        else:
+            st.info("Aún no se registran compras para el 4Q.")
+
 
 with tab_docs:
     st.subheader("Historial Completo de Documentos de Pintuco")
+    st.markdown("Todos los valores mostrados en esta tabla corresponden al **valor neto (antes de IVA)**.")
     st.dataframe(pintuco_df.sort_values(by="Fecha_Factura", ascending=False), use_container_width=True, hide_index=True,
-                 column_config={
-                     "Fecha_Factura": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"),
-                     "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d"),
-                 })
+                column_config={
+                    "Fecha_Factura": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"),
+                    "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d"),
+                })
