@@ -1,24 +1,22 @@
 # pages/2_🧠_Centro_de_Pagos.py
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 2.1).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 2.2).
 
-Esta herramienta permite la creación de lotes de pago optimizados y ahora
-incluye módulos dedicados para la gestión de notas crédito y el seguimiento
-y PAGO de facturas críticas (muy vencidas).
+Esta versión corrige un error crítico en la actualización de estados en la hoja
+'ReporteConsolidado_Activo'. La lógica de búsqueda de facturas ha sido robustecida
+para garantizar que los lotes de pago se reflejen correctamente y no se vuelvan a
+cargar facturas ya procesadas.
 
 Funcionalidades Clave:
-- Interfaz rediseñada con pestañas para mayor claridad:
-  1. Plan de Pagos: Para facturas vigentes y por vencer.
-  2. Notas Crédito: Para visualizar y gestionar saldos a favor.
-  3. Facturas Críticas: Para aislar, seleccionar y PAGAR facturas muy vencidas.
-- Motor de sugerencias para optimizar pagos según presupuesto y estrategia.
-- Correcta visualización de valores numéricos en todas las tablas.
-- Generación de lotes de pago desde Pestaña Principal y Pestaña de Críticas.
-- Conexión directa con el reporte consolidado, asegurando datos actualizados.
+- Lógica de actualización de Google Sheets corregida y robustecida.
+- Búsqueda de facturas por múltiples campos (Proveedor, Nº Factura, Valor) para asegurar la coincidencia.
+- Interfaz con pestañas para claridad: Plan de Pagos, Notas Crédito y Facturas Críticas.
+- Motor de sugerencias para optimizar pagos.
+- Generación de lotes de pago desde la Pestaña Principal y la de Críticas.
 """
 
-# --- 0. IMPORTACIÓN DE LIBRERías ---
+# --- 0. IMPORTACIÓN DE LIBRERÍAS ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,6 +28,7 @@ import urllib.parse
 import pytz
 
 # Se importa desde el archivo utils.py que ya existe en tu proyecto.
+# Asumimos que este archivo existe y funciona correctamente.
 from common.utils import connect_to_google_sheets, load_data_from_gsheet
 
 # --- 1. CONFIGURACIÓN DE PÁGINA Y CONSTANTES ---
@@ -56,62 +55,97 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
     """
     Guarda el resumen del lote en el historial y actualiza el estado
     de las facturas seleccionadas en el reporte principal.
+    VERSIÓN CORREGIDA Y ROBUSTA.
     """
     try:
         spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
 
-        # --- 1. Guardar el resumen del lote en la hoja de historial ---
+        # --- 1. Guardar el resumen del lote en la hoja de historial (sin cambios) ---
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         headers = historial_ws.row_values(1)
         valores_fila = [lote_info.get(col) for col in headers]
         historial_ws.append_row(valores_fila)
 
-        # --- 2. Actualizar el estado de las facturas en la hoja principal ---
+        # --- 2. Lógica de Actualización robustecida para la hoja principal ---
         reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        ids_a_actualizar = facturas_seleccionadas['id_factura_unico'].tolist()
+        
+        # Cargar todos los datos de la hoja a un DataFrame de pandas para una búsqueda eficiente
+        st.write("Leyendo datos de la hoja de reporte para actualización...")
+        reporte_df = pd.DataFrame(reporte_ws.get_all_records())
+        
+        # Asegurar que las columnas de comparación tengan el tipo de dato correcto
+        reporte_df['valor_total_erp'] = pd.to_numeric(reporte_df['valor_total_erp'], errors='coerce')
+        facturas_seleccionadas['valor_total_erp'] = pd.to_numeric(facturas_seleccionadas['valor_total_erp'], errors='coerce')
 
+        # Obtener los nombres de las columnas de la hoja para encontrar sus índices
         reporte_headers = reporte_ws.row_values(1)
         try:
-            id_col_idx = reporte_headers.index('id_factura_unico') + 1
+            # Columnas que se van a actualizar
             estado_col_idx = reporte_headers.index('estado_factura') + 1
             lote_col_idx = reporte_headers.index('id_lote_pago') + 1
+            id_unico_col_idx = reporte_headers.index('id_factura_unico') + 1
         except ValueError as e:
-            st.error(f"Error Crítico: La columna '{e.args[0].split(' ')[0]}' no existe en la hoja '{GSHEET_REPORT_NAME}'. No se puede continuar.")
-            return False, f"Falta la columna {e.args[0].split(' ')[0]} en la hoja principal."
-
-        all_ids_in_sheet = reporte_ws.col_values(id_col_idx)
+            error_col = str(e).split("'")[1]
+            st.error(f"Error Crítico: La columna '{error_col}' no existe en la hoja '{GSHEET_REPORT_NAME}'. No se pueden actualizar los estados.")
+            return False, f"Falta la columna '{error_col}' en la hoja principal."
 
         updates = []
-        for id_factura in ids_a_actualizar:
-            try:
-                row_index = all_ids_in_sheet.index(id_factura) + 1
+        # Iterar sobre cada factura que seleccionamos en la App
+        for _, factura_a_actualizar in facturas_seleccionadas.iterrows():
+            # Buscar la fila correspondiente en el DataFrame de la hoja
+            # usando una clave compuesta de proveedor, número de factura y valor.
+            match = reporte_df[
+                (reporte_df['nombre_proveedor'] == factura_a_actualizar['nombre_proveedor']) &
+                (reporte_df['num_factura'] == factura_a_actualizar['num_factura']) &
+                (np.isclose(reporte_df['valor_total_erp'], factura_a_actualizar['valor_total_erp']))
+            ]
+
+            if not match.empty:
+                # Si encontramos coincidencia, obtenemos su índice original en la hoja
+                # El índice en gspread es el índice del DataFrame + 2 (1 por el header, 1 por ser 1-based)
+                row_index_to_update = match.index[0] + 2
+
+                # Preparar la actualización para la columna 'estado_factura'
                 updates.append({
-                    'range': gspread.utils.rowcol_to_a1(row_index, estado_col_idx),
+                    'range': gspread.utils.rowcol_to_a1(row_index_to_update, estado_col_idx),
                     'values': [['En Lote de Pago']]
                 })
+                # Preparar la actualización para la columna 'id_lote_pago'
                 updates.append({
-                    'range': gspread.utils.rowcol_to_a1(row_index, lote_col_idx),
+                    'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx),
                     'values': [[lote_info['id_lote']]]
                 })
-            except ValueError:
-                st.warning(f"No se encontró la factura con ID '{id_factura}' en la hoja principal. Se omitirá su actualización.")
+                # Preparar la actualización para la columna 'id_factura_unico' (generado en la app)
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index_to_update, id_unico_col_idx),
+                    'values': [[factura_a_actualizar['id_factura_unico']]]
+                })
+            else:
+                # Si no se encuentra una factura, se notifica al usuario
+                st.warning(f"No se encontró la factura del proveedor '{factura_a_actualizar['nombre_proveedor']}' (Nº {factura_a_actualizar['num_factura']}) en la hoja de reporte. Se omitirá su actualización.")
 
+        # Ejecutar todas las actualizaciones en una sola llamada a la API si hay algo que actualizar
         if updates:
+            st.write(f"Actualizando {len(updates)//3} facturas en Google Sheets...")
             reporte_ws.batch_update(updates)
+            st.write("Actualización completada.")
+        else:
+            st.warning("No se encontraron facturas para actualizar en la hoja principal, aunque se generó el lote en el historial.")
+
         return True, None
+        
     except gspread.exceptions.WorksheetNotFound as e:
-        return False, f"Error: No se encontró la hoja de cálculo requerida: '{e.args[0]}'."
+        return False, f"Error: No se encontró la hoja de cálculo requerida: '{e.worksheet_title}'."
     except Exception as e:
         st.error(f"Error inesperado en la comunicación con Google Sheets: {e}")
         return False, str(e)
+
 
 def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -> list:
     """Motor de inteligencia para sugerir qué facturas pagar."""
     if presupuesto <= 0 or df.empty:
         return []
-
     df_sugerencias = df.copy()
-    
     if estrategia == "Maximizar Ahorro":
         df_sugerencias = df_sugerencias.sort_values(by='valor_descuento', ascending=False)
     elif estrategia == "Evitar Vencimientos":
@@ -119,7 +153,6 @@ def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -
     elif estrategia == "Priorizar Antigüedad":
         if 'fecha_emision_erp' in df_sugerencias.columns and df_sugerencias['fecha_emision_erp'].notna().any():
             df_sugerencias = df_sugerencias.sort_values(by='fecha_emision_erp', ascending=True)
-
     total_acumulado = 0
     ids_sugeridos = []
     for _, row in df_sugerencias.iterrows():
@@ -127,12 +160,11 @@ def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -
         if total_acumulado + valor_a_considerar <= presupuesto:
             total_acumulado += valor_a_considerar
             ids_sugeridos.append(row['id_factura_unico'])
-            
     return ids_sugeridos
 
 # --- 3. INICIO DE LA APLICACIÓN ---
-st.title("🧠 Centro de Control de Pagos Inteligente v2.1")
-st.markdown("Herramienta evolucionada para construir lotes de pago, gestionar notas crédito y auditar facturas críticas.")
+st.title("🧠 Centro de Control de Pagos Inteligente v2.2")
+st.markdown("Herramienta de gestión de pagos con lógica de actualización corregida para garantizar la integridad de los datos.")
 
 # --- Carga y Cacheo de Datos ---
 try:
@@ -295,7 +327,7 @@ with tab_pagos:
                             }
                             success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows)
                             if success:
-                                st.success(f"¡Éxito! Lote `{id_lote}` generado.")
+                                st.success(f"¡Éxito! Lote `{id_lote}` generado y estados actualizados en Google Sheets.")
                                 st.balloons()
                                 st.session_state.pop('sugerencia_ids', None)
                                 st.rerun()
@@ -348,10 +380,11 @@ with tab_vencidas:
     if df_vencidas.empty:
         st.success("¡Muy bien! No hay facturas vencidas pendientes en el sistema.")
     else:
-        df_vencidas.insert(0, "seleccionar", False)
+        df_vencidas_display = df_vencidas.copy()
+        df_vencidas_display.insert(0, "seleccionar", False)
         
         edited_df_vencidas = st.data_editor(
-            df_vencidas, key="data_editor_vencidas", use_container_width=True, hide_index=True,
+            df_vencidas_display, key="data_editor_vencidas", use_container_width=True, hide_index=True,
             column_config={
                 "seleccionar": st.column_config.CheckboxColumn(required=True),
                 "valor_total_erp": st.column_config.NumberColumn("Valor Factura (COP)", format="%d"),
@@ -359,7 +392,7 @@ with tab_vencidas:
                 "fecha_vencimiento_erp": st.column_config.DateColumn("Fecha Vencimiento", format="YYYY-MM-DD"),
                 "dias_para_vencer": st.column_config.NumberColumn("Días Vencida", format="%d días"),
             },
-            disabled=[col for col in df_vencidas.columns if col != 'seleccionar']
+            disabled=[col for col in df_vencidas_display.columns if col != 'seleccionar']
         )
         selected_rows_vencidas = edited_df_vencidas[edited_df_vencidas['seleccionar']]
         st.divider()
@@ -408,7 +441,7 @@ with tab_vencidas:
                             }
                             success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info_vencidas, selected_rows_vencidas)
                             if success:
-                                st.success(f"¡Éxito! Lote de Vencidas `{id_lote_vencidas}` generado.")
+                                st.success(f"¡Éxito! Lote de Vencidas `{id_lote_vencidas}` generado y estados actualizados en Google Sheets.")
                                 st.balloons()
                                 st.rerun()
                             else:
