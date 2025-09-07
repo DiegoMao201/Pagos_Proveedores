@@ -57,10 +57,7 @@ import pytz
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from gspread import Client, Worksheet
-# ### INICIO DE LA CORRECCIÓN DEL IMPORT ERROR ###
-# Se importa la función 'get_column_letter' para obtener la letra de una columna (ej. 1 -> A)
-from openpyxl.utils import get_column_letter
-# ### FIN DE LA CORRECCIÓN DEL IMPORT ERROR ###
+from openpyxl.utils import get_column_letter # Se importa para obtener la letra de una columna
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN INICIAL Y CONSTANTES GLOBALES ---
@@ -242,10 +239,7 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
         num_cols_data = len(df_to_upload.columns)
         
         # 2. Obtener la letra de la última columna que el script manejará.
-        # ### INICIO DE LA CORRECCIÓN DEL NAME ERROR ###
-        # Se corrige el nombre de la función 'column_letter' a 'get_column_letter'
         last_col_letter = get_column_letter(num_cols_data)
-        # ### FIN DE LA CORRECCIÓN DEL NAME ERROR ###
         
         # 3. Primero, actualiza el contenido nuevo desde la celda A1.
         worksheet.update(data_to_upload, 'A1')
@@ -338,11 +332,9 @@ def load_erp_data() -> pd.DataFrame:
 
         df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
         
-        # ### INICIO DE CORRECCIÓN DE FECHAS ERP ###
-        # Se normaliza la fecha para quitar la hora y luego se localiza la zona horaria.
+        # Se normalizan las fechas del ERP para quitar la hora y luego se localiza la zona horaria.
         df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-        # ### FIN DE CORRECCIÓN DE FECHAS ERP ###
         
         st.success(f"✅ Datos del ERP cargados exitosamente ({len(df)} registros).")
         return df
@@ -508,22 +500,21 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
         
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
-        # ### INICIO DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS ###
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                # Se limpian valores no válidos y se convierte a datetime, ignorando errores.
-                email_df_proc[col] = email_df_proc[col].replace(r'^\s*$', np.nan, regex=True)
+                # Conversión robusta de fechas, forzando a NaT en caso de error
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
                 # Asignar zona horaria y normalizar solo si la conversión fue exitosa.
                 if pd.api.types.is_datetime64_any_dtype(date_series):
-                    # Normaliza para quitar la hora y dejar solo la fecha.
                     date_series = date_series.dt.normalize()
                     if date_series.dt.tz is None:
                         email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                     else:
                         email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-        # ### FIN DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS ###
+                else:
+                    # Si la serie no es de tipo fecha, se llena con NaT para consistencia
+                    email_df_proc[col] = pd.NaT
 
         email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
     else:
@@ -548,10 +539,8 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    # ### INICIO DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
     # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
     today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-    # ### FIN DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
     conditions_pago = [
@@ -596,10 +585,9 @@ def run_full_sync():
                 historical_df = pd.DataFrame(db_sheet.get_all_records())
                 if not historical_df.empty:
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
-                    # ### INICIO DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS (HISTÓRICO) ###
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            historical_df[col] = historical_df[col].replace(r'^\s*$', np.nan, regex=True)
+                            # Conversión robusta de fechas del histórico
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
                             if pd.api.types.is_datetime64_any_dtype(date_series):
@@ -608,17 +596,16 @@ def run_full_sync():
                                     historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
                                 else:
                                     historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-                    # ### FIN DE LA CORRECCIÓN DEL VALUE ERROR EN FECHAS (HISTÓRICO) ###
+                            else:
+                                historical_df[col] = pd.NaT
 
             except gspread.exceptions.GSpreadException as e:
                 st.warning(f"No se pudo leer la base de datos histórica de correos: {e}")
 
         if not email_df.empty:
             st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            # ### INICIO DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
             # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
             email_df['fecha_lectura'] = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-            # ### FIN DE LA CORRECCIÓN DEL ATTRIBUTE ERROR ###
             st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
             
             combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
