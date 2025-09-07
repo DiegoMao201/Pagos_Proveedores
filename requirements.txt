@@ -12,6 +12,7 @@ lxml
 xlsxwriter
 gspread
 openpyxl
+plotly
 
 
 
