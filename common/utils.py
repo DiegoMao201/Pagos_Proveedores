@@ -36,6 +36,7 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
     Carga datos desde Google Sheets, normaliza columnas y garantiza la existencia
     de columnas críticas para el funcionamiento de la aplicación.
     """
+    st.success("✅ Ejecutando la versión más reciente de la función de carga de datos (v3.3).") # Mensaje de verificación
     if not _gs_client:
         return pd.DataFrame()
 
@@ -43,21 +44,17 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
         spreadsheet = _gs_client.open_by_key(st.secrets["google_sheet_id"])
         worksheet = spreadsheet.worksheet(GSHEET_REPORT_NAME)
         
-        # Se leen todos los valores para tener control total, incluso sobre filas vacías.
         records = worksheet.get_all_values()
         if len(records) < 2:
             st.warning("El reporte en Google Sheets está vacío o solo tiene encabezados.")
             return pd.DataFrame()
 
-        # Se crea el DataFrame a partir de la segunda fila (datos), usando la primera como encabezados.
         df = pd.DataFrame(records[1:], columns=records[0])
 
         # 1. Normalización de Nombres de Columnas
-        # Convierte a minúsculas, quita espacios y reemplaza por guiones bajos.
         original_cols = df.columns.tolist()
         df.columns = [str(col).strip().lower().replace(' ', '_') for col in original_cols]
         
-        # Mapeo para estandarizar nombres clave.
         rename_map = {
             'nombre_proveedor_erp': 'nombre_proveedor',
             'valor_total_erp': 'valor_total_erp',
@@ -66,31 +63,24 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
         valid_rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
         df.rename(columns=valid_rename_map, inplace=True)
         
-        # 2. <-- INICIO DE LA CORRECCIÓN CRÍTICA -->
-        # Este bloque es la solución definitiva. Garantiza que las columnas que
-        # causan errores en otras páginas existan siempre.
+        # 2. Garantizar la existencia de columnas críticas
         if 'nombre_proveedor' not in df.columns:
-            st.warning("⚠️ La columna 'nombre_proveedor' no fue encontrada o está vacía en Google Sheets. Se creará una columna con valores por defecto para evitar errores.")
+            st.warning("⚠️ La columna 'nombre_proveedor' no fue encontrada. Se creará una columna por defecto.")
             df['nombre_proveedor'] = 'Proveedor No Especificado'
         
         if 'valor_total_erp' not in df.columns:
             st.warning("⚠️ La columna 'valor_total_erp' no fue encontrada. Se creará y llenará con ceros.")
             df['valor_total_erp'] = 0
-        # <-- FIN DE LA CORRECCIÓN CRÍTICA -->
 
-        # 3. Limpieza de Datos de Estado de Factura
+        # 3. Limpieza y Conversión de Tipos
         if 'estado_factura' in df.columns:
-            df['estado_factura'] = df['estado_factura'].astype(str).str.strip().str.capitalize()
-            df['estado_factura'].replace('', 'Pendiente', inplace=True)
+            df['estado_factura'] = df['estado_factura'].astype(str).str.strip().str.capitalize().replace('', 'Pendiente')
         else:
-            st.warning("La columna 'estado_factura' no fue encontrada. Se asumirá que todas las facturas están 'Pendiente'.")
             df['estado_factura'] = 'Pendiente'
 
-        # 4. Conversión de Tipos de Datos (Numéricos y Fechas)
         numeric_cols = ['valor_total_erp', 'valor_total_correo', 'dias_para_vencer', 'valor_descuento', 'valor_con_descuento']
         for col in numeric_cols:
             if col in df.columns:
-                # Se reemplazan comas por puntos para el formato decimal y se convierte a numérico.
                 if df[col].dtype == 'object':
                     df[col] = df[col].str.replace(',', '.', regex=False)
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -99,18 +89,14 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
         for col in date_cols:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
-                # Se localiza la zona horaria de Colombia para un manejo correcto de fechas.
                 if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    if df[col].dt.tz is None:
-                        df[col] = df[col].dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-                    else:
-                        df[col] = df[col].dt.tz_convert(COLOMBIA_TZ)
+                    df[col] = df[col].dt.tz_localize(None).dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         
         return df
 
     except gspread.exceptions.WorksheetNotFound:
-        st.error(f"❌ Error fatal: No se encontró la hoja '{GSHEET_REPORT_NAME}' en el archivo de Google Sheets.")
+        st.error(f"❌ Error fatal: No se encontró la hoja '{GSHEET_REPORT_NAME}'.")
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Ocurrió un error inesperado al cargar los datos de Google Sheets: {e}")
+        st.error(f"❌ Ocurrió un error inesperado al cargar los datos: {e}")
         return pd.DataFrame()
