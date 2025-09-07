@@ -1,22 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.5).
+Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.7 - Definitiva).
 
 Este módulo es una herramienta de análisis gerencial diseñada para:
-1.  Sincronizar de forma independiente e inteligente todas las facturas de PINTUCO.
-2.  Cargar y procesar correctamente las Notas de Crédito desde Dropbox.
-3.  Cruzar la información con la cartera vigente para determinar el estado de pago.
-4.  Almacenar un historial completo en una PESTAÑA dedicada ('Rebate_Pintuco')
-    dentro del libro de Google Sheets principal de la aplicación.
+1.  Sincronizar de forma independiente e inteligente todas las facturas de PINTUCO,
+    reconociendo múltiples nombres de proveedor (alias).
+2.  Analizar la estructura compleja de XML anidados para una extracción de datos precisa.
+3.  Cargar y procesar correctamente las Notas de Crédito desde Dropbox.
+4.  Almacenar un historial completo en una pestaña dedicada dentro del libro principal.
 5.  Calcular y visualizar en tiempo real el progreso del acuerdo de rebate.
 
-Mejoras en v1.5:
-- **Integración en Libro Principal:** Se eliminó la creación de un nuevo archivo de Google
-  Sheets. El módulo ahora trabaja sobre el libro existente (definido por 'google_sheet_id'
-  en los secrets), creando y gestionando su propia pestaña. Esto soluciona el error
-  de permisos 'APIError' de forma definitiva y centraliza la información.
-- **Robustez y consistencia:** El método de conexión a la hoja de cálculo ahora es
-  idéntico al del dashboard principal (usando open_by_key).
+Mejoras en v1.7:
+- **Análisis de XML Avanzado:** La función de parsing ahora maneja la estructura de
+  'AttachedDocument' que contiene la 'Invoice' real dentro de un CDATA, basado en la
+  muestra proporcionada.
+- **Mapeo de Alias de Proveedor:** Se utiliza una lista de nombres conocidos para Pintuco
+  ("PINTUCO", "COMPANIA GLOBAL DE PINTURAS") para asegurar la captura de todas las facturas.
+- **Corrección Definitiva de `KeyError`:** La lógica de sincronización es ahora
+  completamente robusta frente al escenario de no encontrar facturas nuevas.
+- **Sincronización Incremental Optimizada:** Se mantiene la lógica de buscar solo los
+  correos más recientes para garantizar una alta velocidad en sincronizaciones subsecuentes.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -49,14 +52,10 @@ if not st.session_state["password_correct"]:
 # --- FIN DEL BLOQUE DE SEGURIDAD ---
 
 # --- 1. CONFIGURACIÓN INICIAL Y CONSTANTES ---
-st.set_page_config(
-    layout="wide",
-    page_title="Seguimiento Rebate | Pintuco",
-    page_icon="🎯"
-)
+st.set_page_config(layout="wide", page_title="Seguimiento Rebate | Pintuco", page_icon="🎯")
 
 # --- Constantes Globales ---
-PINTUCO_KEYWORD = "PINTUCO"
+PINTUCO_ALIASES = ["PINTUCO", "COMPANIA GLOBAL DE PINTURAS"] # Nombres conocidos para el proveedor
 PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 INITIAL_START_DATE_SYNC = date(2025, 7, 1)
@@ -65,16 +64,13 @@ INITIAL_START_DATE_SYNC = date(2025, 7, 1)
 IMAP_SERVER = "imap.gmail.com"
 EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_FILE_PATH = "/data/Proveedores.csv"
-# **MEJORA CLAVE**: Se usará el ID del libro principal y se creará una pestaña específica.
 PINTUCO_WORKSHEET_NAME = "Rebate_Pintuco"
 
 # --- Constantes del Acuerdo de Rebate ---
 META_VOLUMEN = {
-    "Julio": {"Escala 1": 1777446334, "Rebate 1": 0.005, "Escala 2": 1901867577, "Rebate 2": 0.01},
     "Julio-Agosto": {"Escala 1": 3662382180, "Rebate 1": 0.005, "Escala 2": 3918748933, "Rebate 2": 0.01},
     "Agosto-Sept.": {"Escala 1": 3876058532, "Rebate 1": 0.005, "Escala 2": 4147382629, "Rebate 2": 0.01},
     "3er Trimestre (3Q)": {"Escala 1": 5653504866, "Rebate 1": 0.01, "Escala 2": 6049250207, "Rebate 2": 0.02},
-    "Octubre": {"Escala 1": 2148246123, "Rebate 1": 0.005, "Escala 2": 2298623352, "Rebate 2": 0.01},
     "Octubre-Nov.": {"Escala 1": 4272097392, "Rebate 1": 0.005, "Escala 2": 4571144209, "Rebate 2": 0.01},
     "Noviembre-Dic.": {"Escala 1": 3970984742, "Rebate 1": 0.005, "Escala 2": 4248953674, "Rebate 2": 0.01},
     "4to Trimestre (4Q)": {"Escala 1": 6119230865, "Rebate 1": 0.01, "Escala 2": 6547577026, "Rebate 2": 0.02},
@@ -97,23 +93,14 @@ def connect_to_google_sheets():
         creds = Credentials.from_service_account_info(st.secrets["google_credentials"], scopes=scopes)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"❌ Error crítico al autenticar con Google: {e}")
-        return None
+        st.error(f"❌ Error crítico al autenticar con Google: {e}"); return None
 
-# --- MEJORA CLAVE: La función ahora usa el ID del libro, no el nombre. ---
 def get_worksheet(client: gspread.Client, sheet_key: str, worksheet_name: str):
-    """
-    Abre una hoja de cálculo por su ID y obtiene una pestaña específica.
-    Si la pestaña no existe, la crea.
-    """
     try:
         spreadsheet = client.open_by_key(sheet_key)
     except gspread.exceptions.APIError as e:
-        st.error(f"❌ **Error de API de Google:** No se pudo abrir el libro de Google Sheets. Verifica que el 'google_sheet_id' en tus secrets sea correcto y que hayas compartido el libro con el correo de servicio.")
-        st.info(f"Correo de servicio: `{st.secrets.google_credentials['client_email']}`")
-        st.stop()
-        return None
-
+        st.error(f"❌ **Error de API de Google:** No se pudo abrir el libro. Verifica que 'google_sheet_id' en tus secrets sea correcto y que hayas compartido el libro con el correo de servicio.")
+        st.info(f"Correo de servicio: `{st.secrets.google_credentials['client_email']}`"); st.stop(); return None
     try:
         return spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
@@ -130,89 +117,80 @@ def update_gsheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame):
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist(), 'A1')
         return True
     except Exception as e:
-        st.error(f"❌ Error al actualizar la hoja '{worksheet.title}': {e}")
-        return False
+        st.error(f"❌ Error al actualizar la hoja '{worksheet.title}': {e}"); return False
 
 def normalize_invoice_number(inv_num: any) -> str:
-    if not isinstance(inv_num, str):
-        inv_num = str(inv_num)
+    if not isinstance(inv_num, str): inv_num = str(inv_num)
     return re.sub(r'[^A-Z0-9]', '', inv_num.upper()).strip()
 
 def clean_and_convert_numeric(value: any) -> float:
-    if pd.isna(value) or value is None:
-        return np.nan
+    if pd.isna(value) or value is None: return np.nan
     cleaned_str = str(value).strip().replace('$', '').replace(',', '.')
-    try:
-        return float(cleaned_str)
-    except (ValueError, TypeError):
-        return np.nan
+    try: return float(cleaned_str)
+    except (ValueError, TypeError): return np.nan
 
 # --- 3. FUNCIONES DE EXTRACCIÓN DE DATOS ---
 @st.cache_data(ttl=600, show_spinner="Descargando cartera vigente de Dropbox...")
 def load_pending_documents_from_dropbox() -> set:
     try:
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets.dropbox["refresh_token"],
-            app_key=st.secrets.dropbox["app_key"],
-            app_secret=st.secrets.dropbox["app_secret"]
-        )
+        dbx = dropbox.Dropbox(oauth2_refresh_token=st.secrets.dropbox["refresh_token"], app_key=st.secrets.dropbox["app_key"], app_secret=st.secrets.dropbox["app_secret"])
         _, response = dbx.files_download(DROPBOX_FILE_PATH)
-        df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                         sep='{', header=None, engine='python',
-                         names=['nombre_proveedor_erp', 'serie', 'num_entrada', 'num_factura', 
-                                'doc_erp', 'fecha_emision_erp', 'fecha_vencimiento_erp', 'valor_total_erp'])
-
+        df = pd.read_csv(io.StringIO(response.content.decode('latin1')), sep='{', header=None, engine='python', names=['nombre_proveedor_erp', 'serie', 'num_entrada', 'num_factura', 'doc_erp', 'fecha_emision_erp', 'fecha_vencimiento_erp', 'valor_total_erp'])
         pintuco_df = df[df['nombre_proveedor_erp'] == PINTUCO_PROVIDER_NAME_ERP].copy()
         pintuco_df['valor_total_erp'] = pintuco_df['valor_total_erp'].apply(clean_and_convert_numeric)
         credit_note_mask = (pintuco_df['valor_total_erp'] < 0) & (pintuco_df['num_factura'].isna() | (pintuco_df['num_factura'].str.strip() == ''))
-        
         if credit_note_mask.any():
-            pintuco_df.loc[credit_note_mask, 'num_factura'] = 'NC-' + \
-                pintuco_df.loc[credit_note_mask, 'doc_erp'].astype(str).str.strip() + '-' + \
-                pintuco_df.loc[credit_note_mask, 'valor_total_erp'].abs().astype(int).astype(str)
-
+            pintuco_df.loc[credit_note_mask, 'num_factura'] = 'NC-' + pintuco_df.loc[credit_note_mask, 'doc_erp'].astype(str).str.strip() + '-' + pintuco_df.loc[credit_note_mask, 'valor_total_erp'].abs().astype(int).astype(str)
         pintuco_df.dropna(subset=['num_factura'], inplace=True)
         pending_docs = set(pintuco_df['num_factura'].apply(normalize_invoice_number))
         st.info(f"Encontrados {len(pending_docs)} documentos pendientes de Pintuco en Dropbox.")
         return pending_docs
     except Exception as e:
-        st.error(f"❌ Error cargando cartera de Dropbox: {e}")
-        return set()
+        st.error(f"❌ Error cargando cartera de Dropbox: {e}"); return set()
 
 def parse_invoice_xml(xml_content: str) -> dict or None:
     try:
+        # Define namespaces para buscar en el XML
+        ns = {'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2", 'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"}
+        
+        # Limpia el contenido XML de caracteres extraños al inicio
         xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
         root = ET.fromstring(xml_content.encode('utf-8'))
-        ns = {
-            'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
-        }
-        supplier_name_node = root.find('.//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', ns)
-        if supplier_name_node is None:
-            return None
+        
+        # La factura real está dentro de un CDATA en el nodo Description
+        description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
+        if description_node is not None and description_node.text and '<Invoice' in description_node.text:
+            inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
+            invoice_root = ET.fromstring(inner_xml_text.encode('utf-8'))
+        else:
+            # Si no está anidado, el root principal es la factura
+            invoice_root = root
+
+        supplier_name_node = invoice_root.find('.//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName', ns)
+        if supplier_name_node is None: return None
         supplier_name = supplier_name_node.text.strip()
         
-        if PINTUCO_KEYWORD not in supplier_name.upper():
+        # **MEJORA CLAVE**: Usa la lista de alias para identificar al proveedor
+        if not any(alias in supplier_name.upper() for alias in PINTUCO_ALIASES):
             return None
 
-        invoice_number = root.find('./cbc:ID', ns).text.strip()
-        issue_date = root.find('./cbc:IssueDate', ns).text.strip()
-        net_value_node = root.find('.//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount', ns)
-        if net_value_node is None:
-            net_value_node = root.find('.//cac:LegalMonetaryTotal/cbc:LineExtensionAmount', ns)
-        if net_value_node is None:
-            return None
-        net_value = net_value_node.text.strip()
+        invoice_number = invoice_root.find('./cbc:ID', ns).text.strip()
+        issue_date = invoice_root.find('./cbc:IssueDate', ns).text.strip()
+        net_value_node = invoice_root.find('.//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount', ns)
+        if net_value_node is None: net_value_node = invoice_root.find('.//cac:LegalMonetaryTotal/cbc:LineExtensionAmount', ns)
+        if net_value_node is None: return None
+        
         return {
             "Fecha_Factura": issue_date,
             "Numero_Factura": normalize_invoice_number(invoice_number),
-            "Valor_Neto": float(net_value),
+            "Valor_Neto": float(net_value_node.text.strip()),
             "Proveedor_Correo": supplier_name
         }
-    except:
+    except Exception:
         return None
 
 def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
+    # (Esta función no necesita cambios, su lógica interna es correcta)
     invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -221,17 +199,14 @@ def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
         search_query = f'(SINCE "{start_date.strftime("%d-%b-%Y")}")'
         _, messages = mail.search(None, search_query)
         message_ids = messages[0].split()
-        if not message_ids:
-            mail.logout()
-            return pd.DataFrame()
-        progress_text = f"Procesando {len(message_ids)} correos..."
+        if not message_ids: mail.logout(); return pd.DataFrame()
+        progress_text = f"Procesando {len(message_ids)} correos encontrados..."
         progress_bar = st.progress(0, text=progress_text)
         for i, num in enumerate(message_ids):
             _, data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(data[0][1])
             for part in msg.walk():
-                if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None:
-                    continue
+                if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None: continue
                 filename = part.get_filename()
                 if filename and filename.lower().endswith('.zip'):
                     try:
@@ -240,94 +215,87 @@ def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
                                 if name.lower().endswith('.xml'):
                                     xml_content = zf.read(name).decode('utf-8', 'ignore')
                                     details = parse_invoice_xml(xml_content)
-                                    if details:
-                                        invoices_data.append(details)
-                    except:
-                        continue
+                                    if details: invoices_data.append(details)
+                    except: continue
             progress_bar.progress((i + 1) / len(message_ids), text=f"{progress_text} ({i+1}/{len(message_ids)})")
         mail.logout()
         return pd.DataFrame(invoices_data)
     except Exception as e:
-        st.error(f"❌ Error procesando correos: {e}")
-        return pd.DataFrame()
+        st.error(f"❌ Error procesando correos: {e}"); return pd.DataFrame()
 
-# --- 4. LÓGICA PRINCIPAL DE SINCRONIZACIÓN ---
+# --- 4. LÓGICA PRINCIPAL DE SINCRONIZACIÓN (ROBUSTA) ---
 def run_pintuco_sync():
     with st.spinner('Iniciando sincronización de Pintuco...'):
         st.info("Paso 1/4: Descargando cartera pendiente de Dropbox...")
         pending_docs_set = load_pending_documents_from_dropbox()
-        st.info("Paso 2/4: Conectando a Google Sheets para determinar la fecha de inicio de búsqueda...")
-        gs_client = connect_to_google_sheets()
-        if not gs_client:
-            st.error("Sincronización cancelada. No se pudo conectar a Google."); st.stop()
         
+        st.info("Paso 2/4: Conectando a Google Sheets para optimizar búsqueda...")
+        gs_client = connect_to_google_sheets()
+        if not gs_client: st.error("Sincronización cancelada. No se pudo conectar a Google."); st.stop()
         worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
         
         try:
             records = worksheet.get_all_records()
             if not records:
-                 historical_df = pd.DataFrame()
-                 start_date = INITIAL_START_DATE_SYNC
+                historical_df = pd.DataFrame()
+                start_date = INITIAL_START_DATE_SYNC
             else:
                 historical_df = pd.DataFrame(records)
                 historical_df['Fecha_Factura'] = pd.to_datetime(historical_df['Fecha_Factura'])
                 last_sync_date = historical_df['Fecha_Factura'].max().date()
-                start_date = last_sync_date - timedelta(days=2)
-        except Exception as e:
+                start_date = last_sync_date - timedelta(days=3) # Margen de seguridad de 3 días
+        except Exception:
             historical_df = pd.DataFrame()
             start_date = INITIAL_START_DATE_SYNC
 
         st.info(f"Paso 3/4: Buscando facturas en el correo desde {start_date.strftime('%Y-%m-%d')}...")
         new_invoices_df = fetch_pintuco_invoices_from_email(start_date)
 
-        if new_invoices_df.empty and not historical_df.empty:
-            st.success("No se encontraron nuevas facturas de Pintuco en el correo.")
-            st.info("Actualizando estado de pago de documentos existentes...")
-            historical_df['Estado_Pago'] = historical_df['Numero_Factura'].apply(
-                lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada'
-            )
-            update_gsheet_from_df(worksheet, historical_df)
+        if new_invoices_df.empty:
+            st.success("No se encontraron **nuevas** facturas de Pintuco en el correo.")
+            if not historical_df.empty:
+                st.info("Actualizando estado de pago de documentos existentes...")
+                historical_df['Estado_Pago'] = historical_df['Numero_Factura'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
+                update_gsheet_from_df(worksheet, historical_df)
             st.session_state['last_pintuco_sync'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
             return
 
-        st.info("Paso 4/4: Consolidando, actualizando estado de pago y guardando...")
+        st.info(f"Paso 4/4: Se encontraron {len(new_invoices_df)} facturas nuevas. Consolidando y guardando...")
         new_invoices_df['Fecha_Factura'] = pd.to_datetime(new_invoices_df['Fecha_Factura'])
         new_invoices_df['Valor_Neto'] = pd.to_numeric(new_invoices_df['Valor_Neto'])
+        
         if not historical_df.empty:
              historical_df['Valor_Neto'] = pd.to_numeric(historical_df['Valor_Neto'])
-
+        
         combined_df = pd.concat([historical_df, new_invoices_df]).drop_duplicates(subset=['Numero_Factura'], keep='last')
-        combined_df['Estado_Pago'] = combined_df['Numero_Factura'].apply(
-            lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada'
-        )
+        combined_df['Estado_Pago'] = combined_df['Numero_Factura'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
+        
         if update_gsheet_from_df(worksheet, combined_df.sort_values(by="Fecha_Factura")):
             st.success("✅ ¡Base de datos de Pintuco actualizada exitosamente!")
         else:
             st.error("Falló la actualización en Google Sheets.")
+        
         st.session_state['last_pintuco_sync'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
         st.balloons()
 
-# --- 5. LÓGICA DE CÁLCULO Y VISUALIZACIÓN DEL REBATE ---
+# --- 5. LÓGICA DE CÁLCULO Y VISUALIZACIÓN ---
 @st.cache_data(ttl=300)
 def load_pintuco_data_from_gsheet() -> pd.DataFrame:
     try:
         gs_client = connect_to_google_sheets()
         worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
         records = worksheet.get_all_records()
-        if not records:
-            return pd.DataFrame()
+        if not records: return pd.DataFrame()
         df = pd.DataFrame(records)
         df['Fecha_Factura'] = pd.to_datetime(df['Fecha_Factura'])
         df['Valor_Neto'] = pd.to_numeric(df['Valor_Neto'])
         return df
     except Exception as e:
-        st.error(f"Error al cargar datos desde Google Sheets: {e}")
-        return pd.DataFrame()
+        st.error(f"Error al cargar datos desde Google Sheets: {e}"); return pd.DataFrame()
 
 def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty: return pd.DataFrame()
-    df = df.copy()
-    df['Mes'] = df['Fecha_Factura'].dt.month
+    df = df.copy(); df['Mes'] = df['Fecha_Factura'].dt.month
     summary_data = []
     for month in range(7, 13):
         monthly_df = df[df['Mes'] == month]
@@ -337,45 +305,27 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
             purchase_before_20th = monthly_df[monthly_df['Fecha_Factura'].dt.day <= 20]['Valor_Neto'].sum()
             if (purchase_before_20th / total_month_purchase) >= 0.9:
                 meta_est = META_ESTACIONALIDAD.get(month, {})
-                if total_month_purchase >= meta_est.get("Escala 2", float('inf')):
-                    rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 2", 0)
-                elif total_month_purchase >= meta_est.get("Escala 1", float('inf')):
-                    rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 1", 0)
-        summary_data.append({
-            "Período": f"Mes {month} (Estacionalidad)", "Meta": 0, "Compra Real": total_month_purchase,
-            "Rebate Calculado": rebate_estacionalidad, "Tipo": "Estacionalidad"
-        })
-    period_map = {
-        "Julio-Agosto": [7, 8], "Agosto-Sept.": [8, 9], "3er Trimestre (3Q)": [7, 8, 9],
-        "Octubre-Nov.": [10, 11], "Noviembre-Dic.": [11, 12], "4to Trimestre (4Q)": [10, 11, 12],
-        "2do Semestre (2Sem)": list(range(7, 13))
-    }
+                if total_month_purchase >= meta_est.get("Escala 2", float('inf')): rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 2", 0)
+                elif total_month_purchase >= meta_est.get("Escala 1", float('inf')): rebate_estacionalidad = total_month_purchase * meta_est.get("Rebate 1", 0)
+        summary_data.append({"Período": f"Mes {month} (Estacionalidad)", "Meta": 0, "Compra Real": total_month_purchase, "Rebate Calculado": rebate_estacionalidad, "Tipo": "Estacionalidad"})
+    period_map = { "Julio-Agosto": [7, 8], "Agosto-Sept.": [8, 9], "3er Trimestre (3Q)": [7, 8, 9], "Octubre-Nov.": [10, 11], "Noviembre-Dic.": [11, 12], "4to Trimestre (4Q)": [10, 11, 12], "2do Semestre (2Sem)": list(range(7, 13)) }
     for period, months in period_map.items():
         period_df = df[df['Mes'].isin(months)]
         total_period_purchase = period_df['Valor_Neto'].sum()
         meta_vol = META_VOLUMEN.get(period, {})
         rebate_volumen = 0
-        if total_period_purchase >= meta_vol.get("Escala 2", float('inf')):
-            rebate_volumen = total_period_purchase * meta_vol.get("Rebate 2", 0)
-        elif total_period_purchase >= meta_vol.get("Escala 1", float('inf')):
-            rebate_volumen = total_period_purchase * meta_vol.get("Rebate 1", 0)
-        summary_data.append({
-            "Período": period, "Meta": meta_vol.get("Escala 1", 0), "Compra Real": total_period_purchase,
-            "Rebate Calculado": rebate_volumen, "Tipo": "Volumen"
-        })
+        if total_period_purchase >= meta_vol.get("Escala 2", float('inf')): rebate_volumen = total_period_purchase * meta_vol.get("Rebate 2", 0)
+        elif total_period_purchase >= meta_vol.get("Escala 1", float('inf')): rebate_volumen = total_period_purchase * meta_vol.get("Rebate 1", 0)
+        summary_data.append({"Período": period, "Meta": meta_vol.get("Escala 1", 0), "Compra Real": total_period_purchase, "Rebate Calculado": rebate_volumen, "Tipo": "Volumen"})
         if "Q" in period:
             rebate_profundidad = total_period_purchase * 0.01
-            summary_data.append({
-                "Período": period, "Meta": 0, "Compra Real": total_period_purchase,
-                "Rebate Calculado": rebate_profundidad, "Tipo": "Profundidad"
-            })
-    summary_df = pd.DataFrame(summary_data)
-    return summary_df
+            summary_data.append({"Período": period, "Meta": 0, "Compra Real": total_period_purchase, "Rebate Calculado": rebate_profundidad, "Tipo": "Profundidad"})
+    return pd.DataFrame(summary_data)
 
 # --- 6. APLICACIÓN PRINCIPAL (STREAMLIT UI) ---
 st.title("🎯 Módulo de Seguimiento de Rebate: PINTUCO")
 st.markdown("Herramienta para el análisis y seguimiento del acuerdo de desempeño comercial con **PINTUCO COLOMBIA S.A.S**.")
-st.info("Este módulo es independiente. Presiona el botón para sincronizar las facturas de Pintuco desde el correo y cruzarlas con la cartera vigente de Dropbox.")
+st.info("Este módulo es independiente. La primera sincronización puede tardar. Las siguientes serán mucho más rápidas.")
 
 if st.button("🔄 Sincronizar Facturas de Pintuco", type="primary"):
     run_pintuco_sync()
@@ -407,15 +357,8 @@ tab1, tab2 = st.tabs(["📈 Desglose del Rebate", "📑 Detalle de Documentos"])
 with tab1:
     st.subheader("Análisis de Cumplimiento por Período")
     st.dataframe(rebate_summary_df, use_container_width=True, hide_index=True,
-        column_config={
-            "Meta": st.column_config.NumberColumn("Meta (Escala 1)", format="$ %d"),
-            "Compra Real": st.column_config.NumberColumn(format="$ %d"),
-            "Rebate Calculado": st.column_config.NumberColumn(format="$ %d"),
-        })
+        column_config={ "Meta": st.column_config.NumberColumn("Meta (Escala 1)", format="$ %d"), "Compra Real": st.column_config.NumberColumn(format="$ %d"), "Rebate Calculado": st.column_config.NumberColumn(format="$ %d"), })
 with tab2:
     st.subheader("Historial Completo de Documentos de Pintuco")
     st.dataframe(pintuco_df.sort_values(by="Fecha_Factura", ascending=False), use_container_width=True, hide_index=True,
-        column_config={
-            "Fecha_Factura": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"),
-            "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d"),
-        })
+        column_config={ "Fecha_Factura": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"), "Valor_Neto": st.column_config.NumberColumn("Valor Neto (Antes de IVA)", format="$ %d"), })
