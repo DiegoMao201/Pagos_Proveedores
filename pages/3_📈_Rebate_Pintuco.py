@@ -492,6 +492,14 @@ def display_quarterly_analysis_premium(quarter_name: str, months: list, analysis
     # Totales de compra del Q
     total_comprado_q_neto = pintuco_df[pintuco_df['Fecha_Factura'].dt.month.isin(months)]['Valor_Neto'].sum()
     compra_aplicable_q = vol_q_data['Compra_Aplicable']
+    
+    # Mapa de periodos bimensuales para la recomposición
+    bimonthly_map = {
+        "3er Trimestre (3Q)": ["Julio-Agosto", "Agosto-Sept."],
+        "4to Trimestre (4Q)": ["Octubre-Nov.", "Noviembre-Dic."]
+    }
+    relevant_bimonthly = bimonthly_map.get(quarter_name, [])
+    bimonthly_df = analysis_df[(analysis_df['Tipo'] == 'Volumen') & (analysis_df['Periodo'].isin(relevant_bimonthly))]
 
     with st.expander(f"✨ **Detalle y Proyección del {quarter_name}**", expanded=False):
         st.markdown(f"### Análisis Consolidado del {quarter_name}")
@@ -523,10 +531,48 @@ def display_quarterly_analysis_premium(quarter_name: str, months: list, analysis
         st.markdown("---")
         st.markdown("### 📈 Proyecciones de Ganancia por Volumen")
 
+        # --- CÁLCULOS AVANZADOS DE PROYECCIÓN ---
+
         # Proyección Escala 1
         faltante_e1 = vol_q_data['Faltante_E1']
+        meta_e1_compra_total = vol_q_data['Meta_E1']
+        
+        # 1. Rebate de Volumen del Q
         nc_potencial_volumen_e1 = vol_q_data['Rebate_Potencial_E1']
-        nc_total_proyectada_e1 = nc_potencial_volumen_e1 + rebate_ganado_profundidad + rebate_ganado_estacionalidad
+        # 2. Rebate de Profundidad proyectado
+        projected_profundidad_e1 = meta_e1_compra_total * REBATE_PROFUNDIDAD_Q
+        # 3. Rebate de Estacionalidad proyectado (se asume que se cumplen todos los meses del Q)
+        projected_estacionalidad_e1 = est_q_df['Rebate_Potencial_E1'].sum()
+        # 4. Rebate de Volumen bimensual por recomposición
+        projected_recomposicion_e1 = 0
+        for _, row in bimonthly_df.iterrows():
+            if meta_e1_compra_total >= row['Meta_E1']:
+                projected_recomposicion_e1 += row['Rebate_Potencial_E1']
+
+        nc_total_proyectada_e1 = nc_potencial_volumen_e1 + projected_profundidad_e1 + projected_estacionalidad_e1 + projected_recomposicion_e1
+        
+        # Proyección Escala 2
+        faltante_e2 = vol_q_data['Faltante_E2']
+        meta_e2_compra_total = vol_q_data['Meta_E2']
+
+        # 1. Rebate de Volumen del Q
+        nc_potencial_volumen_e2 = vol_q_data['Rebate_Potencial_E2']
+        # 2. Rebate de Profundidad proyectado
+        projected_profundidad_e2 = meta_e2_compra_total * REBATE_PROFUNDIDAD_Q
+        # 3. Rebate de Estacionalidad proyectado (se asume que se cumplen todos los meses del Q al máximo)
+        projected_estacionalidad_e2 = est_q_df['Rebate_Potencial_E2'].sum()
+        # 4. Rebate de Volumen bimensual por recomposición (al máximo)
+        projected_recomposicion_e2 = 0
+        for _, row in bimonthly_df.iterrows():
+            if meta_e2_compra_total >= row['Meta_E2']:
+                 projected_recomposicion_e2 += row['Rebate_Potencial_E2']
+            elif meta_e2_compra_total >= row['Meta_E1']:
+                 projected_recomposicion_e2 += row['Rebate_Potencial_E1']
+
+        nc_total_proyectada_e2 = nc_potencial_volumen_e2 + projected_profundidad_e2 + projected_estacionalidad_e2 + projected_recomposicion_e2
+
+        # --- FIN DE CÁLCULOS AVANZADOS ---
+
         progreso_e1 = (compra_aplicable_q / vol_q_data['Meta_E1']) * 100 if vol_q_data['Meta_E1'] > 0 else 0
 
         st.markdown("#### Meta de Volumen: Escala 1")
@@ -559,10 +605,6 @@ def display_quarterly_analysis_premium(quarter_name: str, months: list, analysis
 
         st.markdown("---")
 
-        # Proyección Escala 2
-        faltante_e2 = vol_q_data['Faltante_E2']
-        nc_potencial_volumen_e2 = vol_q_data['Rebate_Potencial_E2']
-        nc_total_proyectada_e2 = nc_potencial_volumen_e2 + rebate_ganado_profundidad + rebate_ganado_estacionalidad
         progreso_e2 = (compra_aplicable_q / vol_q_data['Meta_E2']) * 100 if vol_q_data['Meta_E2'] > 0 else 0
 
         st.markdown("#### Meta de Volumen: Escala 2 (Máximo Potencial)")
@@ -618,11 +660,11 @@ column_format_config = {
     "Compra_Aplicable": st.column_config.NumberColumn("Compra Aplicable (95%)", format="$ %d"),
     "Meta_E1": st.column_config.NumberColumn("Meta E1", format="$ %d"),
     "Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %d"),
-    "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=1),
+    "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=100),
     "Rebate_Potencial_E1": st.column_config.NumberColumn("NC Proyectada E1", format="$ %d"),
     "Meta_E2": st.column_config.NumberColumn("Meta E2", format="$ %d"),
     "Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %d"),
-    "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=1),
+    "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=100),
     "Rebate_Potencial_E2": st.column_config.NumberColumn("NC Proyectada E2", format="$ %d"),
     "Rebate_Ganado_Actual": st.column_config.NumberColumn("NC Ganada Actual", format="$ %d"),
 }
@@ -630,7 +672,9 @@ column_format_config = {
 with tab_vol:
     st.header("Análisis de Cumplimiento por Volumen de Compra")
     st.markdown("Aquí puedes ver el detalle de tu progreso hacia las metas de volumen para cada período.")
-    df_vol = analysis_df[analysis_df['Tipo'] == 'Volumen']
+    df_vol = analysis_df[analysis_df['Tipo'] == 'Volumen'].copy()
+    df_vol['%_Cumplimiento_E1'] *= 100
+    df_vol['%_Cumplimiento_E2'] *= 100
     st.dataframe(df_vol, use_container_width=True, hide_index=True, column_config=column_format_config)
 
 with tab_est:
@@ -644,17 +688,19 @@ with tab_est:
         return f"${int(val):,}"
 
     df_est['Rebate_Ganado_Actual_Formatted'] = df_est['Rebate_Ganado_Actual'].apply(format_rebate_ganado_est)
-
+    df_est['%_Cumplimiento_E1'] *= 100
+    df_est['%_Cumplimiento_E2'] *= 100
+    
     est_column_config = {
         "Periodo": "Periodo",
         "Compra_Aplicable": st.column_config.NumberColumn("Compra Aplicable (95%)", format="$ %d"),
         "Meta_E1": st.column_config.NumberColumn("Meta E1", format="$ %d"),
         "Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %d"),
-        "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=1),
+        "%_Cumplimiento_E1": st.column_config.ProgressColumn("% Cumpl. E1", format="%.1f%%", min_value=0, max_value=100),
         "Rebate_Potencial_E1": st.column_config.NumberColumn("NC Proyectada E1", format="$ %d"),
         "Meta_E2": st.column_config.NumberColumn("Meta E2", format="$ %d"),
         "Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %d"),
-        "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=1),
+        "%_Cumplimiento_E2": st.column_config.ProgressColumn("% Cumpl. E2", format="%.1f%%", min_value=0, max_value=100),
         "Rebate_Potencial_E2": st.column_config.NumberColumn("NC Proyectada E2", format="$ %d"),
         "Rebate_Ganado_Actual_Formatted": "NC Ganada Actual" # Usar la columna formateada
     }
