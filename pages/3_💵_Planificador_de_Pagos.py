@@ -214,4 +214,37 @@ with tab_credito:
         c1, c2 = st.columns(2)
         c1.metric("Saldo Total a Favor (COP)", f"{df_notas_credito['valor_total_erp'].sum():,.0f}")
         c2.metric("Cantidad de Notas Crédito", f"{len(df_notas_credito)}")
-        st.dataframe(df_notas_credito[[col for col in ['nombre_proveedor', 'num_factura',
+        
+        # <-- INICIO DE LA CORRECCIÓN (SyntaxError) -->
+        # La línea estaba incompleta. Se completa la lista de columnas a mostrar y se cierra el dataframe.
+        cols_to_display = [
+            'nombre_proveedor', 
+            'num_factura', 
+            'valor_total_erp', 
+            'fecha_emision_erp', 
+            'estado_factura'
+        ]
+        # Se asegura de que solo se muestren las columnas que realmente existen en el DataFrame
+        existing_cols = [col for col in cols_to_display if col in df_notas_credito.columns]
+        
+        st.dataframe(
+            df_notas_credito[existing_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+        # <-- FIN DE LA CORRECCIÓN -->
+
+# (El resto del código para la pestaña de facturas críticas se puede añadir aquí si es necesario)
+with tab_vencidas:
+    st.header("🚨 Visor de Facturas Vencidas y Pendientes")
+    st.warning("Estas facturas ya han superado su fecha de vencimiento y requieren acción inmediata.")
+    if df_vencidas.empty:
+        st.success("¡Muy bien! No hay facturas vencidas en estado pendiente.")
+    else:
+        # Aquí puedes añadir una lógica similar a la de las otras pestañas
+        # para mostrar y gestionar las facturas vencidas.
+        st.dataframe(
+            df_vencidas,
+            use_container_width=True,
+            hide_index=True
+        )
