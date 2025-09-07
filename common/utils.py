@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Utilidades compartidas para la conexión y carga de datos desde Google Sheets.
-Versión 3.1: Se añade una lógica de limpieza y normalización robusta para
-evitar errores por inconsistencias en los nombres de columnas o datos en la hoja.
+Versión 3.2: Se añade una validación para asegurar la existencia de columnas críticas
+incluso si vienen vacías desde la fuente de datos.
 """
 
 import pandas as pd
@@ -16,7 +16,7 @@ from google.oauth2.service_account import Credentials
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
 
-# --- Conexión a Google Sheets (sin cambios) ---
+# --- Conexión a Google Sheets ---
 @st.cache_resource(show_spinner="Conectando a Google Sheets...")
 def connect_to_google_sheets() -> gspread.Client:
     try:
@@ -39,44 +39,47 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
     try:
         spreadsheet = _gs_client.open_by_key(st.secrets["google_sheet_id"])
         worksheet = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        df = pd.DataFrame(worksheet.get_all_records())
-
-        if df.empty:
-            st.warning("El reporte en Google Sheets está vacío.")
+        # Usamos get_all_values para tener más control sobre los datos vacíos
+        records = worksheet.get_all_values()
+        if len(records) < 2:
+            st.warning("El reporte en Google Sheets está vacío o solo tiene encabezados.")
             return pd.DataFrame()
 
-        # <-- INICIO DE LA MEJORA: NORMALIZACIÓN DE COLUMNAS -->
-        # Normaliza los nombres de las columnas: minúsculas, sin espacios extra, reemplaza espacios con guion bajo.
-        # Esto hace que 'Estado Factura' o ' estado_factura ' se conviertan en 'estado_factura'.
+        df = pd.DataFrame(records[1:], columns=records[0])
+
+        # Normaliza los nombres de las columnas
         original_cols = df.columns.tolist()
         df.columns = [str(col).strip().lower().replace(' ', '_') for col in original_cols]
         
-        # Renombramos explícitamente para asegurar compatibilidad con el resto del código
-        # Si tus columnas se llaman diferente, ajústalas aquí.
         rename_map = {
             'nombre_proveedor_erp': 'nombre_proveedor',
-            'valor_total_erp': 'valor_total_erp', # Ejemplo, si ya está bien, no cambia
+            'valor_total_erp': 'valor_total_erp',
             'num_factura': 'num_factura'
         }
-        # Filtramos el mapa de renombre para solo incluir columnas que existen
         valid_rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
         df.rename(columns=valid_rename_map, inplace=True)
-        # <-- FIN DE LA MEJORA -->
+        
+        # <-- INICIO DE LA CORRECCIÓN CRÍTICA -->
+        # Se asegura que las columnas fundamentales existan para evitar errores posteriores.
+        # Si la columna viene vacía de GSheets, pandas puede no crearla.
+        if 'nombre_proveedor' not in df.columns:
+            st.warning("⚠️ La columna 'nombre_proveedor' no fue encontrada o está vacía. Se creará una columna con valores por defecto.")
+            df['nombre_proveedor'] = 'Proveedor No Especificado'
+        
+        if 'valor_total_erp' not in df.columns:
+            st.warning("⚠️ La columna 'valor_total_erp' no fue encontrada. Se creará y llenará con ceros.")
+            df['valor_total_erp'] = 0
+        # <-- FIN DE LA CORRECCIÓN CRÍTICA -->
 
-        # <-- INICIO DE LA MEJORA: LIMPIEZA DE DATOS DE ESTADO -->
-        # Asegura que la columna 'estado_factura' exista
+        # Limpieza de datos de estado
         if 'estado_factura' in df.columns:
-            # Limpia la columna de estado: quita espacios, capitaliza y llena vacíos.
-            # ' pendiente ', 'Pendiente', '' (vacío) se convierten todos en 'Pendiente'.
             df['estado_factura'] = df['estado_factura'].astype(str).str.strip().str.capitalize()
             df['estado_factura'].replace('', 'Pendiente', inplace=True)
         else:
-            # Si la columna no existe, la crea y asume que todo está pendiente.
             st.warning("La columna 'estado_factura' no fue encontrada. Se asumirá que todas las facturas están 'Pendiente'.")
             df['estado_factura'] = 'Pendiente'
-        # <-- FIN DE LA MEJORA -->
 
-        # --- Conversión de Tipos de Datos (como antes) ---
+        # Conversión de Tipos de Datos
         numeric_cols = ['valor_total_erp', 'valor_total_correo', 'dias_para_vencer', 'valor_descuento', 'valor_con_descuento']
         for col in numeric_cols:
             if col in df.columns:
