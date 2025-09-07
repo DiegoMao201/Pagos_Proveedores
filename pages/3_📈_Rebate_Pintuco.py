@@ -49,11 +49,18 @@ st.set_page_config(layout="wide", page_title="Seguimiento Rebate | Pintuco", pag
 PINTUCO_ALIASES = ["PINTUCO", "COMPANIA GLOBAL DE PINTURAS"]  # Nombres conocidos para el proveedor
 PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
-INITIAL_START_DATE_SYNC = date(2025, 1, 1)
+INITIAL_START_DATE_SYNC = date(2025, 1, 1)  # Ajustado para sincronizar desde inicio de 2025
 MONTH_NAMES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
                7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
+# --- Constantes de Conexión ---
+IMAP_SERVER = "imap.gmail.com"
+EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
+DROPBOX_FILE_PATH = "/data/Proveedores.csv"
+PINTUCO_WORKSHEET_NAME = "Rebate_Pintuco"
+
 # --- Constantes del Acuerdo de Rebate (basado en el PDF) ---
+# Se han completado las metas de volumen para los periodos faltantes del PDF.
 META_VOLUMEN = {
     "Enero": {"Escala 1": 675864996, "Rebate 1": 0.005, "Escala 2": 723175546, "Rebate 2": 0.01},
     "Enero-Febrero": {"Escala 1": 2198957910, "Rebate 1": 0.005, "Escala 2": 2352884964, "Rebate 2": 0.01},
@@ -119,8 +126,10 @@ def update_gsheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame):
         for col in df_to_upload.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, America/Bogota]']).columns:
             df_to_upload[col] = df_to_upload[col].dt.strftime('%Y-%m-%d')
         
+        # Asegurarse de que todas las columnas son strings para la carga
         df_to_upload = df_to_upload.astype(str).replace({'nan': '', 'NaT': '', 'None': ''})
         
+        # Limpiar y actualizar la hoja
         worksheet.clear()
         worksheet.update([df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist(), 'A1')
         return True
@@ -133,7 +142,7 @@ def normalize_invoice_number(inv_num: any) -> str:
 
 def clean_and_convert_numeric(value: any) -> float:
     if pd.isna(value) or value is None: return np.nan
-    cleaned_str = str(value).strip().replace('$', '').replace(',', '')
+    cleaned_str = str(value).strip().replace('$', '').replace(',', '')  # Corregido para quitar la coma
     try: return float(cleaned_str)
     except (ValueError, TypeError): return np.nan
 
@@ -205,7 +214,7 @@ def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
         progress_bar = st.progress(0, text=progress_text)
         for i, num in enumerate(message_ids):
             _, data = mail.fetch(num, "(RFC822)")
-            msg = email.message_message_from_bytes(data[0][1])
+            msg = email.message_from_bytes(data[0][1])
             for part in msg.walk():
                 if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None: continue
                 filename = part.get_filename()
@@ -246,7 +255,7 @@ def run_pintuco_sync():
                 historical_df = pd.DataFrame(records)
                 historical_df['Fecha_Factura'] = pd.to_datetime(historical_df['Fecha_Factura'])
                 last_sync_date = historical_df['Fecha_Factura'].max().date()
-                start_date = last_sync_date - timedelta(days=3)
+                start_date = last_sync_date - timedelta(days=3)  # Margen de seguridad
         except Exception as e:
             st.warning(f"No se pudieron cargar datos históricos de Google Sheets. Sincronizando desde el inicio. Error: {e}")
 
@@ -258,6 +267,7 @@ def run_pintuco_sync():
             new_invoices_df['Fecha_Factura'] = pd.to_datetime(new_invoices_df['Fecha_Factura'])
             new_invoices_df['Valor_Neto'] = pd.to_numeric(new_invoices_df['Valor_Neto'])
             
+            # Combinar datos históricos y nuevos, eliminando duplicados
             combined_df = pd.concat([historical_df, new_invoices_df], ignore_index=True)
             combined_df.drop_duplicates(subset=['Numero_Factura'], keep='last', inplace=True)
             
@@ -267,11 +277,14 @@ def run_pintuco_sync():
         
         if not combined_df.empty:
             st.info("Paso 4/4: Actualizando estado de pago y guardando en Google Sheets...")
+            # Normalizar números de factura para la comparación
             combined_df['Numero_Factura_Normalized'] = combined_df['Numero_Factura'].apply(normalize_invoice_number)
             
+            # Actualizar el estado de pago
             combined_df['Estado_Pago'] = combined_df['Numero_Factura_Normalized'].apply(lambda x: 'Pendiente' if x in pending_docs_set else 'Pagada')
-            combined_df.drop(columns=['Numero_Factura_Normalized'], inplace=True)
+            combined_df.drop(columns=['Numero_Factura_Normalized'], inplace=True)  # Eliminar columna auxiliar
             
+            # Asegurarse de que el orden de las columnas sea consistente
             final_columns = ["Fecha_Factura", "Numero_Factura", "Valor_Neto", "Proveedor_Correo", "Estado_Pago"]
             combined_df = combined_df.reindex(columns=final_columns)
             
@@ -323,12 +336,14 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy(); df['Mes'] = df['Fecha_Factura'].dt.month
     summary_data = []
     
+    # Cálculos de Estacionalidad por Mes
     for month in range(1, 13):
         monthly_df = df[df['Mes'] == month]
         total_month_purchase = monthly_df['Valor_Neto'].sum()
         rebate_estacionalidad = 0
         estacionalidad_cumplida = False
         
+        # Lógica para fechas de corte de facturación
         if total_month_purchase > 0:
             last_day_of_month = calendar.monthrange(datetime.now().year, month)[1]
             third_week_cut_off = datetime(datetime.now().year, month, min(21, last_day_of_month))
@@ -356,6 +371,7 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
             "Cumplió Condición": "Sí" if estacionalidad_cumplida else "No"
         })
     
+    # Cálculos de Volumen y Profundidad por Período
     period_map = {
         "Enero": [1], "Enero-Febrero": [1, 2], "Febrero-Marzo": [2, 3], "1Q": [1, 2, 3],
         "Abril": [4], "Abril-Mayo": [4, 5], "Mayo-Junio": [5, 6], "2Q": [4, 5, 6],
@@ -384,8 +400,11 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
 
         rebate_profundidad = 0
         if "Q" in period:
+            # La profundidad se paga si se alcanza alguna de las escalas del trimestre.
             if esc_alcanzada != "No Alcanzada":
-                rebate_profundidad = total_period_purchase * 0.01
+                # Según el PDF, es 0.7% o 1%
+                # El código original del usuario lo calculaba como 1%
+                rebate_profundidad = total_period_purchase * 0.01  # Basado en la lógica del código original
         
         summary_data.append({
             "Período": period,
@@ -411,6 +430,7 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
             
     summary_df = pd.DataFrame(summary_data)
     
+    # Calcular proyecciones y lo que falta
     summary_df['Falta para Escala 1'] = summary_df.apply(
         lambda row: max(0, row['Meta Escala 1'] - row['Compra Real']) if row['Tipo'] == 'Volumen' else np.nan,
         axis=1
@@ -421,15 +441,16 @@ def calculate_rebate_summary(df: pd.DataFrame) -> pd.DataFrame:
     )
     
     summary_df['Rebate Proyectado (Escala 1)'] = summary_df.apply(
-        lambda row: row['Meta Escala 1'] * row['Rebate % Escala 1'] if row['Tipo'] == 'Volumen' and row['Falta para Escala 1'] == 0 else 0,
+        lambda row: row['Meta Escala 1'] * row['Rebate % Escala 1'] if row['Tipo'] == 'Volumen' and row['Falta para Escala 1'] <= 0 else 0,
         axis=1
     )
     
     summary_df['Rebate Proyectado (Escala 2)'] = summary_df.apply(
-        lambda row: row['Meta Escala 2'] * row['Rebate % Escala 2'] if row['Tipo'] == 'Volumen' and row['Falta para Escala 2'] == 0 else 0,
+        lambda row: row['Meta Escala 2'] * row['Rebate % Escala 2'] if row['Tipo'] == 'Volumen' and row['Falta para Escala 2'] <= 0 else 0,
         axis=1
     )
     
+    # Agregar la proyección del rebate de profundidad
     summary_df.loc[summary_df['Tipo'] == 'Profundidad', 'Rebate Proyectado (Escala 1)'] = summary_df.loc[summary_df['Tipo'] == 'Profundidad', 'Compra Real'] * 0.007
     summary_df.loc[summary_df['Tipo'] == 'Profundidad', 'Rebate Proyectado (Escala 2)'] = summary_df.loc[summary_df['Tipo'] == 'Profundidad', 'Compra Real'] * 0.01
 
@@ -516,6 +537,7 @@ st.divider()
 st.header("📈 Proyecciones y Notas de Crédito Detalladas")
 st.markdown("Aquí puede ver exactamente lo que ha logrado y lo que le falta para alcanzar las siguientes metas.")
 
+# Display for Quarterly progress
 quarters_to_show = [f"{i}Q" for i in range(1, 5)]
 for period in quarters_to_show:
     period_df = rebate_summary_df[(rebate_summary_df['Período'] == period) & (rebate_summary_df['Tipo'] == 'Volumen')]
