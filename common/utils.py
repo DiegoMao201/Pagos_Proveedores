@@ -39,7 +39,7 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
     try:
         spreadsheet = _gs_client.open_by_key(st.secrets["google_sheet_id"])
         worksheet = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        # Usamos get_all_values para tener más control sobre los datos vacíos
+        
         records = worksheet.get_all_values()
         if len(records) < 2:
             st.warning("El reporte en Google Sheets está vacío o solo tiene encabezados.")
@@ -60,7 +60,7 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
         df.rename(columns=valid_rename_map, inplace=True)
         
         # <-- INICIO DE LA CORRECCIÓN CRÍTICA -->
-        # Se asegura que las columnas fundamentales existan para evitar errores posteriores.
+        # Este bloque garantiza que las columnas fundamentales existan.
         # Si la columna viene vacía de GSheets, pandas puede no crearla.
         if 'nombre_proveedor' not in df.columns:
             st.warning("⚠️ La columna 'nombre_proveedor' no fue encontrada o está vacía. Se creará una columna con valores por defecto.")
