@@ -1,24 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.3).
+Módulo de Seguimiento de Rebate para PINTUCO COLOMBIA SAS (Versión 1.5).
 
 Este módulo es una herramienta de análisis gerencial diseñada para:
 1.  Sincronizar de forma independiente e inteligente todas las facturas de PINTUCO.
 2.  Cargar y procesar correctamente las Notas de Crédito desde Dropbox.
 3.  Cruzar la información con la cartera vigente para determinar el estado de pago.
-4.  Almacenar un historial completo y persistente en Google Sheets.
+4.  Almacenar un historial completo en una PESTAÑA dedicada ('Rebate_Pintuco')
+    dentro del libro de Google Sheets principal de la aplicación.
 5.  Calcular y visualizar en tiempo real el progreso del acuerdo de rebate.
 
-Mejoras en v1.3:
-- **Filtro de Proveedor Robusto:** Se ha mejorado el filtro en la lectura de XML para que
-  identifique a Pintuco aunque el nombre tenga ligeras variaciones (ej. con o sin 'S.A.S').
-- **Corrección en Lectura de G-Sheets:** Se corrigió un error en la función que carga los
-  datos desde Google Sheets, asegurando que los datos se procesen correctamente después
-  de ser guardados.
-- **Manejo de Notas Crédito:** Se mantiene la lógica para procesar notas de crédito sin
-  número de factura, creando un identificador único.
-- **Sincronización Inteligente:** Se mantiene la búsqueda incremental en el correo para
-  mayor velocidad.
+Mejoras en v1.5:
+- **Integración en Libro Principal:** Se eliminó la creación de un nuevo archivo de Google
+  Sheets. El módulo ahora trabaja sobre el libro existente (definido por 'google_sheet_id'
+  en los secrets), creando y gestionando su propia pestaña. Esto soluciona el error
+  de permisos 'APIError' de forma definitiva y centraliza la información.
+- **Robustez y consistencia:** El método de conexión a la hoja de cálculo ahora es
+  idéntico al del dashboard principal (usando open_by_key).
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -58,8 +56,8 @@ st.set_page_config(
 )
 
 # --- Constantes Globales ---
-PINTUCO_KEYWORD = "PINTUCO" # Palabra clave para la búsqueda
-PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S" # Nombre exacto en el ERP
+PINTUCO_KEYWORD = "PINTUCO"
+PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 INITIAL_START_DATE_SYNC = date(2025, 7, 1)
 
@@ -67,8 +65,8 @@ INITIAL_START_DATE_SYNC = date(2025, 7, 1)
 IMAP_SERVER = "imap.gmail.com"
 EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_FILE_PATH = "/data/Proveedores.csv"
-GSHEET_REBATE_NAME = "Seguimiento Rebate Pintuco 2025"
-GSHEET_REBATE_WORKSHEET = "Facturacion"
+# **MEJORA CLAVE**: Se usará el ID del libro principal y se creará una pestaña específica.
+PINTUCO_WORKSHEET_NAME = "Rebate_Pintuco"
 
 # --- Constantes del Acuerdo de Rebate ---
 META_VOLUMEN = {
@@ -102,17 +100,24 @@ def connect_to_google_sheets():
         st.error(f"❌ Error crítico al autenticar con Google: {e}")
         return None
 
-def get_or_create_worksheet(client: gspread.Client, sheet_name: str, worksheet_name: str):
+# --- MEJORA CLAVE: La función ahora usa el ID del libro, no el nombre. ---
+def get_worksheet(client: gspread.Client, sheet_key: str, worksheet_name: str):
+    """
+    Abre una hoja de cálculo por su ID y obtiene una pestaña específica.
+    Si la pestaña no existe, la crea.
+    """
     try:
-        spreadsheet = client.open(sheet_name)
-    except gspread.SpreadsheetNotFound:
-        st.warning(f"Creando nueva hoja de cálculo '{sheet_name}'...")
-        spreadsheet = client.create(sheet_name)
-        spreadsheet.share(st.secrets.google_credentials['client_email'], perm_type='user', role='writer')
+        spreadsheet = client.open_by_key(sheet_key)
+    except gspread.exceptions.APIError as e:
+        st.error(f"❌ **Error de API de Google:** No se pudo abrir el libro de Google Sheets. Verifica que el 'google_sheet_id' en tus secrets sea correcto y que hayas compartido el libro con el correo de servicio.")
+        st.info(f"Correo de servicio: `{st.secrets.google_credentials['client_email']}`")
+        st.stop()
+        return None
+
     try:
         return spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
-        st.warning(f"Creando nueva pestaña '{worksheet_name}'...")
+        st.warning(f"La pestaña '{worksheet_name}' no fue encontrada. Creando una nueva...")
         return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="50")
 
 def update_gsheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame):
@@ -187,8 +192,6 @@ def parse_invoice_xml(xml_content: str) -> dict or None:
             return None
         supplier_name = supplier_name_node.text.strip()
         
-        # --- MEJORA 1: Filtro de proveedor robusto ---
-        # En lugar de una coincidencia exacta, busca una palabra clave para evitar problemas con "S.A.S", etc.
         if PINTUCO_KEYWORD not in supplier_name.upper():
             return None
 
@@ -210,7 +213,6 @@ def parse_invoice_xml(xml_content: str) -> dict or None:
         return None
 
 def fetch_pintuco_invoices_from_email(start_date: date) -> pd.DataFrame:
-    # ... (El resto de la función es idéntica a la versión anterior, no necesita cambios)
     invoices_data = []
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -258,7 +260,9 @@ def run_pintuco_sync():
         gs_client = connect_to_google_sheets()
         if not gs_client:
             st.error("Sincronización cancelada. No se pudo conectar a Google."); st.stop()
-        worksheet = get_or_create_worksheet(gs_client, GSHEET_REBATE_NAME, GSHEET_REBATE_WORKSHEET)
+        
+        worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
+        
         try:
             records = worksheet.get_all_records()
             if not records:
@@ -272,8 +276,10 @@ def run_pintuco_sync():
         except Exception as e:
             historical_df = pd.DataFrame()
             start_date = INITIAL_START_DATE_SYNC
+
         st.info(f"Paso 3/4: Buscando facturas en el correo desde {start_date.strftime('%Y-%m-%d')}...")
         new_invoices_df = fetch_pintuco_invoices_from_email(start_date)
+
         if new_invoices_df.empty and not historical_df.empty:
             st.success("No se encontraron nuevas facturas de Pintuco en el correo.")
             st.info("Actualizando estado de pago de documentos existentes...")
@@ -283,11 +289,10 @@ def run_pintuco_sync():
             update_gsheet_from_df(worksheet, historical_df)
             st.session_state['last_pintuco_sync'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
             return
+
         st.info("Paso 4/4: Consolidando, actualizando estado de pago y guardando...")
         new_invoices_df['Fecha_Factura'] = pd.to_datetime(new_invoices_df['Fecha_Factura'])
         new_invoices_df['Valor_Neto'] = pd.to_numeric(new_invoices_df['Valor_Neto'])
-        
-        # Asegurar que historical_df tenga las columnas correctas antes de concatenar
         if not historical_df.empty:
              historical_df['Valor_Neto'] = pd.to_numeric(historical_df['Valor_Neto'])
 
@@ -305,14 +310,12 @@ def run_pintuco_sync():
 # --- 5. LÓGICA DE CÁLCULO Y VISUALIZACIÓN DEL REBATE ---
 @st.cache_data(ttl=300)
 def load_pintuco_data_from_gsheet() -> pd.DataFrame:
-    # --- MEJORA 2: Lectura de G-Sheets robusta ---
     try:
         gs_client = connect_to_google_sheets()
-        worksheet = get_or_create_worksheet(gs_client, GSHEET_REBATE_NAME, GSHEET_REBATE_WORKSHEET)
-        records = worksheet.get_all_records() # get_all_records es más seguro que get_all_values
+        worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
+        records = worksheet.get_all_records()
         if not records:
             return pd.DataFrame()
-        
         df = pd.DataFrame(records)
         df['Fecha_Factura'] = pd.to_datetime(df['Fecha_Factura'])
         df['Valor_Neto'] = pd.to_numeric(df['Valor_Neto'])
@@ -388,10 +391,8 @@ if pintuco_df.empty:
 
 rebate_summary_df = calculate_rebate_summary(pintuco_df)
 total_rebate_ganado = rebate_summary_df['Rebate Calculado'].sum()
-# Manejo de caso donde la fila puede no existir
 total_comprado_s2_series = rebate_summary_df[rebate_summary_df['Período'] == '2do Semestre (2Sem)']['Compra Real']
 total_comprado_s2 = total_comprado_s2_series.iloc[0] if not total_comprado_s2_series.empty else 0
-
 
 st.divider()
 st.header("📊 Resumen Ejecutivo del Rebate (2do Semestre)")
