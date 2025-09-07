@@ -1,11 +1,11 @@
 # pages/3_💵_Planificador_de_Pagos.py
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.7 - Módulo Gerencia).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.6 - Módulo Gerencia).
 
 Este módulo permite a Gerencia crear lotes de pago tanto para facturas
 vigentes como para facturas críticas (vencidas), con notificaciones directas
-a Tesorería. Código completamente revisado y formateado.
+a Tesorería. Lógica de sesión mejorada y corrección para manejar columnas duplicadas.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -16,6 +16,8 @@ from datetime import datetime
 import uuid
 import gspread
 import urllib.parse
+
+# Se importa desde el archivo utils.py ya actualizado y robusto.
 from common.utils import connect_to_google_sheets, load_data_from_gsheet, GSHEET_REPORT_NAME, COLOMBIA_TZ
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
@@ -36,13 +38,14 @@ SESSION_KEY_SELECTION_VENCIDAS = 'current_selection_key_vencidas'
 # --- 3. FUNCIONES AUXILIARES ---
 def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas_seleccionadas: pd.DataFrame):
     """
-    Guarda la información de un nuevo lote y actualiza el estado de las facturas
-    correspondientes en el reporte consolidado.
+    Guarda la información de un nuevo lote en la hoja de historial y actualiza
+    el estado de las facturas correspondientes en el reporte consolidado.
+    Versión corregida para manejar columnas duplicadas en el origen.
     """
     try:
         spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
         
-        # 1. Guardar en el historial de lotes
+        # 1. Guardar en el historial de lotes (sin cambios)
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         headers = historial_ws.row_values(1)
         valores_fila = [lote_info.get(col) for col in headers]
@@ -54,8 +57,12 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         reporte_headers_list = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
         
         reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
+        
+        # FIX: Se elimina cualquier columna duplicada que pueda venir del GSheet, manteniendo solo la primera aparición.
+        # Esto es crucial para prevenir el error 'cannot reindex'.
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
 
+        # Estandarización de nombres de columnas para consistencia
         if 'nombre_proveedor_erp' in reporte_df.columns:
             reporte_df.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
 
@@ -63,10 +70,14 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         facturas_seleccionadas['valor_total_erp'] = pd.to_numeric(facturas_seleccionadas['valor_total_erp'], errors='coerce')
 
         try:
+            # FIX: Se utiliza .get_loc() sobre el índice de columnas del DataFrame ya depurado.
+            # REASON: Esto es más seguro que usar .index() en la lista original de encabezados,
+            # ya que garantiza que estamos buscando en la lista de columnas final y sin duplicados.
             estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
             lote_col_idx = reporte_df.columns.get_loc('id_lote_pago') + 1
         except KeyError as e:
-            error_msg = f"Error Crítico: La columna requerida '{e.args[0]}' no existe en la hoja '{GSHEET_REPORT_NAME}'."
+            # Si una columna esencial no existe después de la limpieza, se notifica el error.
+            error_msg = f"Error Crítico: La columna '{e.args[0]}' no existe en la hoja '{GSHEET_REPORT_NAME}'."
             st.error(error_msg)
             return False, error_msg
 
@@ -83,7 +94,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, estado_col_idx), 'values': [['En Lote de Pago']]})
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
             else:
-                st.warning(f"No se encontró coincidencia para la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'. Se omitirá.")
+                st.warning(f"No se encontró coincidencia para la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'. Se omitirá la actualización.")
         
         if updates:
             reporte_ws.batch_update(updates)
@@ -92,6 +103,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         error_msg = f"Error inesperado al actualizar Google Sheets: {e}"
         st.error(error_msg)
         return False, str(e)
+
 
 def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -> list:
     """Genera una lista de IDs de facturas sugeridas para pagar según una estrategia."""
@@ -180,7 +192,7 @@ with tab_pagos:
     
     if SESSION_KEY_SUGERENCIA_IDS in st.session_state:
         df_pagar_filtrado['seleccionar'] = df_pagar_filtrado['id_factura_unico'].isin(st.session_state[SESSION_KEY_SUGERENCIA_IDS])
-        del st.session_state[SESSION_KEY_SUGERENCIA_IDS]
+        del st.session_state[SESSION_KEY_SUGERENCIA_IDS] 
 
     if df_pagar_filtrado.empty:
         st.info("No hay facturas vigentes para pagar que coincidan con los filtros actuales.")
