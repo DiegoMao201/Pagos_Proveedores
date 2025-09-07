@@ -1,4 +1,3 @@
-# pages/3_💵_Planificador_de_Pagos.py
 # -*- coding: utf-8 -*-
 """
 Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.6 - Módulo Gerencia).
@@ -18,7 +17,67 @@ import gspread
 import urllib.parse
 
 # Se importa desde el archivo utils.py ya actualizado y robusto.
-from common.utils import connect_to_google_sheets, load_data_from_gsheet, GSHEET_REPORT_NAME, COLOMBIA_TZ
+# Asumiendo que existe un archivo common/utils.py con estas funciones
+# Si no es así, deberás definir estas funciones o importarlas correctamente.
+# from common.utils import connect_to_google_sheets, load_data_from_gsheet, GSHEET_REPORT_NAME, COLOMBIA_TZ
+# --- INICIO: Funciones que estarían en common/utils.py ---
+import pytz
+
+# Define la zona horaria de Colombia
+COLOMBIA_TZ = pytz.timezone('America/Bogota')
+GSHEET_REPORT_NAME = "Reporte_Consolidado" # Nombre de la hoja principal
+
+@st.cache_resource(show_spinner="Conectando con Google Sheets...")
+def connect_to_google_sheets():
+    """Establece conexión con Google Sheets usando las credenciales de Streamlit."""
+    try:
+        return gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+    except Exception as e:
+        st.error(f"Error al conectar con Google Sheets: {e}")
+        return None
+
+@st.cache_data(ttl=300, show_spinner="Cargando y procesando datos de facturas...")
+def load_data_from_gsheet(_gs_client: gspread.Client):
+    """Carga y pre-procesa los datos desde la hoja de cálculo principal."""
+    if not _gs_client:
+        return pd.DataFrame()
+    try:
+        spreadsheet = _gs_client.open_by_key(st.secrets["google_sheet_id"])
+        worksheet = spreadsheet.worksheet(GSHEET_REPORT_NAME)
+        data = worksheet.get_all_values()
+        
+        if not data:
+            return pd.DataFrame()
+            
+        headers = [str(h).strip().lower().replace(' ', '_') for h in data[0]]
+        df = pd.DataFrame(data[1:], columns=headers)
+        
+        # Corrección para manejar columnas duplicadas
+        df = df.loc[:, ~df.columns.duplicated(keep='first')]
+
+        # Conversiones de tipos de datos esenciales
+        numeric_cols = ['valor_total_erp', 'valor_descuento', 'valor_con_descuento', 'dias_para_vencer']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        date_cols = ['fecha_emision_erp', 'fecha_vencimiento_erp']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Estandarización de nombres de columnas
+        if 'nombre_proveedor_erp' in df.columns:
+            df.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
+
+        return df
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"Error: No se encontró la hoja '{GSHEET_REPORT_NAME}'.")
+    except Exception as e:
+        st.error(f"Ocurrió un error inesperado al cargar los datos: {e}")
+    return pd.DataFrame()
+# --- FIN: Funciones de common/utils.py ---
+
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -45,7 +104,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
     try:
         spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
         
-        # 1. Guardar en el historial de lotes (sin cambios)
+        # 1. Guardar en el historial de lotes
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         headers = historial_ws.row_values(1)
         valores_fila = [lote_info.get(col) for col in headers]
@@ -58,8 +117,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         
         reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
         
-        # FIX: Se elimina cualquier columna duplicada que pueda venir del GSheet, manteniendo solo la primera aparición.
-        # Esto es crucial para prevenir el error 'cannot reindex'.
+        # FIX: Se elimina cualquier columna duplicada que pueda venir del GSheet
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
 
         # Estandarización de nombres de columnas para consistencia
@@ -71,8 +129,6 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
 
         try:
             # FIX: Se utiliza .get_loc() sobre el índice de columnas del DataFrame ya depurado.
-            # REASON: Esto es más seguro que usar .index() en la lista original de encabezados,
-            # ya que garantiza que estamos buscando en la lista de columnas final y sin duplicados.
             estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
             lote_col_idx = reporte_df.columns.get_loc('id_lote_pago') + 1
         except KeyError as e:
@@ -90,7 +146,7 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
             ]
             
             if not match.empty:
-                row_index_to_update = match.index[0] + 2
+                row_index_to_update = match.index[0] + 2 # +2 porque es 1-based y hay una fila de header
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, estado_col_idx), 'values': [['En Lote de Pago']]})
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
             else:
@@ -135,6 +191,9 @@ st.title("💵 Planificador de Pagos | Gerencia")
 st.markdown("Herramienta para crear lotes de pago a partir de la cartera pendiente.")
 
 gs_client = connect_to_google_sheets()
+if not gs_client:
+    st.stop()
+
 df_full = load_data_from_gsheet(gs_client)
 
 if df_full.empty:
@@ -215,52 +274,54 @@ with tab_pagos:
                 st.session_state[SESSION_KEY_LOTE_VIGENTES] = f"LOTE-VIG-{uuid.uuid4().hex[:6].upper()}"
                 st.session_state[SESSION_KEY_SELECTION_VIGENTES] = selection_key
         
-        sub_tab1_vig, sub_tab2_vig = st.tabs(["📊 Resumen del Lote (Vigentes)", "🚀 Confirmar y Notificar a Tesorería"])
-        with sub_tab1_vig:
-            st.subheader("Análisis del Lote de Pagos Vigentes")
-            if selected_rows_vigentes.empty:
-                st.info("Selecciona una o más facturas vigentes para ver el resumen del lote.")
-            else:
-                total_pagar = selected_rows_vigentes['valor_con_descuento'].sum()
-                total_ahorro = selected_rows_vigentes['valor_descuento'].sum()
-                num_facturas = len(selected_rows_vigentes)
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Nº Facturas Seleccionadas", f"{num_facturas}")
-                c2.metric("💰 TOTAL A PAGAR (COP)", f"{total_pagar:,.0f}")
-                c3.metric("💸 AHORRO TOTAL (COP)", f"{total_ahorro:,.0f}")
-                st.dataframe(selected_rows_vigentes[['nombre_proveedor', 'num_factura', 'valor_total_erp', 'valor_con_descuento', 'valor_descuento', 'fecha_vencimiento_erp']], use_container_width=True, hide_index=True)
+            sub_tab1_vig, sub_tab2_vig = st.tabs(["📊 Resumen del Lote (Vigentes)", "🚀 Confirmar y Notificar a Tesorería"])
+            with sub_tab1_vig:
+                st.subheader("Análisis del Lote de Pagos Vigentes")
+                if selected_rows_vigentes.empty:
+                    st.info("Selecciona una o más facturas vigentes para ver el resumen del lote.")
+                else:
+                    total_pagar = selected_rows_vigentes['valor_con_descuento'].sum()
+                    total_ahorro = selected_rows_vigentes['valor_descuento'].sum()
+                    num_facturas = len(selected_rows_vigentes)
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Nº Facturas Seleccionadas", f"{num_facturas}")
+                    c2.metric("💰 TOTAL A PAGAR (COP)", f"{total_pagar:,.0f}")
+                    c3.metric("💸 AHORRO TOTAL (COP)", f"{total_ahorro:,.0f}")
+                    st.dataframe(selected_rows_vigentes[['nombre_proveedor', 'num_factura', 'valor_total_erp', 'valor_con_descuento', 'valor_descuento', 'fecha_vencimiento_erp']], use_container_width=True, hide_index=True)
 
-        with sub_tab2_vig:
-            st.subheader("Acciones Finales del Lote de Vigentes")
-            if selected_rows_vigentes.empty:
-                st.warning("Debes seleccionar al menos una factura para poder generar un lote de pago.")
-            else:
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    st.markdown("#### ✅ Confirmación y Registro")
-                    if st.button("Confirmar y Generar Lote de VIGENTES", type="primary", use_container_width=True):
-                        with st.spinner("Procesando y guardando lote..."):
-                            id_lote = st.session_state.get(SESSION_KEY_LOTE_VIGENTES, f"LOTE-ERR-{uuid.uuid4().hex[:4]}")
-                            lote_info = {
-                                "id_lote": id_lote, "fecha_creacion": datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S'),
-                                "num_facturas": len(selected_rows_vigentes), "valor_original_total": selected_rows_vigentes['valor_total_erp'].sum(),
-                                "ahorro_total_lote": selected_rows_vigentes['valor_descuento'].sum(), "total_pagado_lote": selected_rows_vigentes['valor_con_descuento'].sum(),
-                                "creado_por": "App Gerencia (Vigentes)", "estado_lote": "Pendiente de Pago"
-                            }
-                            success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows_vigentes)
-                            if success:
-                                st.success(f"¡Éxito! Lote `{id_lote}` generado. La página se actualizará.")
-                                st.balloons()
-                                st.rerun()
-                            else:
-                                st.error(f"Error Crítico al guardar: {error_msg}")
-                with col2:
-                    st.markdown("#### 📲 Notificación a Tesorería")
-                    id_lote_mensaje = st.session_state.get(SESSION_KEY_LOTE_VIGENTES, 'LOTE-POR-CONFIRMAR')
-                    numero_tesoreria = st.text_input("Nº WhatsApp Tesorería", st.secrets.get("whatsapp_default_number", ""), key="whatsapp_num_vigentes")
-                    mensaje = urllib.parse.quote(f"¡Hola! 👋 Se ha generado un nuevo lote de pago (VIGENTES).\n\n*ID Lote:* {id_lote_mensaje}\n*Total a Pagar:* COP {selected_rows_vigentes['valor_con_descuento'].sum():,.0f}\n*Nº Facturas:* {len(selected_rows_vigentes)}\n\nPor favor, revisa la plataforma para ver el detalle.")
-                    st.link_button("📲 Enviar Notificación por WhatsApp", f"https://wa.me/{numero_tesoreria}?text={mensaje}", use_container_width=True, type="secondary")
+            with sub_tab2_vig:
+                st.subheader("Acciones Finales del Lote de Vigentes")
+                if selected_rows_vigentes.empty:
+                    st.warning("Debes seleccionar al menos una factura para poder generar un lote de pago.")
+                else:
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        st.markdown("#### ✅ Confirmación y Registro")
+                        if st.button("Confirmar y Generar Lote de VIGENTES", type="primary", use_container_width=True):
+                            with st.spinner("Procesando y guardando lote..."):
+                                id_lote = st.session_state.get(SESSION_KEY_LOTE_VIGENTES, f"LOTE-ERR-{uuid.uuid4().hex[:4]}")
+                                lote_info = {
+                                    "id_lote": id_lote, "fecha_creacion": datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S'),
+                                    "num_facturas": len(selected_rows_vigentes), "valor_original_total": selected_rows_vigentes['valor_total_erp'].sum(),
+                                    "ahorro_total_lote": selected_rows_vigentes['valor_descuento'].sum(), "total_pagado_lote": selected_rows_vigentes['valor_con_descuento'].sum(),
+                                    "creado_por": "App Gerencia (Vigentes)", "estado_lote": "Pendiente de Pago"
+                                }
+                                success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows_vigentes)
+                                if success:
+                                    st.success(f"¡Éxito! Lote `{id_lote}` generado. La página se actualizará.")
+                                    st.balloons()
+                                    # Limpiar la caché de datos para forzar la recarga
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error Crítico al guardar: {error_msg}")
+                    with col2:
+                        st.markdown("#### 📲 Notificación a Tesorería")
+                        id_lote_mensaje = st.session_state.get(SESSION_KEY_LOTE_VIGENTES, 'LOTE-POR-CONFIRMAR')
+                        numero_tesoreria = st.text_input("Nº WhatsApp Tesorería", st.secrets.get("whatsapp_default_number", ""), key="whatsapp_num_vigentes")
+                        mensaje = urllib.parse.quote(f"¡Hola! 👋 Se ha generado un nuevo lote de pago (VIGENTES).\n\n*ID Lote:* {id_lote_mensaje}\n*Total a Pagar:* COP {selected_rows_vigentes['valor_con_descuento'].sum():,.0f}\n*Nº Facturas:* {len(selected_rows_vigentes)}\n\nPor favor, revisa la plataforma para ver el detalle.")
+                        st.link_button("📲 Enviar Notificación por WhatsApp", f"https://wa.me/{numero_tesoreria}?text={mensaje}", use_container_width=True, type="secondary")
 
 # --- PESTAÑA 2: GESTIÓN DE FACTURAS CRÍTICAS (VENCIDAS) ---
 with tab_vencidas:
@@ -290,48 +351,49 @@ with tab_vencidas:
                 st.session_state[SESSION_KEY_LOTE_VENCIDAS] = f"LOTE-CRI-{uuid.uuid4().hex[:6].upper()}"
                 st.session_state[SESSION_KEY_SELECTION_VENCIDAS] = selection_key_vencidas
 
-        sub_tab1_ven, sub_tab2_ven = st.tabs(["📊 Resumen del Lote (Críticos)", "🚀 Confirmar y Notificar a Tesorería"])
-        with sub_tab1_ven:
-            st.subheader("Análisis del Lote de Pagos Críticos")
-            if selected_rows_vencidas.empty:
-                st.info("Selecciona una o más facturas vencidas para crear un lote de pago.")
-            else:
-                total_a_pagar, num_facturas = selected_rows_vencidas['valor_total_erp'].sum(), len(selected_rows_vencidas)
-                c1, c2 = st.columns(2)
-                c1.metric("Nº Facturas Seleccionadas", f"{num_facturas}")
-                c2.metric("💰 TOTAL A PAGAR (COP)", f"{total_a_pagar:,.0f}")
-                st.dataframe(selected_rows_vencidas[['nombre_proveedor', 'num_factura', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True, hide_index=True)
-        
-        with sub_tab2_ven:
-            st.subheader("Acciones Finales del Lote de Críticos")
-            if selected_rows_vencidas.empty:
-                st.warning("Debes seleccionar al menos una factura vencida para generar el lote.")
-            else:
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    st.markdown("#### ✅ Confirmación y Registro")
-                    if st.button("Confirmar y Generar Lote de CRÍTICOS", type="primary", use_container_width=True):
-                        with st.spinner("Procesando y guardando lote de críticos..."):
-                            id_lote = st.session_state.get(SESSION_KEY_LOTE_VENCIDAS, f"LOTE-ERR-{uuid.uuid4().hex[:4]}")
-                            lote_info = {
-                                "id_lote": id_lote, "fecha_creacion": datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S'),
-                                "num_facturas": len(selected_rows_vencidas), "valor_original_total": selected_rows_vencidas['valor_total_erp'].sum(),
-                                "ahorro_total_lote": 0, "total_pagado_lote": selected_rows_vencidas['valor_total_erp'].sum(),
-                                "creado_por": "App Gerencia (Críticos)", "estado_lote": "Pendiente de Pago URGENTE"
-                            }
-                            success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows_vencidas)
-                            if success:
-                                st.success(f"¡Éxito! Lote de críticos `{id_lote}` generado. La página se actualizará.")
-                                st.balloons()
-                                st.rerun()
-                            else:
-                                st.error(f"Error Crítico al guardar: {error_msg}")
-                with col2:
-                    st.markdown("#### 📲 Notificación a Tesorería")
-                    id_lote_mensaje = st.session_state.get(SESSION_KEY_LOTE_VENCIDAS, 'LOTE-POR-CONFIRMAR')
-                    numero_tesoreria = st.text_input("Nº WhatsApp Tesorería", st.secrets.get("whatsapp_default_number", ""), key="whatsapp_num_vencidas")
-                    mensaje = urllib.parse.quote(f"¡URGENTE! 🚨 Se ha generado un lote de pago para FACTURAS CRÍTICAS (VENCIDAS).\n\n*ID Lote:* {id_lote_mensaje}\n*Total a Pagar:* COP {selected_rows_vencidas['valor_total_erp'].sum():,.0f}\n*Nº Facturas:* {len(selected_rows_vencidas)}\n\nPor favor, gestionar este pago con MÁXIMA PRIORIDAD.")
-                    st.link_button("📲 Enviar Notificación URGENTE por WhatsApp", f"https://wa.me/{numero_tesoreria}?text={mensaje}", use_container_width=True, type="secondary")
+            sub_tab1_ven, sub_tab2_ven = st.tabs(["📊 Resumen del Lote (Críticos)", "🚀 Confirmar y Notificar a Tesorería"])
+            with sub_tab1_ven:
+                st.subheader("Análisis del Lote de Pagos Críticos")
+                if selected_rows_vencidas.empty:
+                    st.info("Selecciona una o más facturas vencidas para crear un lote de pago.")
+                else:
+                    total_a_pagar, num_facturas = selected_rows_vencidas['valor_total_erp'].sum(), len(selected_rows_vencidas)
+                    c1, c2 = st.columns(2)
+                    c1.metric("Nº Facturas Seleccionadas", f"{num_facturas}")
+                    c2.metric("💰 TOTAL A PAGAR (COP)", f"{total_a_pagar:,.0f}")
+                    st.dataframe(selected_rows_vencidas[['nombre_proveedor', 'num_factura', 'valor_total_erp', 'dias_para_vencer']], use_container_width=True, hide_index=True)
+            
+            with sub_tab2_ven:
+                st.subheader("Acciones Finales del Lote de Críticos")
+                if selected_rows_vencidas.empty:
+                    st.warning("Debes seleccionar al menos una factura vencida para generar el lote.")
+                else:
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        st.markdown("#### ✅ Confirmación y Registro")
+                        if st.button("Confirmar y Generar Lote de CRÍTICOS", type="primary", use_container_width=True):
+                            with st.spinner("Procesando y guardando lote de críticos..."):
+                                id_lote = st.session_state.get(SESSION_KEY_LOTE_VENCIDAS, f"LOTE-ERR-{uuid.uuid4().hex[:4]}")
+                                lote_info = {
+                                    "id_lote": id_lote, "fecha_creacion": datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S'),
+                                    "num_facturas": len(selected_rows_vencidas), "valor_original_total": selected_rows_vencidas['valor_total_erp'].sum(),
+                                    "ahorro_total_lote": 0, "total_pagado_lote": selected_rows_vencidas['valor_total_erp'].sum(),
+                                    "creado_por": "App Gerencia (Críticos)", "estado_lote": "Pendiente de Pago URGENTE"
+                                }
+                                success, error_msg = guardar_lote_en_gsheets(gs_client, lote_info, selected_rows_vencidas)
+                                if success:
+                                    st.success(f"¡Éxito! Lote de críticos `{id_lote}` generado. La página se actualizará.")
+                                    st.balloons()
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error Crítico al guardar: {error_msg}")
+                    with col2:
+                        st.markdown("#### 📲 Notificación a Tesorería")
+                        id_lote_mensaje = st.session_state.get(SESSION_KEY_LOTE_VENCIDAS, 'LOTE-POR-CONFIRMAR')
+                        numero_tesoreria = st.text_input("Nº WhatsApp Tesorería", st.secrets.get("whatsapp_default_number", ""), key="whatsapp_num_vencidas")
+                        mensaje = urllib.parse.quote(f"¡URGENTE! 🚨 Se ha generado un lote de pago para FACTURAS CRÍTICAS (VENCIDAS).\n\n*ID Lote:* {id_lote_mensaje}\n*Total a Pagar:* COP {selected_rows_vencidas['valor_total_erp'].sum():,.0f}\n*Nº Facturas:* {len(selected_rows_vencidas)}\n\nPor favor, gestionar este pago con MÁXIMA PRIORIDAD.")
+                        st.link_button("📲 Enviar Notificación URGENTE por WhatsApp", f"https://wa.me/{numero_tesoreria}?text={mensaje}", use_container_width=True, type="secondary")
 
 # --- PESTAÑA 3: GESTIÓN DE NOTAS CRÉDITO ---
 with tab_credito:
