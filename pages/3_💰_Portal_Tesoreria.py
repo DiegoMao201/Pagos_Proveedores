@@ -1,14 +1,14 @@
-# pages/3_💰_Portal_Tesoreria.py
 # -*- coding: utf-8 -*-
 """
-Módulo de Portal de Tesorería (Versión 3.5 - Mejorado).
+Módulo de Portal de Tesorería (Versión 4.0 - Mejorado).
 
 Esta página es para el uso exclusivo del equipo de Tesorería. Permite
 visualizar los lotes de pago generados por Gerencia, inspeccionar el detalle,
 descargar un soporte en Excel y, finalmente, marcar los lotes como 'Pagado'.
 
-Esta versión corrige la lógica de carga de lotes pendientes y añade
-funcionalidades clave para la gestión diaria.
+Esta versión corrige la lógica de carga de datos para ser consistente
+con el módulo de Gerencia, asegurando que las facturas de cada lote se
+muestren correctamente.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -16,7 +16,33 @@ import streamlit as st
 import pandas as pd
 import gspread
 import io
-from common.utils import connect_to_google_sheets, GSHEET_REPORT_NAME
+import pytz
+from google.oauth2.service_account import Credentials
+
+# --- INICIO: Lógica de common/utils.py integrada ---
+
+# --- Constantes ---
+COLOMBIA_TZ = pytz.timezone('America/Bogota')
+GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
+
+# --- Conexión a Google Sheets ---
+@st.cache_resource(show_spinner="Conectando a Google Sheets...")
+def connect_to_google_sheets() -> gspread.Client:
+    """Establece la conexión con la API de Google Sheets de forma segura."""
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds_dict = st.secrets["google_credentials"]
+        # Asegurarse de que private_key_id no sea None, lo que puede ocurrir con la serialización de secrets.
+        if creds_dict.get("private_key_id") is None:
+            creds_dict.pop("private_key_id", None)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"❌ Error crítico al autenticar con Google Sheets: {e}")
+        return None
+
+# --- FIN: Lógica de common/utils.py integrada ---
+
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -57,17 +83,27 @@ def load_data(_gs_client: gspread.Client):
         historial_ws = spreadsheet.worksheet(GSHEET_LOTES_NAME)
         df_lotes = pd.DataFrame(historial_ws.get_all_records())
         
-        # Cargar reporte consolidado para buscar las facturas
+        # --- INICIO DE LA CORRECCIÓN ---
+        # Cargar reporte consolidado con la misma lógica robusta del planificador
         reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        # Usar get_all_values para evitar problemas con encabezados duplicados
         reporte_data = reporte_ws.get_all_values()
-        reporte_headers = [str(h).strip() for h in reporte_data[0]]
+        if len(reporte_data) < 2:
+            st.warning("El reporte consolidado está vacío.")
+            return df_lotes, pd.DataFrame()
+
+        # Normalizar encabezados para asegurar consistencia
+        reporte_headers = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
         df_reporte = pd.DataFrame(reporte_data[1:], columns=reporte_headers)
+
+        if 'nombre_proveedor_erp' in df_reporte.columns:
+            df_reporte.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
 
         # Limpiar columnas duplicadas si existen
         df_reporte = df_reporte.loc[:, ~df_reporte.columns.duplicated(keep='first')]
+        # --- FIN DE LA CORRECCIÓN ---
 
         return df_lotes, df_reporte
+        
     except gspread.exceptions.WorksheetNotFound as e:
         st.error(f"Error Crítico: No se encontró la hoja de cálculo '{e.args[0]}'. Verifica los nombres en Google Sheets.")
     except Exception as e:
@@ -105,19 +141,20 @@ def procesar_pago_lote(gs_client: gspread.Client, lote_id: str, df_reporte: pd.D
             return True
 
         reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        reporte_headers = [str(h).strip() for h in reporte_ws.row_values(1)]
+        # Volver a leer los encabezados para asegurar la posición correcta de las columnas
+        reporte_headers_raw = reporte_ws.row_values(1)
         
         try:
-            estado_factura_col_idx = reporte_headers.index('estado_factura') + 1
+            estado_factura_col_idx = reporte_headers_raw.index('estado_factura') + 1
         except ValueError:
             st.error(f"No se encontró la columna 'estado_factura' en la hoja '{GSHEET_REPORT_NAME}'.")
             return False
 
         updates = []
-        for index_str, _ in facturas_del_lote.iterrows():
-            # El índice del DataFrame leído con gspread puede ser str, convertir a int
-            # El índice en gspread es el índice del DataFrame + 2 (1 por header, 1 por base 0)
-            row_to_update = int(index_str) + 2
+        # Para encontrar la fila correcta, necesitamos el índice original del DataFrame
+        # que corresponde a la fila en la hoja de cálculo
+        for index, _ in facturas_del_lote.iterrows():
+            row_to_update = int(index) + 2 # +2 por el encabezado y el índice base 0
             updates.append({
                 'range': gspread.utils.rowcol_to_a1(row_to_update, estado_factura_col_idx),
                 'values': [['Pagada']]
@@ -148,9 +185,9 @@ if gs_client:
     df_lotes_pendientes = df_lotes[df_lotes['estado_lote'].isin(PENDING_STATUSES)].copy()
     
     # Convertir columnas a numérico para poder ordenar y formatear
-    for col in ['total_pagado_lote', 'ahorro_total_lote']:
+    for col in ['total_pagado_lote', 'ahorro_total_lote', 'num_facturas']:
         if col in df_lotes_pendientes.columns:
-            df_lotes_pendientes[col] = pd.to_numeric(df_lotes_pendientes[col], errors='coerce')
+            df_lotes_pendientes[col] = pd.to_numeric(df_lotes_pendientes[col], errors='coerce').fillna(0)
 
     if df_lotes_pendientes.empty:
         st.success("🎉 ¡Excelente! No hay lotes de pago pendientes de procesar.")
@@ -161,7 +198,7 @@ if gs_client:
     st.info("A continuación se muestran los lotes generados por Gerencia que requieren ser pagados.")
     
     # Ordenar lotes, poniendo los urgentes primero
-    df_lotes_pendientes['es_urgente'] = df_lotes_pendientes['estado_lote'].apply(lambda x: 'URGENTE' in x)
+    df_lotes_pendientes['es_urgente'] = df_lotes_pendientes['estado_lote'].apply(lambda x: 'URGENTE' in str(x))
     df_lotes_pendientes.sort_values(by=['es_urgente', 'fecha_creacion'], ascending=[False, False], inplace=True)
     
     st.dataframe(
@@ -188,12 +225,13 @@ if gs_client:
         st.header(f"2. Detalle y Acciones del Lote: {lote_seleccionado_id}")
         
         lote_detalle = df_lotes[df_lotes['id_lote'] == lote_seleccionado_id].iloc[0]
+        # La columna 'id_lote_pago' ahora existe gracias a la carga de datos corregida
         facturas_del_lote = df_reporte[df_reporte['id_lote_pago'] == lote_seleccionado_id].copy()
         
         # Convertir columnas a numérico para el formato
         for col in ['valor_total_erp', 'valor_con_descuento', 'valor_descuento']:
              if col in facturas_del_lote.columns:
-                facturas_del_lote[col] = pd.to_numeric(facturas_del_lote[col], errors='coerce').fillna(0)
+                 facturas_del_lote[col] = pd.to_numeric(facturas_del_lote[col], errors='coerce').fillna(0)
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Total a Pagar (COP)", f"{float(lote_detalle.get('total_pagado_lote', 0)):,.0f}")
@@ -201,17 +239,20 @@ if gs_client:
         col3.metric("Ahorro Financiero (COP)", f"{float(lote_detalle.get('ahorro_total_lote', 0)):,.0f}")
 
         st.markdown("#### Facturas incluidas en este lote:")
-        st.dataframe(facturas_del_lote, use_container_width=True, hide_index=True)
+        if facturas_del_lote.empty:
+            st.warning("No se encontraron las facturas para este lote en el reporte consolidado. El lote podría estar vacío o haber un problema de sincronización.")
+        else:
+            st.dataframe(facturas_del_lote, use_container_width=True, hide_index=True)
 
-        # --- Funcionalidad de Descarga a Excel ---
-        st.download_button(
-            label="📄 Descargar Plan de Pago a Excel",
-            data=to_excel(facturas_del_lote),
-            file_name=f"Plan_de_Pago_{lote_seleccionado_id}.xlsx",
-            mime="application/vnd.ms-excel",
-            use_container_width=True,
-            type="secondary"
-        )
+            # --- Funcionalidad de Descarga a Excel ---
+            st.download_button(
+                label="📄 Descargar Plan de Pago a Excel",
+                data=to_excel(facturas_del_lote),
+                file_name=f"Plan_de_Pago_{lote_seleccionado_id}.xlsx",
+                mime="application/vnd.ms-excel",
+                use_container_width=True,
+                type="secondary"
+            )
         
         st.divider()
         
@@ -219,7 +260,7 @@ if gs_client:
         with st.expander("✅ Confirmar Pago del Lote", expanded=True):
             st.warning(f"⚠️ **Acción Irreversible:** Al confirmar, el lote **{lote_seleccionado_id}** y todas sus facturas se marcarán como **'Pagadas'**.")
             
-            if st.button(f"Confirmar Pago del Lote {lote_seleccionado_id}", type="primary", use_container_width=True):
+            if st.button(f"Confirmar Pago del Lote {lote_seleccionado_id}", type="primary", use_container_width=True, disabled=facturas_del_lote.empty):
                 with st.spinner("Procesando pago y actualizando estados en Google Sheets..."):
                     success = procesar_pago_lote(gs_client, lote_seleccionado_id, df_reporte)
                     
