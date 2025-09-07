@@ -1,11 +1,11 @@
 # pages/3_💵_Planificador_de_Pagos.py
 # -*- coding: utf-8 -*-
 """
-Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.5 - Módulo Gerencia).
+Centro de Control de Pagos Inteligente para FERREINOX (Versión 3.6 - Módulo Gerencia).
 
 Este módulo permite a Gerencia crear lotes de pago tanto para facturas
 vigentes como para facturas críticas (vencidas), con notificaciones directas
-a Tesorería. Lógica de sesión mejorada para prevenir NameError y código optimizado.
+a Tesorería. Lógica de sesión mejorada y corrección para manejar columnas duplicadas.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -28,7 +28,6 @@ st.set_page_config(
 )
 
 # --- 2. CONSTANTES Y CLAVES DE SESIÓN ---
-# Mejora: Usar constantes para claves de estado de sesión previene errores de tipeo.
 SESSION_KEY_SUGERENCIA_IDS = 'sugerencia_ids'
 SESSION_KEY_LOTE_VIGENTES = 'id_lote_propuesto_vigentes'
 SESSION_KEY_SELECTION_VIGENTES = 'current_selection_key_vigentes'
@@ -41,14 +40,14 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
     """
     Guarda la información de un nuevo lote en la hoja de historial y actualiza
     el estado de las facturas correspondientes en el reporte consolidado.
+    Versión corregida para manejar columnas duplicadas en el origen.
     """
     try:
         spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
         
-        # 1. Guardar en el historial de lotes
+        # 1. Guardar en el historial de lotes (sin cambios)
         historial_ws = spreadsheet.worksheet("Historial_Lotes_Pago")
         headers = historial_ws.row_values(1)
-        # Asegura que solo se inserten los valores que coinciden con las cabeceras
         valores_fila = [lote_info.get(col) for col in headers]
         historial_ws.append_row(valores_fila)
 
@@ -58,6 +57,9 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         reporte_headers_list = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
         
         reporte_df = pd.DataFrame(reporte_data[1:], columns=reporte_headers_list)
+        
+        # FIX: Se elimina cualquier columna duplicada que pueda venir del GSheet, manteniendo solo la primera aparición.
+        # Esto es crucial para prevenir el error 'cannot reindex'.
         reporte_df = reporte_df.loc[:, ~reporte_df.columns.duplicated(keep='first')]
 
         # Estandarización de nombres de columnas para consistencia
@@ -68,16 +70,19 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
         facturas_seleccionadas['valor_total_erp'] = pd.to_numeric(facturas_seleccionadas['valor_total_erp'], errors='coerce')
 
         try:
-            # Obtener los índices de las columnas a actualizar
-            estado_col_idx = reporte_headers_list.index('estado_factura') + 1
-            lote_col_idx = reporte_headers_list.index('id_lote_pago') + 1
-        except ValueError as e:
-            st.error(f"Error Crítico: La columna '{e.args[0].split("'")[1]}' no existe en '{GSHEET_REPORT_NAME}'.")
-            return False, f"Falta la columna requerida '{e.args[0].split("'")[1]}' en la hoja principal."
+            # FIX: Se utiliza .get_loc() sobre el índice de columnas del DataFrame ya depurado.
+            # REASON: Esto es más seguro que usar .index() en la lista original de encabezados,
+            # ya que garantiza que estamos buscando en la lista de columnas final y sin duplicados.
+            estado_col_idx = reporte_df.columns.get_loc('estado_factura') + 1
+            lote_col_idx = reporte_df.columns.get_loc('id_lote_pago') + 1
+        except KeyError as e:
+            # Si una columna esencial no existe después de la limpieza, se notifica el error.
+            error_msg = f"Error Crítico: La columna '{e.args[0]}' no existe en la hoja '{GSHEET_REPORT_NAME}'."
+            st.error(error_msg)
+            return False, error_msg
 
         updates = []
         for _, factura_a_actualizar in facturas_seleccionadas.iterrows():
-            # Búsqueda más robusta usando isclose para valores flotantes
             match = reporte_df[
                 (reporte_df['nombre_proveedor'] == factura_a_actualizar['nombre_proveedor']) &
                 (reporte_df['num_factura'] == factura_a_actualizar['num_factura']) &
@@ -85,19 +90,20 @@ def guardar_lote_en_gsheets(gs_client: gspread.Client, lote_info: dict, facturas
             ]
             
             if not match.empty:
-                # Se suma 2: 1 por el encabezado y 1 porque los índices de DataFrame empiezan en 0
                 row_index_to_update = match.index[0] + 2
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, estado_col_idx), 'values': [['En Lote de Pago']]})
                 updates.append({'range': gspread.utils.rowcol_to_a1(row_index_to_update, lote_col_idx), 'values': [[lote_info['id_lote']]]})
             else:
-                st.warning(f"No se encontró coincidencia para la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'. Se omitirá la actualización para esta factura.")
+                st.warning(f"No se encontró coincidencia para la factura {factura_a_actualizar['num_factura']} de '{factura_a_actualizar['nombre_proveedor']}'. Se omitirá la actualización.")
         
         if updates:
             reporte_ws.batch_update(updates)
         return True, None
     except Exception as e:
-        st.error(f"Error inesperado al actualizar Google Sheets: {e}")
+        error_msg = f"Error inesperado al actualizar Google Sheets: {e}"
+        st.error(error_msg)
         return False, str(e)
+
 
 def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -> list:
     """Genera una lista de IDs de facturas sugeridas para pagar según una estrategia."""
@@ -106,7 +112,6 @@ def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -
 
     df_sugerencias = df.copy()
     
-    # Mejora: Se ordena el dataframe según la estrategia seleccionada de forma más segura
     if estrategia == "Maximizar Ahorro" and 'valor_descuento' in df_sugerencias.columns:
         df_sugerencias = df_sugerencias.sort_values(by='valor_descuento', ascending=False)
     elif estrategia == "Evitar Vencimientos" and 'dias_para_vencer' in df_sugerencias.columns:
@@ -117,7 +122,6 @@ def generar_sugerencias(df: pd.DataFrame, presupuesto: float, estrategia: str) -
     total_acumulado = 0
     ids_sugeridos = []
     for _, row in df_sugerencias.iterrows():
-        # Considerar el valor con descuento si existe y es aplicable
         valor_a_considerar = row.get('valor_con_descuento', row['valor_total_erp']) if row.get('valor_con_descuento', 0) > 0 else row['valor_total_erp']
         
         if total_acumulado + valor_a_considerar <= presupuesto:
@@ -138,16 +142,13 @@ if df_full.empty:
     st.stop()
 
 # --- 5. PRE-PROCESAMIENTO Y SEGMENTACIÓN DE DATOS ---
-# Creación de un ID único y robusto para cada factura
 df_full['id_factura_unico'] = df_full.apply(
     lambda row: f"{row.get('nombre_proveedor', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', 0)}",
     axis=1
 ).str.replace(r'[\s/]+', '-', regex=True)
 
-# Filtrado inicial de facturas 'Pendientes'
 df_pendientes_full = df_full[df_full['estado_factura'] == 'Pendiente'].copy()
 
-# Segmentación de datos en categorías claras
 df_notas_credito = df_pendientes_full[df_pendientes_full['valor_total_erp'] < 0].copy()
 df_vencidas = df_pendientes_full[(df_pendientes_full['estado_pago'] == '🔴 Vencida') & (df_pendientes_full['valor_total_erp'] >= 0)].copy()
 df_para_pagar = df_pendientes_full[(df_pendientes_full['valor_total_erp'] >= 0) & (df_pendientes_full['estado_pago'].isin(['🟢 Vigente', '🟠 Por Vencer (7 días)']))].copy()
@@ -160,7 +161,6 @@ with st.sidebar:
     proveedores_lista = sorted(df_para_pagar['nombre_proveedor'].dropna().unique().tolist())
     selected_suppliers = st.multiselect("Filtrar por Proveedor (Vigentes):", proveedores_lista, placeholder="Seleccione proveedores")
 
-    # Aplicar filtros seleccionados
     df_pagar_filtrado = df_para_pagar.copy()
     if selected_suppliers:
         df_pagar_filtrado = df_pagar_filtrado[df_pagar_filtrado['nombre_proveedor'].isin(selected_suppliers)]
@@ -188,13 +188,11 @@ with tab_pagos:
     st.header("1. Selección de Facturas Vigentes para el Plan de Pago")
     st.markdown("Marca las facturas que deseas incluir en este lote.")
     
-    # Insertar columna de selección al inicio
     df_pagar_filtrado.insert(0, "seleccionar", False)
     
-    # Aplicar sugerencias si existen en la sesión
     if SESSION_KEY_SUGERENCIA_IDS in st.session_state:
         df_pagar_filtrado['seleccionar'] = df_pagar_filtrado['id_factura_unico'].isin(st.session_state[SESSION_KEY_SUGERENCIA_IDS])
-        del st.session_state[SESSION_KEY_SUGERENCIA_IDS] # Limpiar para no pre-seleccionar en la siguiente recarga
+        del st.session_state[SESSION_KEY_SUGERENCIA_IDS] 
 
     if df_pagar_filtrado.empty:
         st.info("No hay facturas vigentes para pagar que coincidan con los filtros actuales.")
@@ -211,7 +209,6 @@ with tab_pagos:
         selected_rows_vigentes = edited_df_vigentes[edited_df_vigentes['seleccionar']]
         st.divider()
 
-        # Lógica de sesión para generar un ID de lote estable y prevenir NameError
         if not selected_rows_vigentes.empty:
             selection_key = tuple(sorted(selected_rows_vigentes['id_factura_unico'].tolist()))
             if st.session_state.get(SESSION_KEY_SELECTION_VIGENTES) != selection_key:
@@ -287,7 +284,6 @@ with tab_vencidas:
         selected_rows_vencidas = edited_df_vencidas[edited_df_vencidas['seleccionar']]
         st.divider()
 
-        # Lógica de sesión para el ID del lote de vencidas (previene NameError)
         if not selected_rows_vencidas.empty:
             selection_key_vencidas = tuple(sorted(selected_rows_vencidas['id_factura_unico'].tolist()))
             if st.session_state.get(SESSION_KEY_SELECTION_VENCIDAS) != selection_key_vencidas:
@@ -346,13 +342,10 @@ with tab_credito:
     else:
         c1, c2 = st.columns(2)
         total_favor = df_notas_credito['valor_total_erp'].sum()
-        # El valor es negativo, así que lo multiplicamos por -1 para mostrarlo como un saldo a favor positivo
         c1.metric("Saldo Total a Favor (COP)", f"{abs(total_favor):,.0f}")
         c2.metric("Cantidad de Notas Crédito", f"{len(df_notas_credito)}")
         
         cols_to_display = ['nombre_proveedor', 'num_factura', 'valor_total_erp', 'fecha_emision_erp']
         existing_cols = [col for col in cols_to_display if col in df_notas_credito.columns]
         
-        # FIX: Se eliminó el texto erróneo que causaba la IndentationError.
-        # Esta es la línea que estaba causando el problema.
         st.dataframe(df_notas_credito[existing_cols], use_container_width=True, hide_index=True)
