@@ -24,6 +24,25 @@ import pytz
 from google.oauth2.service_account import Credentials
 import io  # Necesario para la descarga de archivos en memoria
 
+# ======================================================================================
+# --- INICIO DEL BLOQUE DE SEGURIDAD ---
+# Este es el código que debes añadir al principio de cada página protegida.
+# ======================================================================================
+
+# 1. Se asegura de que la variable de sesión exista para evitar errores.
+if 'password_correct' not in st.session_state:
+    st.session_state['password_correct'] = False
+
+# 2. Verifica si la contraseña es correcta (si el usuario ya inició sesión en la página principal).
+#    Si no es correcta, muestra un mensaje de error y detiene la carga de la página.
+if not st.session_state["password_correct"]:
+    st.error("🔒 Debes iniciar sesión para acceder a esta página.")
+    st.info("Por favor, ve a la página principal 'Dashboard General' para ingresar la contraseña.")
+    st.stop() # ¡Este comando es clave! Detiene la ejecución del resto del script.
+
+# --- FIN DEL BLOQUE DE SEGURIDAD ---
+
+
 # --- INICIO: Lógica de common/utils.py integrada ---
 
 # --- Constantes ---
