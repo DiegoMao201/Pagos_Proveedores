@@ -25,6 +25,24 @@ from datetime import datetime
 # Asumimos que este archivo existe en la ruta especificada.
 from common.utils import load_data_from_gsheet, connect_to_google_sheets
 
+# ======================================================================================
+# --- INICIO DEL BLOQUE DE SEGURIDAD ---
+# Este es el código que debes añadir al principio de cada página protegida.
+# ======================================================================================
+
+# 1. Se asegura de que la variable de sesión exista para evitar errores.
+if 'password_correct' not in st.session_state:
+    st.session_state['password_correct'] = False
+
+# 2. Verifica si la contraseña es correcta (si el usuario ya inició sesión en la página principal).
+#    Si no es correcta, muestra un mensaje de error y detiene la carga de la página.
+if not st.session_state["password_correct"]:
+    st.error("🔒 Debes iniciar sesión para acceder a esta página.")
+    st.info("Por favor, ve a la página principal 'Dashboard General' para ingresar la contraseña.")
+    st.stop() # ¡Este comando es clave! Detiene la ejecución del resto del script.
+
+# --- FIN DEL BLOQUE DE SEGURIDAD ---
+
 # --- 1. CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     layout="wide",
