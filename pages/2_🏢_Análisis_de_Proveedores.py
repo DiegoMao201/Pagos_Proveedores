@@ -68,6 +68,17 @@ if master_df.empty:
 # --- 3. BARRA LATERAL Y FILTRO INTELIGENTE ---
 st.sidebar.header("Filtros de Análisis 🔎")
 
+# <-- INICIO DE LA CORRECCIÓN (ValueError) -->
+# Se verifica que las columnas necesarias existan antes de usarlas.
+required_cols = ['nombre_proveedor', 'valor_total_erp']
+if not all(col in master_df.columns for col in required_cols):
+    st.error(
+        "❌ Error de configuración: El DataFrame no contiene las columnas necesarias. "
+        f"Asegúrate de que tu Google Sheet tenga las columnas que se normalizan a: `{', '.join(required_cols)}`."
+    )
+    st.stop()
+# <-- FIN DE LA CORRECCIÓN -->
+
 # Se calculan los proveedores que tienen deuda real
 proveedores_con_deuda = master_df.groupby('nombre_proveedor')['valor_total_erp'].sum()
 proveedores_activos = proveedores_con_deuda[proveedores_con_deuda > 0].index.tolist()
@@ -224,7 +235,6 @@ with tab2:
     else:
         kpi_col3.metric("Factura más Crítica (N°)", "N/A")
 
-
     # Gráfico de Antigüedad
     chart = alt.Chart(aging_summary).mark_bar().encode(
         x=alt.X('valor_total:Q', title='Valor Total de la Deuda ($)', axis=alt.Axis(format='$,.0f')),
@@ -323,7 +333,7 @@ with tab3:
         column_config_base["nombre_proveedor"] = st.column_config.TextColumn("Proveedor")
 
     st.dataframe(
-        supplier_df[display_cols],
+        supplier_df[[col for col in display_cols if col in supplier_df.columns]],
         hide_index=True,
         column_config=column_config_base
     )
