@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Utilidades compartidas para la conexión y carga de datos desde Google Sheets.
-Versión 3.4: Se añade la eliminación automática de columnas duplicadas para
-prevenir errores cuando el origen de datos es inconsistente.
+Versión 3.5: Código limpiado y estandarizado para máxima robustez y compatibilidad
+entre los módulos de la aplicación.
 """
 
 import pandas as pd
@@ -47,50 +47,40 @@ def load_data_from_gsheet(_gs_client: gspread.Client) -> pd.DataFrame:
             st.warning("El reporte en Google Sheets está vacío o solo tiene encabezados.")
             return pd.DataFrame()
 
-        df = pd.DataFrame(records[1:], columns=records[0])
-
         # 1. Normalización de Nombres de Columnas
-        original_cols = df.columns.tolist()
-        df.columns = [str(col).strip().lower().replace(' ', '_') for col in original_cols]
+        headers = [str(col).strip().lower().replace(' ', '_') for col in records[0]]
+        df = pd.DataFrame(records[1:], columns=headers)
         
-        # 2. Renombrado
-        rename_map = {
-            'nombre_proveedor_erp': 'nombre_proveedor'
-        }
-        valid_rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
-        df.rename(columns=valid_rename_map, inplace=True)
-
-        # 3. <-- INICIO DE LA CORRECCIÓN CRÍTICA -->
-        # Esta línea elimina las columnas duplicadas, conservando la primera que encuentra.
+        # 2. Eliminar columnas duplicadas, conservando la primera aparición.
         df = df.loc[:, ~df.columns.duplicated(keep='first')]
-        # <-- FIN DE LA CORRECCIÓN CRÍTICA -->
+
+        # 3. Renombrado consistente de columnas clave
+        rename_map = {'nombre_proveedor_erp': 'nombre_proveedor'}
+        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
 
         # 4. Garantizar la existencia de columnas críticas
-        if 'nombre_proveedor' not in df.columns:
-            df['nombre_proveedor'] = 'Proveedor No Especificado'
-        
-        if 'valor_total_erp' not in df.columns:
-            df['valor_total_erp'] = 0
+        required_cols = {
+            'nombre_proveedor': 'Proveedor No Especificado',
+            'valor_total_erp': 0,
+            'estado_factura': 'Pendiente'
+        }
+        for col, default_value in required_cols.items():
+            if col not in df.columns:
+                df[col] = default_value
 
         # 5. Limpieza y Conversión de Tipos
-        if 'estado_factura' in df.columns:
-            df['estado_factura'] = df['estado_factura'].astype(str).str.strip().str.capitalize().replace('', 'Pendiente')
-        else:
-            df['estado_factura'] = 'Pendiente'
+        df['estado_factura'] = df['estado_factura'].astype(str).str.strip().str.capitalize().replace('', 'Pendiente')
 
         numeric_cols = ['valor_total_erp', 'valor_total_correo', 'dias_para_vencer', 'valor_descuento', 'valor_con_descuento']
         for col in numeric_cols:
             if col in df.columns:
-                if df[col].dtype == 'object':
-                    df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                # Reemplazar comas por puntos para decimales y convertir
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.', regex=False), errors='coerce').fillna(0)
 
         date_cols = ['fecha_emision_erp', 'fecha_vencimiento_erp', 'fecha_emision_correo', 'fecha_vencimiento_correo', 'fecha_limite_descuento']
         for col in date_cols:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
-                if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    df[col] = df[col].dt.tz_localize(None).dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
         
         return df
 
