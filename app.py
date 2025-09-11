@@ -21,6 +21,11 @@ Funcionalidades principales:
 - Plan de pagos sugerido para maximizar ahorros.
 - Panel visual dedicado a la gestión de oportunidades de descuento.
 
+**MODIFICACIÓN CLAVE (Versión 3.0 - Preservación de Estado):**
+- El script ahora lee el reporte existente antes de sincronizar.
+- Fusiona los datos nuevos con los estados de pago existentes ('id_lote_pago', 'estado_factura').
+- Esto evita que la sincronización borre el trabajo realizado en los módulos de Gerencia y Tesorería.
+
 **Dependencias (guardar como requirements.txt):**
 altair==5.3.0
 dropbox==11.36.2
@@ -228,7 +233,7 @@ def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
 
         # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
         df_to_upload = df_to_upload.astype(str).replace({
-            'nan': '', 'NaT': '', 'None': ''
+            'nan': '', 'NaT': '', 'None': '', 'NaN': ''
         })
 
         # --- LÓGICA DE ACTUALIZACIÓN MODIFICADA PARA NO BORRAR COLUMNAS ADICIONALES ---
@@ -502,12 +507,9 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
             if col in email_df_proc.columns:
-                # FIX: Asegurar que la columna sea de tipo string antes de la conversión
                 email_df_proc[col] = email_df_proc[col].astype(str)
-                # Conversión robusta de fechas, forzando a NaT en caso de error
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
-                # Asignar zona horaria y normalizar solo si la conversión fue exitosa.
                 if pd.api.types.is_datetime64_any_dtype(date_series):
                     date_series = date_series.dt.normalize()
                     if date_series.dt.tz is None:
@@ -515,7 +517,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
                     else:
                         email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
                 else:
-                    # Si la serie no es de tipo fecha, se llena con NaT para consistencia
                     email_df_proc[col] = pd.NaT
 
         email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
@@ -541,7 +542,6 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
     master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
 
-    # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
     today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
     master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
     
@@ -560,6 +560,14 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
     if not master_df.empty:
         master_df = calculate_financial_discounts(master_df)
 
+    # --- NUEVO ---: Generación del ID único para cada factura.
+    # Esta clave es crucial para poder fusionar los datos sin perder los estados de pago.
+    # Se usa la misma lógica que en el script de Gerencia para garantizar la consistencia.
+    master_df['id_factura_unico'] = master_df.apply(
+        lambda row: f"{row.get('nombre_proveedor', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', 0)}",
+        axis=1
+    ).str.replace(r'[\s/]+', '-', regex=True)
+
     return master_df
 
 
@@ -570,14 +578,35 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
 def run_full_sync():
     """Orquesta el proceso completo de sincronización de datos."""
     with st.spinner('Iniciando sincronización completa...'):
-        st.info("Paso 1/5: Conectando a servicios de Google...")
+        st.info("Paso 1/6: Conectando a servicios de Google...")
         gs_client = connect_to_google_sheets()
         if not gs_client:
             st.error("Sincronización cancelada. No se pudo conectar a Google.")
             st.stop()
+        
+        # --- NUEVO ---: Paso 2/6: Leer el reporte consolidado existente para preservar estados.
+        st.info("Paso 2/6: Leyendo datos existentes para preservar estados de pago...")
+        existing_report_df = pd.DataFrame()
+        try:
+            report_sheet_existing = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
+            if report_sheet_existing:
+                records = report_sheet_existing.get_all_records()
+                if records:
+                    existing_report_df = pd.DataFrame(records)
+                    # Aseguramos que las columnas a preservar existan
+                    cols_to_preserve = ['id_factura_unico', 'id_lote_pago', 'estado_factura']
+                    for col in cols_to_preserve:
+                        if col not in existing_report_df.columns:
+                            existing_report_df[col] = '' if col != 'estado_factura' else 'Pendiente'
+                    
+                    # Seleccionamos solo las columnas que queremos mantener
+                    existing_report_df = existing_report_df[cols_to_preserve]
+        except Exception as e:
+            st.warning(f"No se pudo leer el reporte existente. Se creará desde cero. Error: {e}")
+
 
         search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
-        st.info(f"Paso 2/5: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
+        st.info(f"Paso 3/6: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
         email_df = fetch_new_invoices_from_email(search_start_date)
 
         db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
@@ -589,9 +618,7 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
-                            # FIX: Asegurar que la columna sea de tipo string antes de la conversión
                             historical_df[col] = historical_df[col].astype(str)
-                            # Conversión robusta de fechas del histórico
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
                             if pd.api.types.is_datetime64_any_dtype(date_series):
@@ -608,9 +635,8 @@ def run_full_sync():
 
         if not email_df.empty:
             st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            # Se convierte la fecha actual a un Timestamp de Pandas para poder usar .normalize()
             email_df['fecha_lectura'] = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-            st.info(f"Paso 3/5: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
+            st.info(f"Paso 4/6: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
             
             combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
             if db_sheet:
@@ -621,15 +647,36 @@ def run_full_sync():
             st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
             st.session_state.email_df = historical_df
 
-        st.info("Paso 4/5: Cargando datos del ERP y conciliando...")
+        st.info("Paso 5/6: Cargando datos del ERP y conciliando...")
         st.session_state.erp_df = load_erp_data()
         final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
-        st.session_state.master_df = final_df
+        
+        # --- NUEVO ---: Fusión de datos nuevos con estados existentes.
+        if not final_df.empty and not existing_report_df.empty:
+            st.info("... fusionando con estados de pago existentes.")
+            # Hacemos un 'left merge' para mantener todas las facturas nuevas y añadirles el estado antiguo si existe.
+            merged_df = pd.merge(final_df, existing_report_df, on='id_factura_unico', how='left')
+            
+            # Para las facturas que no tenían un estado previo (nuevas), se les asigna 'Pendiente'.
+            merged_df['estado_factura'] = merged_df['estado_factura'].fillna('Pendiente')
+            # Llenamos los IDs de lote vacíos con un string vacío para evitar 'NaN'.
+            merged_df['id_lote_pago'] = merged_df['id_lote_pago'].fillna('')
+        elif not final_df.empty:
+            # Si no había reporte antiguo, se crean las columnas desde cero.
+            st.info("... no se encontró reporte previo, creando columnas de estado.")
+            merged_df = final_df.copy()
+            merged_df['id_lote_pago'] = ''
+            merged_df['estado_factura'] = 'Pendiente'
+        else:
+            merged_df = pd.DataFrame() # No hay datos que procesar
 
-        st.info(f"Paso 5/5: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
+        st.session_state.master_df = merged_df
+
+        st.info(f"Paso 6/6: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
         report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
-        if report_sheet and not final_df.empty:
-            if update_gsheet_from_df(report_sheet, final_df):
+        if report_sheet and not merged_df.empty:
+            # --- MODIFICADO ---: Ahora se sube el DataFrame fusionado (merged_df)
+            if update_gsheet_from_df(report_sheet, merged_df):
                 st.success(f"✅ ¡Reporte '{GSHEET_REPORT_NAME}' actualizado en Google Sheets!")
         else:
             st.warning("No se actualizó el reporte en Google Sheets (sin datos finales o sin acceso a la hoja).")
@@ -727,7 +774,8 @@ def display_dashboard(df: pd.DataFrame):
 
     with tab1:
         st.subheader("Explorador de Datos Consolidados")
-        display_cols = ['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
+        # --- MODIFICADO ---: Se añade la columna 'estado_factura' a la vista
+        display_cols = ['nombre_proveedor', COL_NUM_FACTURA, 'estado_factura', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
           column_config={
               COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="%d"),
