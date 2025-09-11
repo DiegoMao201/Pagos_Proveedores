@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Análisis Gerencial de Proveedores (Versión 4.0 - Dashboard Estratégico).
+Módulo de Análisis Gerencial de Proveedores (Versión 4.1 - Dashboard Estratégico).
 
 Este módulo ha sido rediseñado para ofrecer un tablero de control gerencial de alto nivel,
 enfocado en KPIs estratégicos, análisis comparativo de proveedores y una visión clara 
 para la toma de decisiones.
 
-Mejoras en v4.0:
+Mejoras en v4.1:
+- **Corrección de Error Crítico (ValueError):** Se solucionó un error que ocurría en el
+  análisis por proveedor cuando un proveedor tenía únicamente notas de crédito pendientes.
+  La lógica de cálculo de la deuda bruta ha sido reemplazada por un método de fusión de
+  datos (merge) que es más robusto y previene desajustes en las longitudes de los datos.
 - **Análisis Comparativo de Proveedores:** Se ha añadido una nueva pestaña "Análisis por Proveedor" 
   que permite clasificar y comparar proveedores según su deuda total, porcentaje de cartera vencida y 
   oportunidades de ahorro.
@@ -16,10 +20,6 @@ Mejoras en v4.0:
   "Cartera Vencida" en el resumen ejecutivo, como fue solicitado, para mayor claridad en la vista consolidada.
 - **Gráfico de Composición de Deuda:** Se ha añadido un gráfico de dona para visualizar la concentración 
   de la deuda entre los principales proveedores.
-- **KPIs Estratégicos:** Se han introducido nuevos KPIs como el porcentaje de deuda por proveedor y 
-  la tasa de cartera vencida individual, ofreciendo una visión más profunda de la salud de las relaciones comerciales.
-- **Experiencia de Usuario:** Se ha refinado la interfaz y la presentación de datos para que sea más 
-  intuitiva y visualmente impactante.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -83,7 +83,8 @@ def get_master_data():
     if master_df.empty:
         return pd.DataFrame()
         
-    # **MEJORA CLAVE**: Filtrar solo facturas pendientes para un análisis real.
+    # **FILTRO CLAVE**: Asegurar que solo se analicen facturas con estado 'Pendiente'.
+    # Este filtro se aplica una sola vez al inicio y rige todos los cálculos posteriores.
     if 'estado_factura' in master_df.columns:
         master_df = master_df[master_df['estado_factura'] == 'Pendiente'].copy()
         
@@ -98,6 +99,7 @@ if master_df.empty:
 # --- 3. BARRA LATERAL Y FILTRO INTELIGENTE ---
 st.sidebar.header("Filtros de Análisis 🔎")
 
+# Se asegura que solo proveedores con deuda neta diferente de cero aparezcan en el filtro
 proveedores_net_debt = master_df.groupby('nombre_proveedor')['valor_total_erp'].sum()
 proveedores_activos = proveedores_net_debt[proveedores_net_debt != 0].index.tolist()
 proveedores_lista_filtrada = sorted(proveedores_activos)
@@ -178,7 +180,6 @@ with tab1:
             if not descuentos_df.empty and total_ahorro > 0:
                 st.success(f"Pagar estas **{len(descuentos_df)} facturas** antes de su fecha límite para maximizar el ahorro:")
                 
-                # **MEJORA SOLICITADA**: Añadir columna de proveedor
                 display_cols_ahorro = ['nombre_proveedor', 'num_factura', 'valor_con_descuento', 'fecha_limite_descuento', 'valor_descuento']
                 
                 st.dataframe(
@@ -200,7 +201,6 @@ with tab1:
             if not vencidas_df.empty:
                 st.error(f"Hay **{len(vencidas_df)} facturas vencidas**. Priorizar su pago para evitar problemas de suministro y cargos:")
                 
-                # **MEJORA SOLICITADA**: Añadir columna de proveedor
                 display_cols_vencidas = ['nombre_proveedor', 'num_factura', 'valor_total_erp', 'fecha_vencimiento_erp', 'dias_para_vencer']
                 
                 st.dataframe(
@@ -223,33 +223,45 @@ with tab_proveedor:
 
     if selected_supplier == "TODOS (Vista Consolidada)":
         # --- Lógica de cálculo para el ranking de proveedores ---
-        # 1. Agrupar por proveedor
+        # 1. Agrupar por proveedor para obtener deuda neta y conteo de documentos
         proveedor_summary = master_df.groupby('nombre_proveedor').agg(
             deuda_total=('valor_total_erp', 'sum'),
             numero_documentos=('num_factura', 'count')
         ).reset_index()
 
-        # 2. Calcular monto vencido por proveedor
+        # 2. Calcular monto vencido por proveedor de forma segura
         vencido_por_proveedor = master_df[master_df['estado_pago'] == '🔴 Vencida'].groupby('nombre_proveedor')['valor_total_erp'].sum().reset_index()
         vencido_por_proveedor.rename(columns={'valor_total_erp': 'monto_vencido'}, inplace=True)
         
-        # 3. Calcular ahorro potencial por proveedor
+        # 3. Calcular ahorro potencial por proveedor de forma segura
         ahorro_por_proveedor = master_df[master_df['estado_descuento'] != 'No Aplica'].groupby('nombre_proveedor')['valor_descuento'].sum().reset_index()
         ahorro_por_proveedor.rename(columns={'valor_descuento': 'ahorro_potencial'}, inplace=True)
         
-        # 4. Unir los datos
+        # ================== INICIO DE LA CORRECCIÓN DEL ERROR ==================
+        # 4. Calcular deuda bruta (solo facturas) de forma segura
+        # Se calcula en un DF separado para evitar el ValueError si un proveedor solo tiene NC.
+        deuda_bruta_por_proveedor = master_df[master_df['valor_total_erp'] >= 0].groupby('nombre_proveedor')['valor_total_erp'].sum().reset_index()
+        deuda_bruta_por_proveedor.rename(columns={'valor_total_erp': 'deuda_bruta_proveedor'}, inplace=True)
+        
+        # 5. Unir todos los datos calculados usando 'merge' para mayor robustez
+        proveedor_summary = pd.merge(proveedor_summary, deuda_bruta_por_proveedor, on='nombre_proveedor', how='left')
         proveedor_summary = pd.merge(proveedor_summary, vencido_por_proveedor, on='nombre_proveedor', how='left')
         proveedor_summary = pd.merge(proveedor_summary, ahorro_por_proveedor, on='nombre_proveedor', how='left')
+        
+        # Rellenar con 0 los valores nulos que resultan de los 'left merge'
         proveedor_summary.fillna(0, inplace=True)
+        # =================== FIN DE LA CORRECCIÓN DEL ERROR ====================
 
-        # 5. Calcular KPIs finales
-        deuda_bruta_total = master_df[master_df['valor_total_erp'] >= 0]['valor_total_erp'].sum()
-        proveedor_summary['deuda_bruta_proveedor'] = master_df[master_df['valor_total_erp'] >= 0].groupby('nombre_proveedor')['valor_total_erp'].sum().values
-        
-        proveedor_summary['%_deuda_total'] = (proveedor_summary['deuda_bruta_proveedor'] / deuda_bruta_total * 100)
-        proveedor_summary['%_vencido'] = (proveedor_summary['monto_vencido'] / proveedor_summary['deuda_bruta_proveedor'] * 100).fillna(0)
-        
-        # 6. Mostrar la tabla de ranking
+        # 6. Calcular KPIs finales
+        deuda_bruta_total_consolidada = proveedor_summary['deuda_bruta_proveedor'].sum()
+        if deuda_bruta_total_consolidada > 0:
+            proveedor_summary['%_deuda_total'] = (proveedor_summary['deuda_bruta_proveedor'] / deuda_bruta_total_consolidada * 100)
+            proveedor_summary['%_vencido'] = (proveedor_summary['monto_vencido'] / proveedor_summary['deuda_bruta_proveedor'] * 100).fillna(0)
+        else:
+            proveedor_summary['%_deuda_total'] = 0
+            proveedor_summary['%_vencido'] = 0
+
+        # 7. Mostrar la tabla de ranking
         st.dataframe(
             proveedor_summary[['nombre_proveedor', 'deuda_total', '%_deuda_total', 'monto_vencido', '%_vencido', 'ahorro_potencial', 'numero_documentos']].sort_values(by='deuda_total', ascending=False),
             use_container_width=True,
@@ -257,9 +269,9 @@ with tab_proveedor:
             column_config={
                 "nombre_proveedor": "Proveedor",
                 "deuda_total": st.column_config.NumberColumn("Deuda Neta", format="$ %d"),
-                "%_deuda_total": st.column_config.ProgressColumn("% Deuda Total", format="%.1f%%", min_value=0, max_value=100),
+                "%_deuda_total": st.column_config.ProgressColumn("% Deuda Bruta Total", help="Qué porcentaje de la deuda bruta total representa este proveedor.", format="%.1f%%", min_value=0, max_value=100),
                 "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ %d"),
-                "%_vencido": st.column_config.ProgressColumn("% Vencido", format="%.1f%%", min_value=0, max_value=100),
+                "%_vencido": st.column_config.ProgressColumn("% Vencido (Proveedor)", help="Porcentaje de la deuda bruta de este proveedor que se encuentra vencida.", format="%.1f%%", min_value=0, max_value=100),
                 "ahorro_potencial": st.column_config.NumberColumn("Ahorro Potencial", format="$ %d"),
                 "numero_documentos": "N° Docs"
             }
@@ -360,7 +372,6 @@ with tab2:
             if selected_supplier == "TODOS (Vista Consolidada)":
                 st.subheader("Composición de la Deuda Bruta por Proveedor")
                 
-                # Usamos el summary ya calculado en la otra pestaña
                 proveedor_pie_data = master_df[master_df['valor_total_erp'] >= 0].groupby('nombre_proveedor')['valor_total_erp'].sum().reset_index()
                 proveedor_pie_data.rename(columns={'valor_total_erp': 'deuda_bruta'}, inplace=True)
 
