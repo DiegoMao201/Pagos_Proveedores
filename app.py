@@ -502,6 +502,8 @@ def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.Da
         date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
         for col in date_cols_correo:
             if col in email_df_proc.columns:
+                # FIX: Asegurar que la columna sea de tipo string antes de la conversión
+                email_df_proc[col] = email_df_proc[col].astype(str)
                 # Conversión robusta de fechas, forzando a NaT en caso de error
                 date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
                 
@@ -587,6 +589,8 @@ def run_full_sync():
                     date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
                     for col in date_cols_to_convert:
                         if col in historical_df.columns:
+                            # FIX: Asegurar que la columna sea de tipo string antes de la conversión
+                            historical_df[col] = historical_df[col].astype(str)
                             # Conversión robusta de fechas del histórico
                             date_series = pd.to_datetime(historical_df[col], errors='coerce')
                             
