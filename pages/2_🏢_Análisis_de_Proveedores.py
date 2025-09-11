@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Análisis Gerencial de Proveedores (Versión 3.7 - Dashboard Ejecutivo).
+Módulo de Análisis Gerencial de Proveedores (Versión 4.0 - Dashboard Estratégico).
 
-Este módulo ha sido rediseñado para ofrecer un tablero de control gerencial,
-enfocado en KPIs de alto impacto y una visión clara y actualizada de la cartera
-pendiente.
+Este módulo ha sido rediseñado para ofrecer un tablero de control gerencial de alto nivel,
+enfocado en KPIs estratégicos, análisis comparativo de proveedores y una visión clara 
+para la toma de decisiones.
 
-Mejoras en v3.7:
-- **Corrección de Error Crítico (KeyError):** Se solucionó un error que ocurría al intentar ordenar por columnas
-  que no existían en los datos filtrados (ej. 'fecha_limite_descuento'). La lógica de ordenamiento ahora es robusta.
-- **Enfoque Ejecutivo:** La interfaz ha sido rediseñada para ser más limpia y directa, hablando en el lenguaje de negocio
-  para facilitar la toma de decisiones rápidas.
-- **KPIs Mejorados:** Se ha añadido un indicador de "Salud de Cartera" y se ha mejorado la presentación de los KPIs financieros.
-- **Guía al Usuario:** Se han añadido pequeños textos de guía para mejorar la experiencia y la comprensión de los datos.
-- **Sincronización de Estado:** Se mantiene el enfoque EXCLUSIVO en facturas con estado 'Pendiente' para un reflejo fiel de la realidad.
+Mejoras en v4.0:
+- **Análisis Comparativo de Proveedores:** Se ha añadido una nueva pestaña "Análisis por Proveedor" 
+  que permite clasificar y comparar proveedores según su deuda total, porcentaje de cartera vencida y 
+  oportunidades de ahorro.
+- **Visualización de Proveedores Críticos:** Se han incorporado gráficos de barras para identificar 
+  rápidamente a los proveedores con mayor deuda y mayor monto vencido.
+- **Visibilidad Mejorada:** Se ha añadido el nombre del proveedor en las tablas de "Ahorro" y 
+  "Cartera Vencida" en el resumen ejecutivo, como fue solicitado, para mayor claridad en la vista consolidada.
+- **Gráfico de Composición de Deuda:** Se ha añadido un gráfico de dona para visualizar la concentración 
+  de la deuda entre los principales proveedores.
+- **KPIs Estratégicos:** Se han introducido nuevos KPIs como el porcentaje de deuda por proveedor y 
+  la tasa de cartera vencida individual, ofreciendo una visión más profunda de la salud de las relaciones comerciales.
+- **Experiencia de Usuario:** Se ha refinado la interfaz y la presentación de datos para que sea más 
+  intuitiva y visualmente impactante.
 """
 
 # --- 0. IMPORTACIÓN DE LIBRERÍAS ---
@@ -27,27 +33,25 @@ from common.utils import load_data_from_gsheet, connect_to_google_sheets
 
 # ======================================================================================
 # --- INICIO DEL BLOQUE DE SEGURIDAD ---
-# Este es el código que debes añadir al principio de cada página protegida.
 # ======================================================================================
 
 # 1. Se asegura de que la variable de sesión exista para evitar errores.
 if 'password_correct' not in st.session_state:
     st.session_state['password_correct'] = False
 
-# 2. Verifica si la contraseña es correcta (si el usuario ya inició sesión en la página principal).
-#    Si no es correcta, muestra un mensaje de error y detiene la carga de la página.
+# 2. Verifica si la contraseña es correcta.
 if not st.session_state["password_correct"]:
     st.error("🔒 Debes iniciar sesión para acceder a esta página.")
     st.info("Por favor, ve a la página principal 'Dashboard General' para ingresar la contraseña.")
-    st.stop() # ¡Este comando es clave! Detiene la ejecución del resto del script.
+    st.stop()
 
 # --- FIN DEL BLOQUE DE SEGURIDAD ---
 
 # --- 1. CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     layout="wide",
-    page_title="Análisis Gerencial de Proveedores",
-    page_icon="🏢"
+    page_title="Análisis Estratégico de Proveedores",
+    page_icon="📊"
 )
 
 # --- FUNCIÓN DE UTILIDAD PARA DESCARGA DE EXCEL ---
@@ -104,11 +108,11 @@ selected_supplier = st.sidebar.selectbox("Selecciona un Proveedor:", opciones_fi
 # --- 4. LÓGICA DE FILTRADO Y TÍTULO DINÁMICO ---
 if selected_supplier == "TODOS (Vista Consolidada)":
     supplier_df = master_df[master_df['nombre_proveedor'].isin(proveedores_lista_filtrada)].copy()
-    titulo_pagina = "🏢 Panel de Control: Consolidado de Cartera Pendiente"
+    titulo_pagina = "📊 Panel Estratégico: Consolidado de Cartera Pendiente"
     nombre_archivo = f"Reporte_Consolidado_Pendiente_{datetime.now().strftime('%Y%m%d')}.xlsx"
 else:
     supplier_df = master_df[master_df['nombre_proveedor'] == selected_supplier].copy()
-    titulo_pagina = f"🏢 Panel de Control: {selected_supplier}"
+    titulo_pagina = f"📊 Panel Estratégico: {selected_supplier}"
     nombre_archivo = f"Reporte_{selected_supplier.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
 st.title(titulo_pagina)
@@ -125,7 +129,7 @@ st.download_button(
 )
 
 # --- 5. ESTRUCTURA DE PESTAÑAS ---
-tab1, tab2, tab3 = st.tabs(["💡 Resumen Ejecutivo", "💰 Diagnóstico Financiero", "📑 Detalle de Documentos"])
+tab1, tab_proveedor, tab2, tab3 = st.tabs(["💡 Resumen Ejecutivo", "🏆 Análisis por Proveedor", "💰 Diagnóstico Financiero", "📑 Detalle de Documentos"])
 
 with tab1:
     st.header("Fotografía Financiera de la Cartera Pendiente")
@@ -159,7 +163,7 @@ with tab1:
     st.divider()
     st.header("🧠 Acciones Clave y Oportunidades")
 
-    # --- CORRECCIÓN DE KEYERROR ---
+    # --- CORRECCIÓN DE KEYERROR Y MEJORA DE ROBUSTEZ ---
     descuentos_df = pd.DataFrame()
     if 'estado_descuento' in facturas_df.columns:
         descuentos_df = facturas_df[facturas_df['estado_descuento'] != 'No Aplica'].copy()
@@ -173,10 +177,15 @@ with tab1:
             st.subheader(f"💰 Oportunidad de Ahorro: ${int(total_ahorro):,}")
             if not descuentos_df.empty and total_ahorro > 0:
                 st.success(f"Pagar estas **{len(descuentos_df)} facturas** antes de su fecha límite para maximizar el ahorro:")
+                
+                # **MEJORA SOLICITADA**: Añadir columna de proveedor
+                display_cols_ahorro = ['nombre_proveedor', 'num_factura', 'valor_con_descuento', 'fecha_limite_descuento', 'valor_descuento']
+                
                 st.dataframe(
-                    descuentos_df[['num_factura', 'valor_con_descuento', 'fecha_limite_descuento', 'valor_descuento']],
+                    descuentos_df[display_cols_ahorro],
                     hide_index=True, height=250,
                     column_config={
+                        "nombre_proveedor": "Proveedor",
                         "num_factura": "N° Factura",
                         "valor_con_descuento": st.column_config.NumberColumn("Pagar", format="$ %d"),
                         "fecha_limite_descuento": st.column_config.DateColumn("Fecha Límite", format="YYYY-MM-DD"),
@@ -190,10 +199,15 @@ with tab1:
             st.subheader(f"⚠️ Riesgo: Cartera Vencida ${int(monto_vencido):,}")
             if not vencidas_df.empty:
                 st.error(f"Hay **{len(vencidas_df)} facturas vencidas**. Priorizar su pago para evitar problemas de suministro y cargos:")
+                
+                # **MEJORA SOLICITADA**: Añadir columna de proveedor
+                display_cols_vencidas = ['nombre_proveedor', 'num_factura', 'valor_total_erp', 'fecha_vencimiento_erp', 'dias_para_vencer']
+                
                 st.dataframe(
-                    vencidas_df[['num_factura', 'valor_total_erp', 'fecha_vencimiento_erp', 'dias_para_vencer']],
+                    vencidas_df[display_cols_vencidas],
                     hide_index=True, height=250,
                     column_config={
+                        "nombre_proveedor": "Proveedor",
                         "num_factura": "N° Factura",
                         "valor_total_erp": st.column_config.NumberColumn("Valor", format="$ %d"),
                         "fecha_vencimiento_erp": st.column_config.DateColumn("Venció", format="YYYY-MM-DD"),
@@ -203,9 +217,92 @@ with tab1:
             else:
                 st.success("¡Felicitaciones! No hay facturas vencidas en esta selección.")
 
+with tab_proveedor:
+    st.header("🏆 Ranking y Análisis Comparativo de Proveedores")
+    st.markdown("Utilice esta vista para evaluar el estado de la cartera con cada proveedor, identificar riesgos y oportunidades.")
+
+    if selected_supplier == "TODOS (Vista Consolidada)":
+        # --- Lógica de cálculo para el ranking de proveedores ---
+        # 1. Agrupar por proveedor
+        proveedor_summary = master_df.groupby('nombre_proveedor').agg(
+            deuda_total=('valor_total_erp', 'sum'),
+            numero_documentos=('num_factura', 'count')
+        ).reset_index()
+
+        # 2. Calcular monto vencido por proveedor
+        vencido_por_proveedor = master_df[master_df['estado_pago'] == '🔴 Vencida'].groupby('nombre_proveedor')['valor_total_erp'].sum().reset_index()
+        vencido_por_proveedor.rename(columns={'valor_total_erp': 'monto_vencido'}, inplace=True)
+        
+        # 3. Calcular ahorro potencial por proveedor
+        ahorro_por_proveedor = master_df[master_df['estado_descuento'] != 'No Aplica'].groupby('nombre_proveedor')['valor_descuento'].sum().reset_index()
+        ahorro_por_proveedor.rename(columns={'valor_descuento': 'ahorro_potencial'}, inplace=True)
+        
+        # 4. Unir los datos
+        proveedor_summary = pd.merge(proveedor_summary, vencido_por_proveedor, on='nombre_proveedor', how='left')
+        proveedor_summary = pd.merge(proveedor_summary, ahorro_por_proveedor, on='nombre_proveedor', how='left')
+        proveedor_summary.fillna(0, inplace=True)
+
+        # 5. Calcular KPIs finales
+        deuda_bruta_total = master_df[master_df['valor_total_erp'] >= 0]['valor_total_erp'].sum()
+        proveedor_summary['deuda_bruta_proveedor'] = master_df[master_df['valor_total_erp'] >= 0].groupby('nombre_proveedor')['valor_total_erp'].sum().values
+        
+        proveedor_summary['%_deuda_total'] = (proveedor_summary['deuda_bruta_proveedor'] / deuda_bruta_total * 100)
+        proveedor_summary['%_vencido'] = (proveedor_summary['monto_vencido'] / proveedor_summary['deuda_bruta_proveedor'] * 100).fillna(0)
+        
+        # 6. Mostrar la tabla de ranking
+        st.dataframe(
+            proveedor_summary[['nombre_proveedor', 'deuda_total', '%_deuda_total', 'monto_vencido', '%_vencido', 'ahorro_potencial', 'numero_documentos']].sort_values(by='deuda_total', ascending=False),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "nombre_proveedor": "Proveedor",
+                "deuda_total": st.column_config.NumberColumn("Deuda Neta", format="$ %d"),
+                "%_deuda_total": st.column_config.ProgressColumn("% Deuda Total", format="%.1f%%", min_value=0, max_value=100),
+                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="$ %d"),
+                "%_vencido": st.column_config.ProgressColumn("% Vencido", format="%.1f%%", min_value=0, max_value=100),
+                "ahorro_potencial": st.column_config.NumberColumn("Ahorro Potencial", format="$ %d"),
+                "numero_documentos": "N° Docs"
+            }
+        )
+        
+        st.divider()
+        
+        # --- Visualizaciones de proveedores críticos ---
+        st.subheader("Visualización de Proveedores Clave")
+        
+        top_n = 5
+        g1, g2 = st.columns(2)
+        
+        with g1:
+            st.write(f"**Top {top_n} Proveedores por Deuda Bruta**")
+            top_deuda = proveedor_summary.nlargest(top_n, 'deuda_bruta_proveedor')
+            chart_deuda = alt.Chart(top_deuda).mark_bar(cornerRadius=5, color='#1f77b4').encode(
+                x=alt.X('deuda_bruta_proveedor:Q', title='Deuda Bruta ($)', axis=alt.Axis(format='$,.0f')),
+                y=alt.Y('nombre_proveedor:N', title='Proveedor', sort='-x'),
+                tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('deuda_bruta_proveedor', title='Deuda Bruta', format='$,.0f')]
+            ).properties(height=300)
+            st.altair_chart(chart_deuda.interactive(), use_container_width=True)
+
+        with g2:
+            st.write(f"**Top {top_n} Proveedores por Monto Vencido**")
+            top_vencido = proveedor_summary[proveedor_summary['monto_vencido'] > 0].nlargest(top_n, 'monto_vencido')
+            if not top_vencido.empty:
+                chart_vencido = alt.Chart(top_vencido).mark_bar(cornerRadius=5, color='#d62728').encode(
+                    x=alt.X('monto_vencido:Q', title='Monto Vencido ($)', axis=alt.Axis(format='$,.0f')),
+                    y=alt.Y('nombre_proveedor:N', title='Proveedor', sort='-x'),
+                    tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('monto_vencido', title='Monto Vencido', format='$,.0f')]
+                ).properties(height=300)
+                st.altair_chart(chart_vencido.interactive(), use_container_width=True)
+            else:
+                st.info("No hay cartera vencida para mostrar en el gráfico.")
+
+    else:
+        st.info("Esta pestaña muestra un análisis comparativo. Por favor, selecciona 'TODOS (Vista Consolidada)' en el filtro lateral para activar esta vista.")
+
+
 with tab2:
-    st.header("📈 Análisis de Antigüedad de Saldos (Aged Debt)")
-    st.markdown("Esta vista descompone la deuda pendiente en bloques de tiempo para identificar dónde se concentra el riesgo.")
+    st.header("📈 Análisis de Antigüedad y Composición de Saldos")
+    st.markdown("Esta vista descompone la deuda pendiente para identificar dónde se concentra el riesgo.")
 
     if 'dias_para_vencer' not in supplier_df.columns:
         st.warning("La columna 'dias_para_vencer' es necesaria para este análisis y no se encontró.")
@@ -238,6 +335,7 @@ with tab2:
             else:
                  kpi_col3.metric("Factura más Crítica (N°)", "N/A")
 
+            # --- Gráfico de Antigüedad de Saldos ---
             chart = alt.Chart(aging_summary).mark_bar(cornerRadius=5).encode(
                 x=alt.X('valor_total:Q', title='Valor Total de la Deuda ($)', axis=alt.Axis(format='$,.0f')),
                 y=alt.Y('categoria_antiguedad:N', title='Categoría de Antigüedad', sort='-x'),
@@ -255,6 +353,25 @@ with tab2:
                 )
             )
             st.altair_chart((chart + text).interactive(), use_container_width=True)
+            
+            st.divider()
+            
+            # --- NUEVO: Gráfico de Composición de Deuda por Proveedor ---
+            if selected_supplier == "TODOS (Vista Consolidada)":
+                st.subheader("Composición de la Deuda Bruta por Proveedor")
+                
+                # Usamos el summary ya calculado en la otra pestaña
+                proveedor_pie_data = master_df[master_df['valor_total_erp'] >= 0].groupby('nombre_proveedor')['valor_total_erp'].sum().reset_index()
+                proveedor_pie_data.rename(columns={'valor_total_erp': 'deuda_bruta'}, inplace=True)
+
+                pie_chart = alt.Chart(proveedor_pie_data).mark_arc(innerRadius=50).encode(
+                    theta=alt.Theta(field="deuda_bruta", type="quantitative"),
+                    color=alt.Color(field="nombre_proveedor", type="nominal", legend=alt.Legend(title="Proveedores")),
+                    tooltip=['nombre_proveedor', alt.Tooltip('deuda_bruta', title='Deuda Bruta', format='$,.0f')]
+                ).properties(title='Distribución de la Deuda Bruta', height=400)
+                
+                st.altair_chart(pie_chart, use_container_width=True)
+
         else:
             st.info("No hay facturas pendientes para generar el gráfico de antigüedad.")
 
@@ -272,6 +389,10 @@ with tab3:
     
     existing_display_cols = [col for col in display_cols if col in supplier_df.columns]
     
+    # --- **MEJORA VISUAL**: Ajuste de la barra de progreso ---
+    min_dias = int(supplier_df['dias_para_vencer'].min()) if 'dias_para_vencer' in supplier_df.columns and not supplier_df['dias_para_vencer'].empty else -90
+    max_dias = int(supplier_df['dias_para_vencer'].max()) if 'dias_para_vencer' in supplier_df.columns and not supplier_df['dias_para_vencer'].empty else 90
+    
     column_config_base = {
         "num_factura": "N° Documento",
         "nombre_proveedor": "Proveedor",
@@ -279,7 +400,13 @@ with tab3:
         "fecha_emision_erp": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
         "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
         "estado_pago": "Estado Cartera",
-        "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
+        "dias_para_vencer": st.column_config.ProgressColumn(
+            "Días para Vencer", 
+            help="Barra visual de días restantes. Los valores negativos indican días vencidos.",
+            format="%d días", 
+            min_value=min_dias, 
+            max_value=max_dias
+        ),
         "estado_conciliacion": "Estado Conciliación",
         "estado_descuento": "Descuento",
         "valor_descuento": st.column_config.NumberColumn("Ahorro Potencial", format="$ %d"),
