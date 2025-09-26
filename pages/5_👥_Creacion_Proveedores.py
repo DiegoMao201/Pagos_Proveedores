@@ -14,6 +14,7 @@ Funcionalidades clave:
 - Checklist de los documentos requeridos.
 - Generación y descarga de un archivo PDF con la información diligenciada,
   formateado de manera profesional para su archivo.
+- Generación y descarga de un archivo PDF en blanco para ser llenado manualmente.
 - Generación y descarga de un archivo Excel con todos los datos capturados
   para facilitar la importación a otros sistemas.
 - Uso de widgets interactivos de Streamlit para una experiencia de usuario fluida.
@@ -118,6 +119,14 @@ class PDF(FPDF):
         self.multi_cell(0, 8, str(value), 0, 1)
         self.ln(2)
 
+    def blank_form_field(self, label, value="__________________________________________________"):
+        """Crea un campo de formulario con una línea para ser llenado manualmente."""
+        self.set_font('Arial', 'B', 10)
+        self.cell(60, 8, f'{label}:', 0, 0)
+        self.set_font('Arial', '', 10)
+        self.multi_cell(0, 8, value, 0, 1)
+        self.ln(2)
+
 def generate_pdf(data: dict) -> bytes:
     """Genera un archivo PDF a partir de los datos del formulario."""
     pdf = PDF()
@@ -187,6 +196,125 @@ def generate_pdf(data: dict) -> bytes:
     pdf.ln(5)
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
     pdf.form_field('C.C. No.', data['rl_cc'])
+    pdf.ln(20)
+    pdf.cell(80, 8, '_________________________________', 0, 1)
+    pdf.cell(80, 8, 'Firma', 0, 0, 'C')
+
+    return pdf.output(dest='S').encode('latin-1')
+
+def generate_blank_pdf() -> bytes:
+    """Genera un archivo PDF en blanco del formulario para ser diligenciado manualmente."""
+    pdf = PDF()
+    pdf.add_page()
+
+    # --- DATOS GENERALES ---
+    pdf.chapter_title('1. DATOS GENERALES DE LA EMPRESA')
+    pdf.blank_form_field('Fecha de Diligenciamiento', '____ / ____ / ________')
+    pdf.blank_form_field('Razón Social')
+    pdf.blank_form_field('NIT')
+    pdf.blank_form_field('Dirección Principal')
+    pdf.blank_form_field('Ciudad / Departamento')
+    pdf.blank_form_field('País', 'Colombia')
+    pdf.blank_form_field('Teléfono Fijo')
+    pdf.blank_form_field('Teléfono Celular')
+    pdf.blank_form_field('Correo Electrónico')
+    pdf.blank_form_field('Página Web')
+    pdf.ln(5)
+
+    # --- INFORMACIÓN TRIBUTARIA ---
+    pdf.chapter_title('2. INFORMACIÓN TRIBUTARIA Y FISCAL')
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(60, 8, 'Tipo de Persona:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(40, 8, '[   ] Persona Jurídica', 0, 0)
+    pdf.cell(0, 8, '[   ] Persona Natural', 0, 1)
+    pdf.ln(2)
+
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(60, 8, 'Régimen Tributario:', 0, 1)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 8, '[   ] Régimen Común / Responsable de IVA', 0, 1)
+    pdf.cell(0, 8, '[   ] Régimen Simplificado / No Responsable de IVA', 0, 1)
+    pdf.cell(0, 8, '[   ] Gran Contribuyente', 0, 1)
+    pdf.cell(0, 8, '[   ] Autorretenedor de Renta', 0, 1)
+    pdf.cell(0, 8, '[   ] Otro: _________________________________', 0, 1)
+    pdf.ln(2)
+    pdf.blank_form_field('Actividad Económica (CIIU)')
+    pdf.ln(5)
+
+    # --- CONTACTOS ---
+    pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
+    pdf.set_font('Arial', 'I', 11)
+    pdf.cell(0, 8, 'Contacto Comercial', 0, 1)
+    pdf.blank_form_field('Nombre')
+    pdf.blank_form_field('Cargo')
+    pdf.blank_form_field('Correo Electrónico')
+    pdf.blank_form_field('Teléfono / Celular')
+    pdf.ln(4)
+    
+    pdf.set_font('Arial', 'I', 11)
+    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', 0, 1)
+    pdf.blank_form_field('Nombre')
+    pdf.blank_form_field('Cargo')
+    pdf.blank_form_field('Correo para Factura Electrónica')
+    pdf.blank_form_field('Teléfono / Celular')
+    pdf.ln(5)
+
+    # --- INFORMACIÓN BANCARIA ---
+    pdf.chapter_title('4. INFORMACIÓN BANCARIA PARA PAGOS')
+    pdf.blank_form_field('Nombre del Banco')
+    pdf.blank_form_field('Titular de la Cuenta')
+    pdf.blank_form_field('NIT / C.C. del Titular')
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(60, 8, 'Tipo de Cuenta:', 0, 0)
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(40, 8, '[   ] Ahorros', 0, 0)
+    pdf.cell(0, 8, '[   ] Corriente', 0, 1)
+    pdf.ln(2)
+    pdf.blank_form_field('Número de la Cuenta')
+    pdf.ln(5)
+
+    # Adding a new page for better spacing if needed
+    if pdf.get_y() > 180:
+        pdf.add_page()
+    
+    # --- POLÍTICAS ---
+    pdf.chapter_title('5. POLÍTICAS Y ACEPTACIÓN DEL PROVEEDOR')
+    pdf.set_font('Arial', '', 10)
+    politicas_texto = (
+        "Le agradecemos leer y aceptar nuestras políticas básicas para una relación comercial transparente y efectiva.\n\n"
+        "- **Protección de Datos:** El proveedor autoriza a FERREINOX S.A.S. BIC a tratar sus datos personales y "
+        "comerciales con el fin de gestionar la relación contractual, realizar pagos y enviar comunicaciones, de "
+        "acuerdo con la Ley 1581 de 2012 y nuestras políticas de tratamiento de datos.\n"
+        "- **Calidad y Cumplimiento:** El proveedor se compromete a entregar los productos y/o servicios bajo las "
+        "condiciones de calidad, tiempo y forma acordadas en cada orden de compra o contrato.\n"
+        "- **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **900.205.211-8** "
+        "y enviada al correo electrónico designado para facturación. La factura deberá hacer referencia a una orden "
+        "de compra o contrato válido para su gestión.\n"
+        "- **Ética y Transparencia:** El proveedor declara que sus recursos no provienen de actividades ilícitas y se "
+        "compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra "
+        "empresa, rechazando cualquier práctica de soborno, corrupción o fraude."
+    )
+    # The FPDF library doesn't directly support markdown, so we remove it for the PDF generation.
+    politicas_texto_pdf = politicas_texto.replace("- **", "- ").replace("**", "")
+    pdf.multi_cell(0, 6, politicas_texto_pdf)
+    pdf.ln(5)
+    
+    # --- DOCUMENTOS Y FIRMA ---
+    pdf.chapter_title('6. DOCUMENTOS REQUERIDOS')
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 8, "[   ] RUT (Registro Único Tributario) actualizado.", 0, 1)
+    pdf.cell(0, 8, "[   ] Cámara de Comercio con fecha de expedición no mayor a 30 días.", 0, 1)
+    pdf.cell(0, 8, "[   ] Certificación Bancaria con fecha de expedición no mayor a 30 días.", 0, 1)
+    pdf.cell(0, 8, "[   ] Fotocopia de la Cédula de Ciudadanía del Representante Legal.", 0, 1)
+    pdf.ln(10)
+    
+    pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
+    pdf.set_font('Arial', '', 10)
+    pdf.multi_cell(0, 6, "Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.", 0, 1)
+    pdf.ln(5)
+    pdf.blank_form_field('Nombre del Representante Legal')
+    pdf.blank_form_field('C.C. No.')
     pdf.ln(20)
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
@@ -359,9 +487,21 @@ with st.container():
     st.markdown("---")
     
     # --- BOTONES DE DESCARGA ---
-    st.header("Descargar Formulario Diligenciado")
+    st.header("Descargar Formulario")
     
-    # Validar que los campos clave estén llenos antes de activar los botones
+    # Botón para descargar el formato en blanco (siempre visible)
+    blank_pdf_bytes = generate_blank_pdf()
+    st.download_button(
+        label="📄 Descargar Formato en Blanco (PDF)",
+        data=blank_pdf_bytes,
+        file_name="Formato_Proveedor_FERREINOX_en_Blanco.pdf",
+        mime="application/pdf",
+        help="Descarga una versión en blanco del formulario para diligenciar manualmente."
+    )
+    st.markdown("---")
+    st.header("Generar y Descargar Formulario Diligenciado")
+    
+    # Validar que los campos clave estén llenos antes de activar los botones de formulario diligenciado
     if all([form_data['razon_social'], form_data['nit'], form_data['rl_nombre']]):
         col1, col2 = st.columns(2)
         
@@ -391,4 +531,4 @@ with st.container():
                 help="Descarga los datos en una hoja de cálculo para fácil procesamiento."
             )
     else:
-        st.error("Por favor, diligencie como mínimo la Razón Social, el NIT y el Nombre del Representante Legal para poder generar los documentos.")
+        st.error("Por favor, diligencie como mínimo la Razón Social, el NIT y el Nombre del Representante Legal para poder generar los documentos diligenciados.")
