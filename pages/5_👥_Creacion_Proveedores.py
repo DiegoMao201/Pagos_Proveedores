@@ -207,6 +207,7 @@ def generate_pdf(data: dict) -> bytes:
 def generate_blank_pdf() -> bytes:
     """
     Genera un archivo PDF en blanco con campos de formulario EDITABLES.
+    NOTA: Esto requiere una versión reciente de fpdf2 (>=2.5.0) en requirements.txt
     """
     pdf = PDF()
     pdf.add_page()
@@ -218,6 +219,7 @@ def generate_blank_pdf() -> bytes:
         pdf.cell(label_width, field_height, f'{label}:', 0, 0)
         current_x = pdf.get_x()
         current_y = pdf.get_y()
+        # La siguiente línea es la que causa el error si fpdf2 no está actualizado.
         pdf.add_form_field(
             name=field_name,
             type='text',
@@ -403,7 +405,7 @@ with st.form(key="provider_form"):
         col_nit, col_dv = st.columns([4, 1])
         form_data['nit'] = col_nit.text_input("NIT*", help="Ingrese el número sin el dígito de verificación.", key="nit", value=form_data['nit'])
         form_data['dv'] = col_dv.text_input("DV*", max_chars=1, help="Dígito de Verificación.", key="dv", value=form_data['dv'])
-            
+                
         form_data['direccion'] = st.text_input("Dirección Principal*", key="direccion", value=form_data['direccion'])
         col1, col2 = st.columns(2)
         form_data['ciudad_depto'] = col1.text_input("Ciudad / Departamento*", key="ciudad", value=form_data['ciudad_depto'])
