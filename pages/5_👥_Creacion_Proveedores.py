@@ -116,7 +116,8 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        self.multi_cell(0, 8, str(value), 0, 1)
+        # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
+        self.multi_cell(w=0, h=8, text=str(value), border=0, align='L', ln=1)
         self.ln(2)
 
     def blank_form_field(self, label, value="__________________________________________________"):
@@ -124,7 +125,8 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        self.multi_cell(0, 8, value, 0, 1)
+        # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
+        self.multi_cell(w=0, h=8, text=value, border=0, align='L', ln=1)
         self.ln(2)
 
 def generate_pdf(data: dict) -> bytes:
@@ -283,21 +285,20 @@ def generate_blank_pdf() -> bytes:
     pdf.set_font('Arial', '', 10)
     politicas_texto = (
         "Le agradecemos leer y aceptar nuestras políticas básicas para una relación comercial transparente y efectiva.\n\n"
-        "- **Protección de Datos:** El proveedor autoriza a FERREINOX S.A.S. BIC a tratar sus datos personales y "
+        "- Protección de Datos: El proveedor autoriza a FERREINOX S.A.S. BIC a tratar sus datos personales y "
         "comerciales con el fin de gestionar la relación contractual, realizar pagos y enviar comunicaciones, de "
         "acuerdo con la Ley 1581 de 2012 y nuestras políticas de tratamiento de datos.\n"
-        "- **Calidad y Cumplimiento:** El proveedor se compromete a entregar los productos y/o servicios bajo las "
+        "- Calidad y Cumplimiento: El proveedor se compromete a entregar los productos y/o servicios bajo las "
         "condiciones de calidad, tiempo y forma acordadas en cada orden de compra o contrato.\n"
-        "- **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **900.205.211-8** "
+        "- Facturación: Toda factura debe ser emitida a nombre de FERREINOX S.A.S. BIC con NIT 900.205.211-8 "
         "y enviada al correo electrónico designado para facturación. La factura deberá hacer referencia a una orden "
         "de compra o contrato válido para su gestión.\n"
-        "- **Ética y Transparencia:** El proveedor declara que sus recursos no provienen de actividades ilícitas y se "
+        "- Ética y Transparencia: El proveedor declara que sus recursos no provienen de actividades ilícitas y se "
         "compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra "
         "empresa, rechazando cualquier práctica de soborno, corrupción o fraude."
     )
-    # The FPDF library doesn't directly support markdown, so we remove it for the PDF generation.
-    politicas_texto_pdf = politicas_texto.replace("- **", "- ").replace("**", "")
-    pdf.multi_cell(0, 6, politicas_texto_pdf)
+
+    pdf.multi_cell(0, 6, politicas_texto)
     pdf.ln(5)
     
     # --- DOCUMENTOS Y FIRMA ---
@@ -462,7 +463,7 @@ with st.container():
 
         - **Protección de Datos:** El proveedor autoriza a FERREINOX S.A.S. BIC a tratar sus datos personales y comerciales con el fin de gestionar la relación contractual, realizar pagos y enviar comunicaciones, de acuerdo con la Ley 1581 de 2012 y nuestras políticas de tratamiento de datos.
         - **Calidad y Cumplimiento:** El proveedor se compromete a entregar los productos y/o servicios bajo las condiciones de calidad, tiempo y forma acordadas en cada orden de compra o contrato.
-        - **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **900.205.211-8** y enviada al correo electrónico designado para facturación. La factura deberá hacer referencia a una orden de compra o contrato válido para su gestión.
+        - **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **800.224.617-8** y enviada al correo electrónico designado para facturación facturacion@ferreinox.co. La factura deberá hacer referencia a una orden de compra o contrato válido para su gestión.
         - **Ética y Transparencia:** El proveedor declara que sus recursos no provienen de actividades ilícitas y se compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra empresa, rechazando cualquier práctica de soborno, corrupción o fraude.
         """)
     
