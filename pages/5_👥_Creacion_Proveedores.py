@@ -5,17 +5,8 @@ Página de Creación y Actualización de Proveedores para FERREINOX (Versión Me
 Este script crea una página de Streamlit de nivel profesional para que los
 proveedores gestionen su información de vinculación.
 
-Funcionalidades Clave:
-- Formulario interactivo con gestión de estado para no perder datos.
-- Validación de campos detallada y específica.
-- Generación de PDF con datos pre-diligenciados.
-- Generación de PDF en blanco CON CAMPOS EDITABLES para rellenar digitalmente.
-- Generación de un archivo Excel con un resumen de los datos.
-- Interfaz de usuario pulida con CSS personalizado.
-- Código estructurado y bien documentado para fácil mantenimiento.
-
 Dependencias adicionales (añadir a requirements.txt):
-fpdf2
+fpdf2>=2.5.0
 openpyxl
 streamlit
 pandas
@@ -26,9 +17,22 @@ pandas
 # ======================================================================================
 import streamlit as st
 import pandas as pd
-from fpdf import FPDF # ¡Correcto! fpdf2 se importa de esta manera.
+
+# Importación recomendada para fpdf2
+from fpdf import FPDF
+import fpdf  # Para verificación de versión
+
 from datetime import datetime
 import io
+
+# Verifica y muestra la versión de fpdf2 (puedes quitar esta línea después de verificar)
+st.write("Versión de fpdf2:", fpdf.__version__)
+if tuple(map(int, fpdf.__version__.split("."))) < (2, 5, 0):
+    st.error("""
+    ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
+    Por favor actualiza ejecutando en tu terminal:
+    pip install --upgrade fpdf2
+    """)
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS ---
