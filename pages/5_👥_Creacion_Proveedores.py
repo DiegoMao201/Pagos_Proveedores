@@ -17,22 +17,10 @@ pandas
 # ======================================================================================
 import streamlit as st
 import pandas as pd
-
-# Importación recomendada para fpdf2
 from fpdf import FPDF
 import fpdf  # Para verificación de versión
-
 from datetime import datetime
 import io
-
-# Verifica y muestra la versión de fpdf2 (puedes quitar esta línea después de verificar)
-st.write("Versión de fpdf2:", fpdf.__version__)
-if tuple(map(int, fpdf.__version__.split("."))) < (2, 5, 0):
-    st.error("""
-    ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
-    Por favor actualiza ejecutando en tu terminal:
-    pip install --upgrade fpdf2
-    """)
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS ---
@@ -43,6 +31,15 @@ st.set_page_config(
     page_icon="👥",
     layout="wide"
 )
+
+# Verifica y muestra la versión de fpdf2
+st.write(f"Versión de fpdf2: {fpdf.__version__}")
+if tuple(map(int, fpdf.__version__.split("."))) < (2, 5, 0):
+    st.error("""
+    ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
+    Por favor actualiza ejecutando en tu terminal:
+    pip install --upgrade fpdf2
+    """)
 
 def load_css():
     """Carga estilos CSS personalizados para una apariencia profesional."""
@@ -108,27 +105,27 @@ class PDF(FPDF):
     """Clase extendida de FPDF para crear encabezados y pies de página personalizados."""
     def header(self):
         # self.image('logo.png', 10, 8, 33) # Descomentar si tienes un logo
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', 0, 1, 'C')
-        self.set_font('Arial', '', 10)
-        self.cell(0, 8, 'FERREINOX S.A.S. BIC', 0, 1, 'C')
+        self.set_font('Helvetica', 'B', 14)
+        self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', new_x="LMARGIN", new_y="NEXT", align='C')
+        self.set_font('Helvetica', '', 10)
+        self.cell(0, 8, 'FERREINOX S.A.S. BIC', new_x="LMARGIN", new_y="NEXT", align='C')
         self.ln(10)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+        self.set_font('Helvetica', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()}', align='C')
 
     def chapter_title(self, title):
-        self.set_font('Arial', 'B', 12)
+        self.set_font('Helvetica', 'B', 12)
         self.set_fill_color(220, 220, 220)
-        self.cell(0, 8, title, 0, 1, 'L', fill=True)
+        self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT", align='L', fill=True)
         self.ln(4)
 
     def form_field(self, label, value):
-        self.set_font('Arial', 'B', 10)
-        self.cell(65, 8, f'{label}:', 0, 0)
-        self.set_font('Arial', '', 10)
+        self.set_font('Helvetica', 'B', 10)
+        self.cell(65, 8, f'{label}:')
+        self.set_font('Helvetica', '', 10)
         self.multi_cell(w=0, h=8, text=str(value), border=0, align='L')
         self.ln(2)
 
@@ -160,15 +157,15 @@ def generate_pdf(data: dict) -> bytes:
 
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(0, 8, 'Contacto Comercial', 0, 1)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Contacto Comercial', new_x="LMARGIN", new_y="NEXT")
     pdf.form_field('Nombre', data['comercial_nombre'])
     pdf.form_field('Cargo', data['comercial_cargo'])
     pdf.form_field('Correo Electrónico', data['comercial_email'])
     pdf.form_field('Teléfono / Celular', data['comercial_tel'])
     pdf.ln(4)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', 0, 1)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', new_x="LMARGIN", new_y="NEXT")
     pdf.form_field('Nombre', data['pagos_nombre'])
     pdf.form_field('Cargo', data['pagos_cargo'])
     pdf.form_field('Correo para Factura Electrónica', data['pagos_email'])
@@ -186,29 +183,29 @@ def generate_pdf(data: dict) -> bytes:
 
     # --- DOCUMENTOS Y FIRMA ---
     pdf.chapter_title('6. DOCUMENTOS REQUERIDOS')
-    pdf.set_font('Arial', '', 10)
-    pdf.cell(0, 8, f"[ X ] RUT actualizado." if data['doc_rut'] else "[   ] RUT actualizado.", 0, 1)
-    pdf.cell(0, 8, f"[ X ] Cámara de Comercio." if data['doc_camara'] else "[   ] Cámara de Comercio.", 0, 1)
-    pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", 0, 1)
-    pdf.cell(0, 8, f"[ X ] Fotocopia C.C. Representante Legal." if data['doc_cc_rl'] else "[   ] Fotocopia C.C. Representante Legal.", 0, 1)
+    pdf.set_font('Helvetica', '', 10)
+    pdf.cell(0, 8, f"[ X ] RUT actualizado." if data['doc_rut'] else "[   ] RUT actualizado.", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"[ X ] Cámara de Comercio." if data['doc_camara'] else "[   ] Cámara de Comercio.", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"[ X ] Fotocopia C.C. Representante Legal." if data['doc_cc_rl'] else "[   ] Fotocopia C.C. Representante Legal.", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
 
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
-    pdf.set_font('Arial', '', 10)
+    pdf.set_font('Helvetica', '', 10)
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
         border=0, align='L',
-        new_x="LMARGIN", new_y="NEXT" # <-- CORRECCIÓN: Uso de la sintaxis moderna de fpdf2
+        new_x="LMARGIN", new_y="NEXT"
     )
     pdf.ln(5)
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
     pdf.form_field('C.C. No.', data['rl_cc'])
     pdf.ln(20)
-    pdf.cell(80, 8, '_________________________________', 0, 1)
-    pdf.cell(80, 8, 'Firma', 0, 0, 'C')
+    pdf.cell(80, 8, '_________________________________', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(80, 8, 'Firma', align='C')
 
-    return pdf.output() # <-- CORRECCIÓN: .output() devuelve bytes directamente en fpdf2
+    return pdf.output()
 
 def generate_blank_pdf() -> bytes:
     """
@@ -217,15 +214,15 @@ def generate_blank_pdf() -> bytes:
     """
     pdf = PDF()
     pdf.add_page()
-    pdf.set_font('Arial', '', 10)
+    pdf.set_font('Helvetica', '', 10)
     
     # --- Helper para añadir campos y evitar repetición ---
     def add_editable_field(label, field_name, label_width=65, field_height=7, y_increment=12):
-        pdf.set_font('Arial', 'B', 10)
-        pdf.cell(label_width, field_height, f'{label}:', 0, 0)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(label_width, field_height, f'{label}:')
         current_x = pdf.get_x()
         current_y = pdf.get_y()
-        # Esta es la función que requiere fpdf2
+        # Esta es la función que requiere fpdf2 >= 2.5.0
         pdf.add_form_field(
             name=field_name,
             type='text',
@@ -254,8 +251,8 @@ def generate_blank_pdf() -> bytes:
     pdf.chapter_title('2. INFORMACIÓN TRIBUTARIA Y FISCAL')
     add_editable_field('Actividad Económica (CIIU)', 'ciiu')
     # Checkboxes para opciones
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(0, 8, 'Marque las opciones que apliquen:', 0, 1)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.cell(0, 8, 'Marque las opciones que apliquen:', new_x="LMARGIN", new_y="NEXT")
     
     checkbox_options = {
         'tipo_persona_juridica': 'Persona Jurídica',
@@ -269,22 +266,22 @@ def generate_blank_pdf() -> bytes:
         x_pos, y_pos = pdf.get_x(), pdf.get_y()
         pdf.add_form_field(name=name, type='check', x=x_pos, y=y_pos, w=6, h=6)
         pdf.set_xy(x_pos + 8, y_pos)
-        pdf.cell(0, 6, label, 0, 1)
+        pdf.cell(0, 6, label, new_x="LMARGIN", new_y="NEXT")
     
     add_editable_field('Otro Régimen', 'otro_regimen')
     pdf.ln(5)
 
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(0, 8, 'Contacto Comercial', 0, 1)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Contacto Comercial', new_x="LMARGIN", new_y="NEXT")
     add_editable_field('Nombre', 'comercial_nombre')
     add_editable_field('Cargo', 'comercial_cargo')
     add_editable_field('Correo Electrónico', 'comercial_email')
     add_editable_field('Teléfono / Celular', 'comercial_tel')
     pdf.ln(4)
-    pdf.set_font('Arial', 'B', 11)
-    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', 0, 1)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', new_x="LMARGIN", new_y="NEXT")
     add_editable_field('Nombre', 'pagos_nombre')
     add_editable_field('Cargo', 'pagos_cargo')
     add_editable_field('Correo Factura Electrónica', 'pagos_email')
@@ -300,20 +297,20 @@ def generate_blank_pdf() -> bytes:
     
     # Checkboxes para tipo de cuenta
     x_pos, y_pos = pdf.get_x(), pdf.get_y()
-    pdf.cell(65, 8, 'Tipo de Cuenta:', 0, 0)
+    pdf.cell(65, 8, 'Tipo de Cuenta:')
     pdf.add_form_field(name='cuenta_ahorros', type='check', x=pdf.get_x(), y=y_pos, w=6, h=6)
     pdf.set_xy(pdf.get_x() + 8, y_pos)
-    pdf.cell(30, 8, 'Ahorros', 0, 0)
+    pdf.cell(30, 8, 'Ahorros')
     pdf.add_form_field(name='cuenta_corriente', type='check', x=pdf.get_x(), y=y_pos, w=6, h=6)
     pdf.set_xy(pdf.get_x() + 8, y_pos)
-    pdf.cell(30, 8, 'Corriente', 0, 1)
+    pdf.cell(30, 8, 'Corriente', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
     
     if pdf.get_y() > 180: pdf.add_page()
 
     # --- FIRMA ---
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
-    pdf.set_font('Arial', '', 10)
+    pdf.set_font('Helvetica', '', 10)
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
@@ -324,7 +321,7 @@ def generate_blank_pdf() -> bytes:
     add_editable_field('Nombre Rep. Legal', 'rl_nombre')
     add_editable_field('C.C. Rep. Legal', 'rl_cc')
 
-    return pdf.output() # <-- CORRECCIÓN: .output() devuelve bytes directamente en fpdf2
+    return pdf.output()
 
 # ======================================================================================
 # --- 3. FUNCIÓN PARA GENERACIÓN DE EXCEL ---
