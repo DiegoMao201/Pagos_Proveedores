@@ -39,10 +39,10 @@ st.set_page_config(
 st.write(f"Versión de fpdf2: {fpdf_version}")
 if tuple(map(int, fpdf_version.split("."))) < (2, 5, 0):
     st.error("""
-     ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
-     Por favor actualiza ejecutando en tu terminal:
-     pip install --upgrade fpdf2
-     """)
+      ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
+      Por favor actualiza ejecutando en tu terminal:
+      pip install --upgrade fpdf2
+      """)
 
 def load_css():
     """Carga estilos CSS personalizados para una apariencia profesional."""
@@ -109,9 +109,10 @@ class PDF(FPDF):
     def header(self):
         # self.image('logo.png', 10, 8, 33) # Descomentar si tienes un logo
         self.set_font('Helvetica', 'B', 14)
-        self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', new_x="LMARGIN", new_y="NEXT", align='C')
+        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+        self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', ln=1, align='C')
         self.set_font('Helvetica', '', 10)
-        self.cell(0, 8, 'FERREINOX S.A.S. BIC', new_x="LMARGIN", new_y="NEXT", align='C')
+        self.cell(0, 8, 'FERREINOX S.A.S. BIC', ln=1, align='C')
         self.ln(10)
 
     def footer(self):
@@ -122,7 +123,8 @@ class PDF(FPDF):
     def chapter_title(self, title):
         self.set_font('Helvetica', 'B', 12)
         self.set_fill_color(220, 220, 220)
-        self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT", align='L', fill=True)
+        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+        self.cell(0, 8, title, ln=1, align='L', fill=True)
         self.ln(4)
 
     def form_field(self, label, value):
@@ -161,14 +163,16 @@ def generate_pdf(data: dict) -> bytes:
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
     pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(0, 8, 'Contacto Comercial', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(0, 8, 'Contacto Comercial', ln=1)
     pdf.form_field('Nombre', data['comercial_nombre'])
     pdf.form_field('Cargo', data['comercial_cargo'])
     pdf.form_field('Correo Electrónico', data['comercial_email'])
     pdf.form_field('Teléfono / Celular', data['comercial_tel'])
     pdf.ln(4)
     pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', ln=1)
     pdf.form_field('Nombre', data['pagos_nombre'])
     pdf.form_field('Cargo', data['pagos_cargo'])
     pdf.form_field('Correo para Factura Electrónica', data['pagos_email'])
@@ -187,25 +191,28 @@ def generate_pdf(data: dict) -> bytes:
     # --- DOCUMENTOS Y FIRMA ---
     pdf.chapter_title('6. DOCUMENTOS REQUERIDOS')
     pdf.set_font('Helvetica', '', 10)
-    pdf.cell(0, 8, f"[ X ] RUT actualizado." if data['doc_rut'] else "[   ] RUT actualizado.", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 8, f"[ X ] Cámara de Comercio." if data['doc_camara'] else "[   ] Cámara de Comercio.", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 8, f"[ X ] Fotocopia C.C. Representante Legal." if data['doc_cc_rl'] else "[   ] Fotocopia C.C. Representante Legal.", new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 en cada celda ---
+    pdf.cell(0, 8, f"[ X ] RUT actualizado." if data['doc_rut'] else "[   ] RUT actualizado.", ln=1)
+    pdf.cell(0, 8, f"[ X ] Cámara de Comercio." if data['doc_camara'] else "[   ] Cámara de Comercio.", ln=1)
+    pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", ln=1)
+    pdf.cell(0, 8, f"[ X ] Fotocopia C.C. Representante Legal." if data['doc_cc_rl'] else "[   ] Fotocopia C.C. Representante Legal.", ln=1)
     pdf.ln(10)
 
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Helvetica', '', 10)
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
         border=0, align='L',
-        new_x="LMARGIN", new_y="NEXT"
+        ln=1
     )
     pdf.ln(5)
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
     pdf.form_field('C.C. No.', data['rl_cc'])
     pdf.ln(20)
-    pdf.cell(80, 8, '_________________________________', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(80, 8, '_________________________________', ln=1)
     pdf.cell(80, 8, 'Firma', align='C')
 
     return pdf.output()
@@ -255,7 +262,8 @@ def generate_blank_pdf() -> bytes:
     add_editable_field('Actividad Económica (CIIU)', 'ciiu')
     # Checkboxes para opciones
     pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(0, 8, 'Marque las opciones que apliquen:', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(0, 8, 'Marque las opciones que apliquen:', ln=1)
     
     checkbox_options = {
         'tipo_persona_juridica': 'Persona Jurídica',
@@ -269,7 +277,8 @@ def generate_blank_pdf() -> bytes:
         x_pos, y_pos = pdf.get_x(), pdf.get_y()
         pdf.add_form_field(name=name, type='check', x=x_pos, y=y_pos, w=6, h=6)
         pdf.set_xy(x_pos + 8, y_pos)
-        pdf.cell(0, 6, label, new_x="LMARGIN", new_y="NEXT")
+        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+        pdf.cell(0, 6, label, ln=1)
     
     add_editable_field('Otro Régimen', 'otro_regimen')
     pdf.ln(5)
@@ -277,14 +286,16 @@ def generate_blank_pdf() -> bytes:
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
     pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(0, 8, 'Contacto Comercial', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(0, 8, 'Contacto Comercial', ln=1)
     add_editable_field('Nombre', 'comercial_nombre')
     add_editable_field('Cargo', 'comercial_cargo')
     add_editable_field('Correo Electrónico', 'comercial_email')
     add_editable_field('Teléfono / Celular', 'comercial_tel')
     pdf.ln(4)
     pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(0, 8, 'Contacto para Pagos y Facturación', ln=1)
     add_editable_field('Nombre', 'pagos_nombre')
     add_editable_field('Cargo', 'pagos_cargo')
     add_editable_field('Correo Factura Electrónica', 'pagos_email')
@@ -306,7 +317,8 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(30, 8, 'Ahorros')
     pdf.add_form_field(name='cuenta_corriente', type='check', x=pdf.get_x(), y=y_pos, w=6, h=6)
     pdf.set_xy(pdf.get_x() + 8, y_pos)
-    pdf.cell(30, 8, 'Corriente', new_x="LMARGIN", new_y="NEXT")
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
+    pdf.cell(30, 8, 'Corriente', ln=1)
     pdf.ln(10)
     
     if pdf.get_y() > 180: pdf.add_page()
@@ -314,11 +326,12 @@ def generate_blank_pdf() -> bytes:
     # --- FIRMA ---
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Helvetica', '', 10)
+    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
         border=0, align='L',
-        new_x="LMARGIN", new_y="NEXT"
+        ln=1
     )
     pdf.ln(5)
     add_editable_field('Nombre Rep. Legal', 'rl_nombre')
@@ -414,7 +427,7 @@ with st.form(key="provider_form"):
         col_nit, col_dv = st.columns([4, 1])
         form_data['nit'] = col_nit.text_input("NIT*", help="Ingrese el número sin el dígito de verificación.", key="nit", value=form_data['nit'])
         form_data['dv'] = col_dv.text_input("DV*", max_chars=1, help="Dígito de Verificación.", key="dv", value=form_data['dv'])
-                
+                  
         form_data['direccion'] = st.text_input("Dirección Principal*", key="direccion", value=form_data['direccion'])
         col1, col2 = st.columns(2)
         form_data['ciudad_depto'] = col1.text_input("Ciudad / Departamento*", key="ciudad", value=form_data['ciudad_depto'])
