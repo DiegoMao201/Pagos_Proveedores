@@ -202,8 +202,10 @@ def generate_pdf(data: dict) -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    # La función output() en versiones modernas de fpdf2 ya retorna bytes.
-    return pdf.output()
+    # --- CORRECCIÓN CLAVE ---
+    # Se asegura que la salida sea en bytes, codificando la salida de string.
+    # Esto soluciona el error StreamlitAPIException.
+    return pdf.output(dest='S').encode('latin-1')
 
 def generate_blank_pdf() -> bytes:
     """Genera un archivo PDF en blanco del formulario para ser diligenciado manualmente."""
@@ -322,7 +324,8 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    return pdf.output()
+    # --- CORRECCIÓN CLAVE ---
+    return pdf.output(dest='S').encode('latin-1')
 
 
 # ======================================================================================
@@ -362,7 +365,7 @@ st.title("Formato de Creación y Actualización de Proveedores")
 st.markdown("---")
 st.markdown("""
 Estimado proveedor, para dar inicio a nuestro proceso de vinculación comercial y garantizar una gestión eficiente, 
-le solicitamos amablemente diligenciar la siguiente información.
+le solicitamos amablemente diligenciar la siguiente información y adjuntar los documentos requeridos.
 """)
 
 # --- Botón de descarga para el formato en blanco (siempre visible) ---
