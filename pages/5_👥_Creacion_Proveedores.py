@@ -94,7 +94,7 @@ class PDF(FPDF):
     """Clase extendida de FPDF para crear encabezados y pies de página personalizados."""
     def header(self):
         # Logo (asegúrate de tener una imagen 'logo.png' en la misma carpeta o proporciona la ruta correcta)
-        # self.image('logo.png', 10, 8, 33) 
+        # self.image('logo.png', 10, 8, 33)
         self.set_font('Arial', 'B', 14)
         self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', 0, 1, 'C')
         self.set_font('Arial', '', 10)
@@ -116,8 +116,8 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
-        self.multi_cell(w=0, h=8, text=str(value), border=0, align='L', ln=1)
+        # --- CORRECTO --- Se usan argumentos con nombre (keyword arguments)
+        self.multi_cell(w=0, h=8, text=str(value), border=0, align='L')
         self.ln(2)
 
     def blank_form_field(self, label, value="__________________________________________________"):
@@ -125,8 +125,8 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
-        self.multi_cell(w=0, h=8, text=value, border=0, align='L', ln=1)
+        # --- CORRECTO --- Se usan argumentos con nombre (keyword arguments)
+        self.multi_cell(w=0, h=8, text=value, border=0, align='L')
         self.ln(2)
 
 def generate_pdf(data: dict) -> bytes:
@@ -194,7 +194,12 @@ def generate_pdf(data: dict) -> bytes:
     
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Arial', '', 10)
-    pdf.multi_cell(0, 6, "Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.", 0, 1)
+    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
+    pdf.multi_cell(
+        w=0, h=6,
+        text="Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.",
+        border=0, ln=1, align='L'
+    )
     pdf.ln(5)
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
     pdf.form_field('C.C. No.', data['rl_cc'])
@@ -297,8 +302,8 @@ def generate_blank_pdf() -> bytes:
         "compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra "
         "empresa, rechazando cualquier práctica de soborno, corrupción o fraude."
     )
-
-    pdf.multi_cell(0, 6, politicas_texto)
+    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
+    pdf.multi_cell(w=0, h=6, text=politicas_texto, align='L')
     pdf.ln(5)
     
     # --- DOCUMENTOS Y FIRMA ---
@@ -312,7 +317,12 @@ def generate_blank_pdf() -> bytes:
     
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Arial', '', 10)
-    pdf.multi_cell(0, 6, "Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.", 0, 1)
+    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
+    pdf.multi_cell(
+        w=0, h=6,
+        text="Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.",
+        border=0, ln=1, align='L'
+    )
     pdf.ln(5)
     pdf.blank_form_field('Nombre del Representante Legal')
     pdf.blank_form_field('C.C. No.')
