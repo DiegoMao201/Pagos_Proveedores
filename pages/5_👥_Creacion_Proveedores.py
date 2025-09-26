@@ -20,8 +20,8 @@ Funcionalidades clave:
 - Uso de widgets interactivos de Streamlit para una experiencia de usuario fluida.
 
 Dependencias adicionales (añadir a requirements.txt):
-fpdf2==2.7.8
-openpyxl==3.1.2
+fpdf2
+openpyxl
 """
 
 # ======================================================================================
@@ -32,7 +32,6 @@ import pandas as pd
 from fpdf import FPDF
 from datetime import datetime
 import io
-import base64
 
 # ======================================================================================
 # --- 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS ---
@@ -93,8 +92,7 @@ def load_css():
 class PDF(FPDF):
     """Clase extendida de FPDF para crear encabezados y pies de página personalizados."""
     def header(self):
-        # Logo (asegúrate de tener una imagen 'logo.png' en la misma carpeta o proporciona la ruta correcta)
-        # self.image('logo.png', 10, 8, 33)
+        # self.image('logo.png', 10, 8, 33) # Descomentar si tienes un logo
         self.set_font('Arial', 'B', 14)
         self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', 0, 1, 'C')
         self.set_font('Arial', '', 10)
@@ -116,16 +114,14 @@ class PDF(FPDF):
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        # --- CORRECTO --- Se usan argumentos con nombre (keyword arguments)
         self.multi_cell(w=0, h=8, text=str(value), border=0, align='L')
         self.ln(2)
 
     def blank_form_field(self, label, value="__________________________________________________"):
-        """Crea un campo de formulario con una línea para ser llenado manualmente."""
+        """Crea un campo de formulario con una línea para ser llenado manually."""
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
-        # --- CORRECTO --- Se usan argumentos con nombre (keyword arguments)
         self.multi_cell(w=0, h=8, text=value, border=0, align='L')
         self.ln(2)
 
@@ -165,7 +161,7 @@ def generate_pdf(data: dict) -> bytes:
     pdf.form_field('Correo Electrónico', data['comercial_email'])
     pdf.form_field('Teléfono / Celular', data['comercial_tel'])
     pdf.ln(4)
-    
+
     pdf.set_font('Arial', 'I', 11)
     pdf.cell(0, 8, 'Contacto para Pagos y Facturación', 0, 1)
     pdf.form_field('Nombre', data['pagos_nombre'])
@@ -191,10 +187,9 @@ def generate_pdf(data: dict) -> bytes:
     pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", 0, 1)
     pdf.cell(0, 8, f"[ X ] Fotocopia C.C. Representante Legal." if data['doc_cc_rl'] else "[   ] Fotocopia C.C. Representante Legal.", 0, 1)
     pdf.ln(10)
-    
+
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Arial', '', 10)
-    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.",
@@ -207,7 +202,9 @@ def generate_pdf(data: dict) -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    return pdf.output(dest='S').encode('latin-1')
+    # --- CORRECCIÓN AQUÍ ---
+    # Se remueve .encode('latin-1') porque pdf.output() ya retorna bytes.
+    return pdf.output()
 
 def generate_blank_pdf() -> bytes:
     """Genera un archivo PDF en blanco del formulario para ser diligenciado manualmente."""
@@ -236,7 +233,6 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(40, 8, '[   ] Persona Jurídica', 0, 0)
     pdf.cell(0, 8, '[   ] Persona Natural', 0, 1)
     pdf.ln(2)
-
     pdf.set_font('Arial', 'B', 10)
     pdf.cell(60, 8, 'Régimen Tributario:', 0, 1)
     pdf.set_font('Arial', '', 10)
@@ -258,7 +254,7 @@ def generate_blank_pdf() -> bytes:
     pdf.blank_form_field('Correo Electrónico')
     pdf.blank_form_field('Teléfono / Celular')
     pdf.ln(4)
-    
+
     pdf.set_font('Arial', 'I', 11)
     pdf.cell(0, 8, 'Contacto para Pagos y Facturación', 0, 1)
     pdf.blank_form_field('Nombre')
@@ -281,10 +277,9 @@ def generate_blank_pdf() -> bytes:
     pdf.blank_form_field('Número de la Cuenta')
     pdf.ln(5)
 
-    # Adding a new page for better spacing if needed
     if pdf.get_y() > 180:
         pdf.add_page()
-    
+
     # --- POLÍTICAS ---
     pdf.chapter_title('5. POLÍTICAS Y ACEPTACIÓN DEL PROVEEDOR')
     pdf.set_font('Arial', '', 10)
@@ -302,10 +297,9 @@ def generate_blank_pdf() -> bytes:
         "compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra "
         "empresa, rechazando cualquier práctica de soborno, corrupción o fraude."
     )
-    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
     pdf.multi_cell(w=0, h=6, text=politicas_texto, align='L')
     pdf.ln(5)
-    
+
     # --- DOCUMENTOS Y FIRMA ---
     pdf.chapter_title('6. DOCUMENTOS REQUERIDOS')
     pdf.set_font('Arial', '', 10)
@@ -314,10 +308,9 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(0, 8, "[   ] Certificación Bancaria con fecha de expedición no mayor a 30 días.", 0, 1)
     pdf.cell(0, 8, "[   ] Fotocopia de la Cédula de Ciudadanía del Representante Legal.", 0, 1)
     pdf.ln(10)
-    
+
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Arial', '', 10)
-    # --- CORRECCIÓN AQUÍ --- Se usan argumentos con nombre (keyword arguments)
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal o persona autorizada certifica la veracidad de la información suministrada y acepta las políticas establecidas por FERREINOX S.A.S. BIC.",
@@ -330,7 +323,9 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    return pdf.output(dest='S').encode('latin-1')
+    # --- CORRECCIÓN AQUÍ ---
+    # Se remueve .encode('latin-1') porque pdf.output() ya retorna bytes.
+    return pdf.output()
 
 
 # ======================================================================================
@@ -339,22 +334,19 @@ def generate_blank_pdf() -> bytes:
 
 def generate_excel(data: dict) -> bytes:
     """Genera un archivo Excel a partir de los datos del formulario."""
-    # Transforma el diccionario de datos a un formato adecuado para DataFrame
     df_data = {
         'Categoría': list(data.keys()),
         'Información Suministrada': list(data.values())
     }
     df = pd.DataFrame(df_data)
 
-    # Usar BytesIO para guardar el archivo en memoria
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='DatosProveedor')
-        # Opcional: ajustar el ancho de las columnas
         worksheet = writer.sheets['DatosProveedor']
         worksheet.column_dimensions['A'].width = 35
         worksheet.column_dimensions['B'].width = 60
-    
+
     processed_data = output.getvalue()
     return processed_data
 
@@ -365,7 +357,7 @@ def generate_excel(data: dict) -> bytes:
 
 load_css()
 
-st.image("LOGO FERREINOX SAS BIC 2024.png", width=300)
+# st.image("LOGO FERREINOX SAS BIC 2024.png", width=300) # Descomentar si tienes la imagen
 st.title("Formato de Creación y Actualización de Proveedores")
 st.markdown("---")
 st.markdown("""
@@ -374,25 +366,23 @@ Para dar inicio a nuestro proceso de vinculación comercial y garantizar una ges
 le solicitamos amablemente diligenciar la siguiente información y adjuntar los documentos requeridos.
 """)
 
-# Diccionario para almacenar los datos del formulario
 form_data = {}
 
-# --- FORMULARIO ---
 with st.container():
     st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    
+
     form_data['fecha_diligenciamiento'] = st.date_input(
-        "Fecha de Diligenciamiento:", 
+        "Fecha de Diligenciamiento:",
         datetime.now(),
         help="Fecha en la que se está llenando este formulario."
     ).strftime('%Y-%m-%d')
-    
+
     # --- 1. DATOS GENERALES ---
     st.header("1. Datos Generales de la Empresa")
     form_data['razon_social'] = st.text_input("Razón Social (Nombre legal completo):", key="razon_social")
     form_data['nit'] = st.text_input("NIT (Sin dígito de verificación):", key="nit")
     form_data['direccion'] = st.text_input("Dirección Principal:", key="direccion")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         form_data['ciudad_depto'] = st.text_input("Ciudad / Departamento:", key="ciudad")
@@ -405,7 +395,7 @@ with st.container():
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
-    
+
     # --- 2. INFORMACIÓN TRIBUTARIA Y FISCAL ---
     st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
     st.header("2. Información Tributaria y Fiscal")
@@ -415,8 +405,8 @@ with st.container():
         form_data['ciiu'] = st.text_input("Actividad Económica (Código CIIU):", help="Encuentre este código en su RUT.", key="ciiu")
     with col2:
         form_data['regimen'] = st.radio(
-            "Régimen Tributario:", 
-            ('Régimen Común / Responsable de IVA', 
+            "Régimen Tributario:",
+            ('Régimen Común / Responsable de IVA',
              'Régimen Simplificado / No Responsable de IVA',
              'Gran Contribuyente',
              'Autorretenedor de Renta',
@@ -450,7 +440,7 @@ with st.container():
         form_data['pagos_tel'] = st.text_input("Teléfono / Celular (Pagos):", key="pag_tel")
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
-    
+
     # --- 4. INFORMACIÓN BANCARIA ---
     st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
     st.header("4. Información Bancaria para Pagos")
@@ -473,10 +463,10 @@ with st.container():
 
         - **Protección de Datos:** El proveedor autoriza a FERREINOX S.A.S. BIC a tratar sus datos personales y comerciales con el fin de gestionar la relación contractual, realizar pagos y enviar comunicaciones, de acuerdo con la Ley 1581 de 2012 y nuestras políticas de tratamiento de datos.
         - **Calidad y Cumplimiento:** El proveedor se compromete a entregar los productos y/o servicios bajo las condiciones de calidad, tiempo y forma acordadas en cada orden de compra o contrato.
-        - **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **800.224.617-8** y enviada al correo electrónico designado para facturación facturacion@ferreinox.co. La factura deberá hacer referencia a una orden de compra o contrato válido para su gestión.
+        - **Facturación:** Toda factura debe ser emitida a nombre de **FERREINOX S.A.S. BIC** con NIT **900.205.211-8** y enviada al correo electrónico designado para facturación. La factura deberá hacer referencia a una orden de compra o contrato válido para su gestión.
         - **Ética y Transparencia:** El proveedor declara que sus recursos no provienen de actividades ilícitas y se compromete a actuar con ética, honestidad y transparencia en todas sus interacciones comerciales con nuestra empresa, rechazando cualquier práctica de soborno, corrupción o fraude.
         """)
-    
+
     # --- 6. DOCUMENTOS REQUERIDOS ---
     st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
     st.header("6. Documentos Requeridos")
@@ -496,11 +486,10 @@ with st.container():
     form_data['rl_cc'] = st.text_input("C.C. No.:", key="rl_cc")
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
-    
+
     # --- BOTONES DE DESCARGA ---
     st.header("Descargar Formulario")
-    
-    # Botón para descargar el formato en blanco (siempre visible)
+
     blank_pdf_bytes = generate_blank_pdf()
     st.download_button(
         label="📄 Descargar Formato en Blanco (PDF)",
@@ -511,15 +500,13 @@ with st.container():
     )
     st.markdown("---")
     st.header("Generar y Descargar Formulario Diligenciado")
-    
-    # Validar que los campos clave estén llenos antes de activar los botones de formulario diligenciado
+
     if all([form_data['razon_social'], form_data['nit'], form_data['rl_nombre']]):
         col1, col2 = st.columns(2)
-        
-        # Generar PDF en memoria
+
         pdf_bytes = generate_pdf(form_data)
-        pdf_filename = f"Formato_Proveedor_{form_data['razon_social']}.pdf"
-        
+        pdf_filename = f"Formato_Proveedor_{form_data['razon_social'].replace(' ', '_')}.pdf"
+
         with col1:
             st.download_button(
                 label="📄 Descargar como PDF",
@@ -528,11 +515,10 @@ with st.container():
                 mime="application/pdf",
                 help="Descarga el formulario completo en formato PDF."
             )
-        
-        # Generar Excel en memoria
+
         excel_bytes = generate_excel(form_data)
-        excel_filename = f"Datos_Proveedor_{form_data['razon_social']}.xlsx"
-        
+        excel_filename = f"Datos_Proveedor_{form_data['razon_social'].replace(' ', '_')}.xlsx"
+
         with col2:
             st.download_button(
                 label="📊 Descargar como Excel",
