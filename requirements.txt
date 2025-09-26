@@ -13,7 +13,8 @@ xlsxwriter
 gspread
 openpyxl
 plotly
-fpdf2
+fpdf2>=2.5.0
+
 
 
 
