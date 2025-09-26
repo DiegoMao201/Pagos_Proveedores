@@ -17,6 +17,8 @@ Funcionalidades Clave:
 Dependencias adicionales (añadir a requirements.txt):
 fpdf2
 openpyxl
+streamlit
+pandas
 """
 
 # ======================================================================================
@@ -24,7 +26,7 @@ openpyxl
 # ======================================================================================
 import streamlit as st
 import pandas as pd
-from fpdf import FPDF
+from fpdf import FPDF # ¡Correcto! fpdf2 se importa de esta manera.
 from datetime import datetime
 import io
 
@@ -192,7 +194,8 @@ def generate_pdf(data: dict) -> bytes:
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
-        border=0, ln=1, align='L'
+        border=0, align='L',
+        new_x="LMARGIN", new_y="NEXT" # <-- CORRECCIÓN: Uso de la sintaxis moderna de fpdf2
     )
     pdf.ln(5)
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
@@ -201,13 +204,12 @@ def generate_pdf(data: dict) -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    return pdf.output(dest='S').encode('latin-1')
-
+    return pdf.output() # <-- CORRECCIÓN: .output() devuelve bytes directamente en fpdf2
 
 def generate_blank_pdf() -> bytes:
     """
     Genera un archivo PDF en blanco con campos de formulario EDITABLES.
-    NOTA: Esto requiere una versión reciente de fpdf2 (>=2.5.0) en requirements.txt
+    NOTA: Esto requiere fpdf2 (>=2.5.0) en requirements.txt
     """
     pdf = PDF()
     pdf.add_page()
@@ -219,7 +221,7 @@ def generate_blank_pdf() -> bytes:
         pdf.cell(label_width, field_height, f'{label}:', 0, 0)
         current_x = pdf.get_x()
         current_y = pdf.get_y()
-        # La siguiente línea es la que causa el error si fpdf2 no está actualizado.
+        # Esta es la función que requiere fpdf2
         pdf.add_form_field(
             name=field_name,
             type='text',
@@ -305,17 +307,20 @@ def generate_blank_pdf() -> bytes:
     
     if pdf.get_y() > 180: pdf.add_page()
 
-    # --- POLÍTICAS Y DOCUMENTOS ---
-    # (El texto de políticas se mantiene estático, no necesita campos)
-    # ...
-    
     # --- FIRMA ---
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
-    # ... (texto de aceptación)
+    pdf.set_font('Arial', '', 10)
+    pdf.multi_cell(
+        w=0, h=6,
+        text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
+        border=0, align='L',
+        new_x="LMARGIN", new_y="NEXT"
+    )
+    pdf.ln(5)
     add_editable_field('Nombre Rep. Legal', 'rl_nombre')
     add_editable_field('C.C. Rep. Legal', 'rl_cc')
 
-    return pdf.output(dest='S').encode('latin-1')
+    return pdf.output() # <-- CORRECCIÓN: .output() devuelve bytes directamente en fpdf2
 
 # ======================================================================================
 # --- 3. FUNCIÓN PARA GENERACIÓN DE EXCEL ---
@@ -433,9 +438,48 @@ with st.form(key="provider_form"):
         st.markdown("</div>", unsafe_allow_html=True)
 
     # --- 3. INFORMACIÓN DE CONTACTOS ---
-    # ... (similar a la original, pero usando los valores de session_state)
-    # [El código para las demás secciones sigue el mismo patrón de obtener/guardar en form_data]
-    
+    with st.container():
+        st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
+        st.subheader("3. Información de Contactos")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("<h6>Contacto Comercial</h6>", unsafe_allow_html=True)
+            form_data['comercial_nombre'] = st.text_input("Nombre Contacto Comercial", key="comercial_nombre", value=form_data['comercial_nombre'])
+            form_data['comercial_cargo'] = st.text_input("Cargo Contacto Comercial", key="comercial_cargo", value=form_data['comercial_cargo'])
+            form_data['comercial_email'] = st.text_input("Email Contacto Comercial", key="comercial_email", value=form_data['comercial_email'])
+            form_data['comercial_tel'] = st.text_input("Teléfono Contacto Comercial", key="comercial_tel", value=form_data['comercial_tel'])
+        with c2:
+            st.markdown("<h6>Contacto para Pagos y Facturación</h6>", unsafe_allow_html=True)
+            form_data['pagos_nombre'] = st.text_input("Nombre Contacto Pagos", key="pagos_nombre", value=form_data['pagos_nombre'])
+            form_data['pagos_cargo'] = st.text_input("Cargo Contacto Pagos", key="pagos_cargo", value=form_data['pagos_cargo'])
+            form_data['pagos_email'] = st.text_input("Email para Factura Electrónica*", key="pagos_email", value=form_data['pagos_email'])
+            form_data['pagos_tel'] = st.text_input("Teléfono Contacto Pagos", key="pagos_tel", value=form_data['pagos_tel'])
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+    # --- 4. INFORMACIÓN BANCARIA ---
+    with st.container():
+        st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
+        st.subheader("4. Información Bancaria para Pagos")
+        b1, b2 = st.columns(2)
+        form_data['banco_nombre'] = b1.text_input("Nombre del Banco*", key="banco_nombre", value=form_data['banco_nombre'])
+        form_data['banco_titular'] = b2.text_input("Titular de la Cuenta*", key="banco_titular", value=form_data['banco_titular'])
+        form_data['banco_nit_cc'] = b1.text_input("NIT o C.C. del Titular*", key="banco_nit_cc", value=form_data['banco_nit_cc'])
+        form_data['banco_numero_cuenta'] = b2.text_input("Número de la Cuenta*", key="banco_numero_cuenta", value=form_data['banco_numero_cuenta'])
+        form_data['banco_tipo_cuenta'] = b1.radio("Tipo de Cuenta*", ('Ahorros', 'Corriente'), key="banco_tipo_cuenta", index=['Ahorros', 'Corriente'].index(form_data['banco_tipo_cuenta']))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- 6. DOCUMENTOS REQUERIDOS ---
+    with st.container():
+        st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
+        st.subheader("6. Documentos Requeridos")
+        st.info("Por favor, asegúrese de tener listos los siguientes documentos para enviarlos junto con este formato.")
+        d1, d2 = st.columns(2)
+        form_data['doc_rut'] = d1.checkbox("RUT actualizado (menor a 30 días)", key="doc_rut", value=form_data['doc_rut'])
+        form_data['doc_camara'] = d1.checkbox("Cámara de Comercio (menor a 30 días)", key="doc_camara", value=form_data['doc_camara'])
+        form_data['doc_bancaria'] = d2.checkbox("Certificación Bancaria (menor a 30 días)", key="doc_bancaria", value=form_data['doc_bancaria'])
+        form_data['doc_cc_rl'] = d2.checkbox("Fotocopia C.C. Representante Legal", key="doc_cc_rl", value=form_data['doc_cc_rl'])
+        st.markdown("</div>", unsafe_allow_html=True)
+
     # --- 7. FIRMA Y ACEPTACIÓN ---
     with st.container():
         st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
@@ -457,11 +501,15 @@ if submitted:
         'razon_social': "Razón Social", 'nit': "NIT", 'dv': "DV",
         'direccion': "Dirección Principal", 'ciudad_depto': "Ciudad / Departamento",
         'tel_celular': "Teléfono Celular", 'email_general': "Correo Electrónico General",
-        'ciiu': "Código CIIU", 'rl_nombre': "Nombre del Representante Legal",
+        'ciiu': "Código CIIU", 
+        'pagos_email': "Email para Factura Electrónica",
+        'banco_nombre': "Nombre del Banco", 'banco_titular': "Titular de la Cuenta",
+        'banco_nit_cc': "NIT o C.C. del Titular", 'banco_numero_cuenta': "Número de la Cuenta",
+        'rl_nombre': "Nombre del Representante Legal",
         'rl_cc': "Cédula del Representante Legal"
     }
     
-    missing_fields = [label for key, label in required_fields.items() if not form_data[key]]
+    missing_fields = [label for key, label in required_fields.items() if not form_data.get(key)]
     
     if form_data['regimen'] == 'Otro' and not form_data['otro_regimen']:
         missing_fields.append("Especificación de 'Otro régimen'")
@@ -495,5 +543,5 @@ if submitted:
         # Mostrar error con lista de campos faltantes
         error_message = "Por favor, complete los siguientes campos obligatorios para continuar:\n"
         for field in missing_fields:
-            error_message += f"- {field}\n"
+            error_message += f"- **{field}**\n"
         st.error(error_message)
