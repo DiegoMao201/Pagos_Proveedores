@@ -17,8 +17,10 @@ pandas
 # ======================================================================================
 import streamlit as st
 import pandas as pd
-from fpdf import FPDF
-import fpdf  # Para verificación de versión
+# --- CORRECCIÓN APLICADA ---
+# Se importa FPDF y la versión directamente desde el mismo módulo para evitar conflictos.
+# Esto asegura que la clase FPDF y la variable de versión provengan de la misma biblioteca (fpdf2).
+from fpdf import FPDF, __version__ as fpdf_version
 from datetime import datetime
 import io
 
@@ -32,14 +34,15 @@ st.set_page_config(
     layout="wide"
 )
 
-# Verifica y muestra la versión de fpdf2
-st.write(f"Versión de fpdf2: {fpdf.__version__}")
-if tuple(map(int, fpdf.__version__.split("."))) < (2, 5, 0):
+# --- CORRECCIÓN APLICADA ---
+# Se utiliza la variable 'fpdf_version' importada para la verificación.
+st.write(f"Versión de fpdf2: {fpdf_version}")
+if tuple(map(int, fpdf_version.split("."))) < (2, 5, 0):
     st.error("""
-    ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
-    Por favor actualiza ejecutando en tu terminal:
-    pip install --upgrade fpdf2
-    """)
+     ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
+     Por favor actualiza ejecutando en tu terminal:
+     pip install --upgrade fpdf2
+     """)
 
 def load_css():
     """Carga estilos CSS personalizados para una apariencia profesional."""
