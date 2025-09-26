@@ -17,7 +17,6 @@ pandas
 # ======================================================================================
 import streamlit as st
 import pandas as pd
-# --- CORRECCIÓN APLICADA ---
 # Se importa FPDF y la versión directamente desde el mismo módulo para evitar conflictos.
 # Esto asegura que la clase FPDF y la variable de versión provengan de la misma biblioteca (fpdf2).
 from fpdf import FPDF, __version__ as fpdf_version
@@ -34,15 +33,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- CORRECCIÓN APLICADA ---
-# Se utiliza la variable 'fpdf_version' importada para la verificación.
-st.write(f"Versión de fpdf2: {fpdf_version}")
-if tuple(map(int, fpdf_version.split("."))) < (2, 5, 0):
-    st.error("""
-      ❌ La versión de fpdf2 instalada es demasiado antigua para campos editables PDF.
-      Por favor actualiza ejecutando en tu terminal:
-      pip install --upgrade fpdf2
-      """)
+# --- CORRECCIÓN MEJORADA: Verificación robusta de la versión de fpdf2 ---
+# Se crea una bandera para saber si la versión es compatible.
+FPDF_VERSION_OK = tuple(map(int, fpdf_version.split("."))) >= (2, 5, 0)
+
+st.write(f"Versión de fpdf2 detectada: {fpdf_version}")
+
+# Se muestra un error general en la parte superior si la versión no es compatible.
+if not FPDF_VERSION_OK:
+    st.error(
+        """
+        ❌ **Versión de fpdf2 desactualizada:** La funcionalidad para generar PDFs editables está desactivada.
+        La versión instalada es demasiado antigua. Por favor, actualice la librería ejecutando en su terminal:
+        `pip install --upgrade fpdf2`
+        """
+    )
+
 
 def load_css():
     """Carga estilos CSS personalizados para una apariencia profesional."""
@@ -109,7 +115,6 @@ class PDF(FPDF):
     def header(self):
         # self.image('logo.png', 10, 8, 33) # Descomentar si tienes un logo
         self.set_font('Helvetica', 'B', 14)
-        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
         self.cell(0, 10, 'FORMATO DE CREACIÓN Y ACTUALIZACIÓN DE PROVEEDORES', ln=1, align='C')
         self.set_font('Helvetica', '', 10)
         self.cell(0, 8, 'FERREINOX S.A.S. BIC', ln=1, align='C')
@@ -123,7 +128,6 @@ class PDF(FPDF):
     def chapter_title(self, title):
         self.set_font('Helvetica', 'B', 12)
         self.set_fill_color(220, 220, 220)
-        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
         self.cell(0, 8, title, ln=1, align='L', fill=True)
         self.ln(4)
 
@@ -163,7 +167,6 @@ def generate_pdf(data: dict) -> bytes:
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
     pdf.set_font('Helvetica', 'B', 11)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(0, 8, 'Contacto Comercial', ln=1)
     pdf.form_field('Nombre', data['comercial_nombre'])
     pdf.form_field('Cargo', data['comercial_cargo'])
@@ -171,7 +174,6 @@ def generate_pdf(data: dict) -> bytes:
     pdf.form_field('Teléfono / Celular', data['comercial_tel'])
     pdf.ln(4)
     pdf.set_font('Helvetica', 'B', 11)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(0, 8, 'Contacto para Pagos y Facturación', ln=1)
     pdf.form_field('Nombre', data['pagos_nombre'])
     pdf.form_field('Cargo', data['pagos_cargo'])
@@ -191,7 +193,6 @@ def generate_pdf(data: dict) -> bytes:
     # --- DOCUMENTOS Y FIRMA ---
     pdf.chapter_title('6. DOCUMENTOS REQUERIDOS')
     pdf.set_font('Helvetica', '', 10)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 en cada celda ---
     pdf.cell(0, 8, f"[ X ] RUT actualizado." if data['doc_rut'] else "[   ] RUT actualizado.", ln=1)
     pdf.cell(0, 8, f"[ X ] Cámara de Comercio." if data['doc_camara'] else "[   ] Cámara de Comercio.", ln=1)
     pdf.cell(0, 8, f"[ X ] Certificación Bancaria." if data['doc_bancaria'] else "[   ] Certificación Bancaria.", ln=1)
@@ -200,7 +201,6 @@ def generate_pdf(data: dict) -> bytes:
 
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Helvetica', '', 10)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
@@ -211,7 +211,6 @@ def generate_pdf(data: dict) -> bytes:
     pdf.form_field('Nombre del Representante Legal', data['rl_nombre'])
     pdf.form_field('C.C. No.', data['rl_cc'])
     pdf.ln(20)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(80, 8, '_________________________________', ln=1)
     pdf.cell(80, 8, 'Firma', align='C')
 
@@ -220,7 +219,8 @@ def generate_pdf(data: dict) -> bytes:
 def generate_blank_pdf() -> bytes:
     """
     Genera un archivo PDF en blanco con campos de formulario EDITABLES.
-    NOTA: Esto requiere fpdf2 (>=2.5.0) en requirements.txt
+    NOTA: Esto requiere fpdf2 (>=2.5.0). La llamada a esta función debe ser
+    protegida por una verificación de versión.
     """
     pdf = PDF()
     pdf.add_page()
@@ -262,7 +262,6 @@ def generate_blank_pdf() -> bytes:
     add_editable_field('Actividad Económica (CIIU)', 'ciiu')
     # Checkboxes para opciones
     pdf.set_font('Helvetica', 'B', 10)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(0, 8, 'Marque las opciones que apliquen:', ln=1)
     
     checkbox_options = {
@@ -277,7 +276,6 @@ def generate_blank_pdf() -> bytes:
         x_pos, y_pos = pdf.get_x(), pdf.get_y()
         pdf.add_form_field(name=name, type='check', x=x_pos, y=y_pos, w=6, h=6)
         pdf.set_xy(x_pos + 8, y_pos)
-        # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
         pdf.cell(0, 6, label, ln=1)
     
     add_editable_field('Otro Régimen', 'otro_regimen')
@@ -286,7 +284,6 @@ def generate_blank_pdf() -> bytes:
     # --- CONTACTOS ---
     pdf.chapter_title('3. INFORMACIÓN DE CONTACTOS')
     pdf.set_font('Helvetica', 'B', 11)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(0, 8, 'Contacto Comercial', ln=1)
     add_editable_field('Nombre', 'comercial_nombre')
     add_editable_field('Cargo', 'comercial_cargo')
@@ -294,7 +291,6 @@ def generate_blank_pdf() -> bytes:
     add_editable_field('Teléfono / Celular', 'comercial_tel')
     pdf.ln(4)
     pdf.set_font('Helvetica', 'B', 11)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(0, 8, 'Contacto para Pagos y Facturación', ln=1)
     add_editable_field('Nombre', 'pagos_nombre')
     add_editable_field('Cargo', 'pagos_cargo')
@@ -317,7 +313,6 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(30, 8, 'Ahorros')
     pdf.add_form_field(name='cuenta_corriente', type='check', x=pdf.get_x(), y=y_pos, w=6, h=6)
     pdf.set_xy(pdf.get_x() + 8, y_pos)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.cell(30, 8, 'Corriente', ln=1)
     pdf.ln(10)
     
@@ -326,7 +321,6 @@ def generate_blank_pdf() -> bytes:
     # --- FIRMA ---
     pdf.chapter_title('7. FIRMA Y ACEPTACIÓN')
     pdf.set_font('Helvetica', '', 10)
-    # --- CORRECCIÓN: Se reemplaza new_x y new_y por el parámetro ln=1 ---
     pdf.multi_cell(
         w=0, h=6,
         text="Con la firma de este documento, el representante legal certifica la veracidad de la información y acepta las políticas de FERREINOX S.A.S. BIC.",
@@ -401,13 +395,24 @@ amablemente diligenciar este formulario. Puede hacerlo en línea o descargar una
 # --- Opción 1: Descargar Formulario Editable ---
 with st.expander("Opción 1: Descargar Formulario en Blanco y Editable (PDF)"):
     st.info("📄 Descargue esta versión si prefiere diligenciar el formato digitalmente en su computador y enviarlo por correo.")
-    blank_pdf_bytes = generate_blank_pdf()
-    st.download_button(
-        label="Descargar Formato Editable",
-        data=blank_pdf_bytes,
-        file_name="Formato_Proveedor_Editable_FERREINOX.pdf",
-        mime="application/pdf"
-    )
+    
+    # --- CORRECCIÓN: Se verifica si la versión de fpdf2 es compatible ANTES de llamar a la función ---
+    if FPDF_VERSION_OK:
+        # Si la versión es correcta, se genera el PDF y se muestra el botón.
+        blank_pdf_bytes = generate_blank_pdf()
+        st.download_button(
+            label="Descargar Formato Editable",
+            data=blank_pdf_bytes,
+            file_name="Formato_Proveedor_Editable_FERREINOX.pdf",
+            mime="application/pdf"
+        )
+    else:
+        # Si la versión no es compatible, se muestra un error en lugar del botón para evitar que la app falle.
+        st.error(
+            "❌ Esta funcionalidad está desactivada porque su versión de `fpdf2` es anterior a la 2.5.0. "
+            "Por favor, actualice la librería para poder usarla."
+        )
+
 
 st.markdown("---")
 
