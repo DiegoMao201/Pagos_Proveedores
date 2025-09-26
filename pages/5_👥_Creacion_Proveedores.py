@@ -8,15 +8,13 @@ profesional y limpio que captura todos los datos necesarios para el proceso de
 vinculación.
 
 Funcionalidades clave:
-- Formulario detallado dividido en secciones claras y colapsables.
+- Formulario detallado dentro de un st.form para una mejor experiencia de usuario.
 - Captura de datos generales, tributarios, de contacto y bancarios.
 - Presentación de políticas de la empresa y solicitud de aceptación.
 - Checklist de los documentos requeridos.
-- Generación y descarga de un archivo PDF con la información diligenciada,
-  formateado de manera profesional para su archivo.
-- Generación y descarga de un archivo PDF en blanco para ser llenado manualmente.
-- Generación y descarga de un archivo Excel con todos los datos capturados
-  para facilitar la importación a otros sistemas.
+- Generación y descarga de un archivo PDF con la información diligenciada.
+- Generación y descarga de un archivo PDF en blanco para llenado manual.
+- Generación y descarga de un archivo Excel con todos los datos capturados.
 - Uso de widgets interactivos de Streamlit para una experiencia de usuario fluida.
 
 Dependencias adicionales (añadir a requirements.txt):
@@ -56,17 +54,18 @@ def load_css():
                 border-radius: 0.5rem;
                 padding: 1.5rem;
                 background-color: #F8F9FA;
+                border: 1px solid #E0E0E0;
             }
             h1, h2, h3 {
                 color: #0C2D57;
             }
             .stButton>button {
-                width: 100%;
                 border-radius: 0.5rem;
                 border: 1px solid #0C2D57;
                 background-color: #0C2D57;
                 color: white;
                 transition: all 0.2s ease-in-out;
+                width: 100%;
             }
             .stButton>button:hover {
                 background-color: white;
@@ -77,6 +76,7 @@ def load_css():
                 background-color: #28a745;
                 color: white;
                 border: 1px solid #28a745;
+                width: 100%;
             }
             .stDownloadButton>button:hover {
                 background-color: white;
@@ -118,7 +118,7 @@ class PDF(FPDF):
         self.ln(2)
 
     def blank_form_field(self, label, value="__________________________________________________"):
-        """Crea un campo de formulario con una línea para ser llenado manually."""
+        """Crea un campo de formulario con una línea para ser llenado manualmente."""
         self.set_font('Arial', 'B', 10)
         self.cell(60, 8, f'{label}:', 0, 0)
         self.set_font('Arial', '', 10)
@@ -134,7 +134,7 @@ def generate_pdf(data: dict) -> bytes:
     pdf.chapter_title('1. DATOS GENERALES DE LA EMPRESA')
     pdf.form_field('Fecha de Diligenciamiento', data['fecha_diligenciamiento'])
     pdf.form_field('Razón Social', data['razon_social'])
-    pdf.form_field('NIT', data['nit'])
+    pdf.form_field('NIT', f"{data['nit']}-{data['dv']}")
     pdf.form_field('Dirección Principal', data['direccion'])
     pdf.form_field('Ciudad / Departamento', data['ciudad_depto'])
     pdf.form_field('País', 'Colombia')
@@ -202,9 +202,10 @@ def generate_pdf(data: dict) -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    # --- CORRECCIÓN AQUÍ ---
-    # Se remueve .encode('latin-1') porque pdf.output() ya retorna bytes.
-    return pdf.output()
+    # --- CORRECCIÓN CLAVE ---
+    # Se asegura que la salida sea en bytes, codificando la salida de string.
+    # Esto soluciona el error StreamlitAPIException.
+    return pdf.output(dest='S').encode('latin-1')
 
 def generate_blank_pdf() -> bytes:
     """Genera un archivo PDF en blanco del formulario para ser diligenciado manualmente."""
@@ -323,9 +324,8 @@ def generate_blank_pdf() -> bytes:
     pdf.cell(80, 8, '_________________________________', 0, 1)
     pdf.cell(80, 8, 'Firma', 0, 0, 'C')
 
-    # --- CORRECCIÓN AQUÍ ---
-    # Se remueve .encode('latin-1') porque pdf.output() ya retorna bytes.
-    return pdf.output()
+    # --- CORRECCIÓN CLAVE ---
+    return pdf.output(dest='S').encode('latin-1')
 
 
 # ======================================================================================
@@ -334,9 +334,12 @@ def generate_blank_pdf() -> bytes:
 
 def generate_excel(data: dict) -> bytes:
     """Genera un archivo Excel a partir de los datos del formulario."""
+    # Prepara el diccionario para el DataFrame, excluyendo los booleanos de los documentos
+    excel_data = {key: value for key, value in data.items() if not key.startswith('doc_')}
+    
     df_data = {
-        'Categoría': list(data.keys()),
-        'Información Suministrada': list(data.values())
+        'Campo': list(excel_data.keys()),
+        'Información Suministrada': list(excel_data.values())
     }
     df = pd.DataFrame(df_data)
 
@@ -357,106 +360,131 @@ def generate_excel(data: dict) -> bytes:
 
 load_css()
 
-# st.image("LOGO FERREINOX SAS BIC 2024.png", width=300) # Descomentar si tienes la imagen
+# st.image("logo.png", width=300) # Descomentar si tienes la imagen
 st.title("Formato de Creación y Actualización de Proveedores")
 st.markdown("---")
 st.markdown("""
-Estimado proveedor,
-Para dar inicio a nuestro proceso de vinculación comercial y garantizar una gestión eficiente de pagos y comunicaciones, 
+Estimado proveedor, para dar inicio a nuestro proceso de vinculación comercial y garantizar una gestión eficiente, 
 le solicitamos amablemente diligenciar la siguiente información y adjuntar los documentos requeridos.
 """)
 
+# --- Botón de descarga para el formato en blanco (siempre visible) ---
+st.header("Opción 1: Descargar Formulario en Blanco")
+st.markdown("Descargue esta versión si prefiere diligenciar el formato manualmente.")
+blank_pdf_bytes = generate_blank_pdf()
+st.download_button(
+    label="📄 Descargar Formato en Blanco (PDF)",
+    data=blank_pdf_bytes,
+    file_name="Formato_Proveedor_FERREINOX_en_Blanco.pdf",
+    mime="application/pdf"
+)
+st.markdown("---")
+
+
+# --- Formulario para diligenciar en línea ---
+st.header("Opción 2: Diligenciar Formulario en Línea")
+st.markdown("Complete los siguientes campos para generar automáticamente los documentos.")
+
 form_data = {}
 
-with st.container():
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-
-    form_data['fecha_diligenciamiento'] = st.date_input(
-        "Fecha de Diligenciamiento:",
-        datetime.now(),
-        help="Fecha en la que se está llenando este formulario."
-    ).strftime('%Y-%m-%d')
-
+with st.form(key="provider_form"):
+    
     # --- 1. DATOS GENERALES ---
-    st.header("1. Datos Generales de la Empresa")
-    form_data['razon_social'] = st.text_input("Razón Social (Nombre legal completo):", key="razon_social")
-    form_data['nit'] = st.text_input("NIT (Sin dígito de verificación):", key="nit")
-    form_data['direccion'] = st.text_input("Dirección Principal:", key="direccion")
+    with st.container():
+        st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
+        st.subheader("1. Datos Generales de la Empresa")
+        
+        form_data['fecha_diligenciamiento'] = st.date_input(
+            "Fecha de Diligenciamiento:",
+            datetime.now(),
+            help="Fecha en la que se está llenando este formulario."
+        ).strftime('%Y-%m-%d')
+        
+        form_data['razon_social'] = st.text_input("Razón Social (Nombre legal completo):", key="razon_social")
+        
+        col_nit, col_dv = st.columns([4, 1])
+        with col_nit:
+            form_data['nit'] = st.text_input("NIT (Número de Identificación Tributaria):", key="nit", help="Ingrese el número sin el dígito de verificación.")
+        with col_dv:
+            form_data['dv'] = st.text_input("DV:", key="dv", max_chars=1, help="Dígito de Verificación.")
+            
+        form_data['direccion'] = st.text_input("Dirección Principal:", key="direccion")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        form_data['ciudad_depto'] = st.text_input("Ciudad / Departamento:", key="ciudad")
-        form_data['tel_fijo'] = st.text_input("Teléfono Fijo:", key="tel_fijo")
-        form_data['email_general'] = st.text_input("Correo Electrónico General:", key="email_general")
-    with col2:
-        st.text_input("País:", "Colombia", disabled=True, key="pais")
-        form_data['tel_celular'] = st.text_input("Teléfono Celular:", key="tel_celular")
-        form_data['website'] = st.text_input("Página Web (Opcional):", key="website")
+        col1, col2 = st.columns(2)
+        with col1:
+            form_data['ciudad_depto'] = st.text_input("Ciudad / Departamento:", key="ciudad")
+            form_data['tel_fijo'] = st.text_input("Teléfono Fijo:", key="tel_fijo")
+            form_data['email_general'] = st.text_input("Correo Electrónico General:", key="email_general")
+        with col2:
+            st.text_input("País:", "Colombia", disabled=True, key="pais")
+            form_data['tel_celular'] = st.text_input("Teléfono Celular:", key="tel_celular")
+            form_data['website'] = st.text_input("Página Web (Opcional):", placeholder="https://www.suempresa.com", key="website")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("---")
 
     # --- 2. INFORMACIÓN TRIBUTARIA Y FISCAL ---
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    st.header("2. Información Tributaria y Fiscal")
-    col1, col2 = st.columns(2)
-    with col1:
-        form_data['tipo_persona'] = st.radio("Tipo de Persona:", ('Persona Jurídica', 'Persona Natural'), key="tipo_persona")
-        form_data['ciiu'] = st.text_input("Actividad Económica (Código CIIU):", help="Encuentre este código en su RUT.", key="ciiu")
-    with col2:
-        form_data['regimen'] = st.radio(
-            "Régimen Tributario:",
-            ('Régimen Común / Responsable de IVA',
-             'Régimen Simplificado / No Responsable de IVA',
-             'Gran Contribuyente',
-             'Autorretenedor de Renta',
-             'Otro'),
-            key="regimen"
-        )
-        if form_data['regimen'] == 'Otro':
-            form_data['otro_regimen'] = st.text_input("Especifique otro régimen:", key="otro_regimen")
-        else:
-            form_data['otro_regimen'] = ""
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    with st.container():
+        st.markdown("<div class='st-bx' style='margin-top: 20px;'>", unsafe_allow_html=True)
+        st.subheader("2. Información Tributaria y Fiscal")
+        col1, col2 = st.columns(2)
+        with col1:
+            form_data['tipo_persona'] = st.radio("Tipo de Persona:", ('Persona Jurídica', 'Persona Natural'), key="tipo_persona")
+            form_data['ciiu'] = st.text_input("Actividad Económica (Código CIIU):", help="Encuentre este código en su RUT.", key="ciiu")
+        with col2:
+            form_data['regimen'] = st.radio(
+                "Régimen Tributario:",
+                ('Régimen Común / Responsable de IVA',
+                 'Régimen Simplificado / No Responsable de IVA',
+                 'Gran Contribuyente',
+                 'Autorretenedor de Renta',
+                 'Otro'),
+                key="regimen"
+            )
+            if form_data['regimen'] == 'Otro':
+                form_data['otro_regimen'] = st.text_input("Especifique otro régimen:", key="otro_regimen")
+            else:
+                form_data['otro_regimen'] = ""
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
     # --- 3. INFORMACIÓN DE CONTACTOS ---
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    st.header("3. Información de Contactos")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Contacto Comercial")
-        st.markdown("_(Para órdenes de compra y cotizaciones)_")
-        form_data['comercial_nombre'] = st.text_input("Nombre (Comercial):", key="com_nombre")
-        form_data['comercial_cargo'] = st.text_input("Cargo (Comercial):", key="com_cargo")
-        form_data['comercial_email'] = st.text_input("Correo Electrónico (Comercial):", key="com_email")
-        form_data['comercial_tel'] = st.text_input("Teléfono / Celular (Comercial):", key="com_tel")
-    with col2:
-        st.subheader("Contacto para Pagos y Facturación")
-        st.markdown("_(Tesorería / Cartera)_")
-        form_data['pagos_nombre'] = st.text_input("Nombre (Pagos):", key="pag_nombre")
-        form_data['pagos_cargo'] = st.text_input("Cargo (Pagos):", key="pag_cargo")
-        form_data['pagos_email'] = st.text_input("Correo para Radicación de Factura Electrónica:", key="pag_email")
-        form_data['pagos_tel'] = st.text_input("Teléfono / Celular (Pagos):", key="pag_tel")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    with st.container():
+        st.markdown("<div class='st-bx' style='margin-top: 20px;'>", unsafe_allow_html=True)
+        st.subheader("3. Información de Contactos")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("<h6>Contacto Comercial</h6>", unsafe_allow_html=True)
+            st.markdown("_(Para órdenes de compra y cotizaciones)_")
+            form_data['comercial_nombre'] = st.text_input("Nombre (Comercial):", key="com_nombre")
+            form_data['comercial_cargo'] = st.text_input("Cargo (Comercial):", key="com_cargo")
+            form_data['comercial_email'] = st.text_input("Correo Electrónico (Comercial):", key="com_email")
+            form_data['comercial_tel'] = st.text_input("Teléfono / Celular (Comercial):", key="com_tel")
+        with col2:
+            st.markdown("<h6>Contacto para Pagos y Facturación</h6>", unsafe_allow_html=True)
+            st.markdown("_(Tesorería / Cartera)_")
+            form_data['pagos_nombre'] = st.text_input("Nombre (Pagos):", key="pag_nombre")
+            form_data['pagos_cargo'] = st.text_input("Cargo (Pagos):", key="pag_cargo")
+            form_data['pagos_email'] = st.text_input("Correo para Radicación de Factura Electrónica:", key="pag_email")
+            form_data['pagos_tel'] = st.text_input("Teléfono / Celular (Pagos):", key="pag_tel")
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
     # --- 4. INFORMACIÓN BANCARIA ---
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    st.header("4. Información Bancaria para Pagos")
-    st.warning("La información suministrada debe coincidir exactamente con la certificación bancaria adjunta.")
-    col1, col2 = st.columns(2)
-    with col1:
-        form_data['banco_nombre'] = st.text_input("Nombre del Banco:", key="banco_nombre")
-        form_data['banco_titular'] = st.text_input("Titular de la Cuenta:", key="banco_titular")
-        form_data['banco_nit_cc'] = st.text_input("NIT / C.C. del Titular:", key="banco_nit")
-    with col2:
-        form_data['banco_tipo_cuenta'] = st.radio("Tipo de Cuenta:", ('Ahorros', 'Corriente'), key="banco_tipo")
-        form_data['banco_numero_cuenta'] = st.text_input("Número de la Cuenta:", key="banco_num")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    with st.container():
+        st.markdown("<div class='st-bx' style='margin-top: 20px;'>", unsafe_allow_html=True)
+        st.subheader("4. Información Bancaria para Pagos")
+        st.warning("La información suministrada debe coincidir exactamente con la certificación bancaria adjunta.")
+        col1, col2 = st.columns(2)
+        with col1:
+            form_data['banco_nombre'] = st.text_input("Nombre del Banco:", key="banco_nombre")
+            form_data['banco_titular'] = st.text_input("Titular de la Cuenta:", key="banco_titular")
+            form_data['banco_nit_cc'] = st.text_input("NIT / C.C. del Titular:", key="banco_nit")
+        with col2:
+            form_data['banco_tipo_cuenta'] = st.radio("Tipo de Cuenta:", ('Ahorros', 'Corriente'), key="banco_tipo")
+            form_data['banco_numero_cuenta'] = st.text_input("Número de la Cuenta:", key="banco_num")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- 5. POLÍTICAS Y ACEPTACIÓN ---
+    # --- 5. POLÍTICAS ---
     with st.expander("5. Políticas y Aceptación del Proveedor (Haga clic para leer)", expanded=False):
         st.markdown("""
         Le agradecemos leer y aceptar nuestras políticas básicas para una relación comercial transparente y efectiva.
@@ -468,45 +496,42 @@ with st.container():
         """)
 
     # --- 6. DOCUMENTOS REQUERIDOS ---
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    st.header("6. Documentos Requeridos")
-    st.info("Por favor, asegúrese de tener listos los siguientes documentos para enviarlos junto a este formato.")
-    form_data['doc_rut'] = st.checkbox("RUT (Registro Único Tributario) actualizado.")
-    form_data['doc_camara'] = st.checkbox("Cámara de Comercio con fecha de expedición no mayor a 30 días.")
-    form_data['doc_bancaria'] = st.checkbox("Certificación Bancaria con fecha de expedición no mayor a 30 días.")
-    form_data['doc_cc_rl'] = st.checkbox("Fotocopia de la Cédula de Ciudadanía del Representante Legal.")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    with st.container():
+        st.markdown("<div class='st-bx' style='margin-top: 20px;'>", unsafe_allow_html=True)
+        st.subheader("6. Checklist de Documentos Requeridos")
+        st.info("Por favor, asegúrese de tener listos los siguientes documentos para enviarlos junto a este formato.")
+        form_data['doc_rut'] = st.checkbox("RUT (Registro Único Tributario) actualizado.")
+        form_data['doc_camara'] = st.checkbox("Cámara de Comercio con fecha de expedición no mayor a 30 días.")
+        form_data['doc_bancaria'] = st.checkbox("Certificación Bancaria con fecha de expedición no mayor a 30 días.")
+        form_data['doc_cc_rl'] = st.checkbox("Fotocopia de la Cédula de Ciudadanía del Representante Legal.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
     # --- 7. FIRMA Y ACEPTACIÓN ---
-    st.markdown("<div class='st-bx'>", unsafe_allow_html=True)
-    st.header("7. Firma y Aceptación")
-    st.success("Al diligenciar los siguientes campos, usted certifica la veracidad de la información y acepta las políticas de la empresa.")
-    form_data['rl_nombre'] = st.text_input("Nombre del Representante Legal:", key="rl_nombre")
-    form_data['rl_cc'] = st.text_input("C.C. No.:", key="rl_cc")
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.container():
+        st.markdown("<div class='st-bx' style='margin-top: 20px;'>", unsafe_allow_html=True)
+        st.subheader("7. Firma y Aceptación")
+        st.success("Al diligenciar los siguientes campos, usted certifica la veracidad de la información y acepta las políticas de la empresa.")
+        form_data['rl_nombre'] = st.text_input("Nombre Completo del Representante Legal:", key="rl_nombre")
+        form_data['rl_cc'] = st.text_input("Cédula de Ciudadanía del Representante Legal:", key="rl_cc")
+        st.markdown("</div>", unsafe_allow_html=True)
+    
     st.markdown("---")
+    
+    # --- BOTÓN DE ENVÍO DEL FORMULARIO ---
+    submitted = st.form_submit_button("✅ Generar Documentos Diligenciados")
 
-    # --- BOTONES DE DESCARGA ---
-    st.header("Descargar Formulario")
-
-    blank_pdf_bytes = generate_blank_pdf()
-    st.download_button(
-        label="📄 Descargar Formato en Blanco (PDF)",
-        data=blank_pdf_bytes,
-        file_name="Formato_Proveedor_FERREINOX_en_Blanco.pdf",
-        mime="application/pdf",
-        help="Descarga una versión en blanco del formulario para diligenciar manualmente."
-    )
-    st.markdown("---")
-    st.header("Generar y Descargar Formulario Diligenciado")
-
-    if all([form_data['razon_social'], form_data['nit'], form_data['rl_nombre']]):
+# --- LÓGICA DE PROCESAMIENTO POST-ENVÍO ---
+if submitted:
+    # Validar que los campos mínimos requeridos estén llenos
+    if all([form_data['razon_social'], form_data['nit'], form_data['dv'], form_data['rl_nombre']]):
+        st.success("¡Formulario validado! Ya puede descargar sus documentos.")
+        
         col1, col2 = st.columns(2)
 
+        # Generar PDF con datos
         pdf_bytes = generate_pdf(form_data)
         pdf_filename = f"Formato_Proveedor_{form_data['razon_social'].replace(' ', '_')}.pdf"
-
         with col1:
             st.download_button(
                 label="📄 Descargar como PDF",
@@ -516,9 +541,9 @@ with st.container():
                 help="Descarga el formulario completo en formato PDF."
             )
 
+        # Generar Excel con datos
         excel_bytes = generate_excel(form_data)
         excel_filename = f"Datos_Proveedor_{form_data['razon_social'].replace(' ', '_')}.xlsx"
-
         with col2:
             st.download_button(
                 label="📊 Descargar como Excel",
@@ -528,4 +553,4 @@ with st.container():
                 help="Descarga los datos en una hoja de cálculo para fácil procesamiento."
             )
     else:
-        st.error("Por favor, diligencie como mínimo la Razón Social, el NIT y el Nombre del Representante Legal para poder generar los documentos diligenciados.")
+        st.error("Por favor, diligencie como mínimo la Razón Social, el NIT (con DV) y el Nombre del Representante Legal para poder generar los documentos.")
