@@ -72,7 +72,7 @@ PINTUCO_ALIASES = ["PINTUCO", "COMPANIA GLOBAL DE PINTURAS"] # Nombres conocidos
 PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 INITIAL_START_DATE_SYNC = date(2025, 7, 1)
-NON_APPLICABLE_PURCHASE_FACTOR = 0.88 # Factor de compra que SÍ aplica para metas (100% - 5% = 95%)
+NON_APPLICABLE_PURCHASE_FACTOR = 0.88 # Factor de compra que SÍ aplica para metas (100% - 12% = 88%)
 
 # --- Constantes de Conexión ---
 IMAP_SERVER = "imap.gmail.com"
@@ -427,7 +427,7 @@ def generate_excel_report(analysis_df: pd.DataFrame):
 # --- 6. APLICACIÓN PRINCIPAL (STREAMLIT UI) ---
 st.title("🎯 Módulo de Seguimiento de Rebate: PINTUCO")
 st.markdown("Herramienta analítica para la planificación y seguimiento del acuerdo de desempeño comercial con **PINTUCO COLOMBIA S.A.S**.")
-st.warning("⚠️ **Regla de negocio importante:** El análisis se basa en el **95%** del valor neto de las compras, ya que hay un 5% que no aplica para el cumplimiento de metas de rebate.", icon="ℹ️")
+st.warning("⚠️ **Regla de negocio importante:** El análisis se basa en el **95%** del valor neto de las compras, ya que hay un 12% que no aplica para el cumplimiento de metas de rebate.", icon="ℹ️")
 
 if st.button("🔄 Sincronizar Facturas de Pintuco", type="primary"):
     run_pintuco_sync()
@@ -506,7 +506,7 @@ def display_quarterly_analysis_premium(quarter_name: str, months: list, analysis
         
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("🛒 Compra Neta Total", f"${int(total_comprado_q_neto):,}", help="Valor total de facturas Pintuco sin aplicar el 5% de exclusión.")
+            st.metric("🛒 Compra Neta Total", f"${int(total_comprado_q_neto):,}", help="Valor total de facturas Pintuco sin aplicar el 12% de exclusión.")
         with col2:
             st.metric("🎯 Compra Aplicable a Metas", f"${int(compra_aplicable_q):,}", help="Valor de compras que efectivamente cuentan para el cálculo de rebates (95% del valor neto).")
 
