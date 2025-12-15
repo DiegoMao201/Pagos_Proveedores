@@ -72,7 +72,7 @@ PINTUCO_ALIASES = ["PINTUCO", "COMPANIA GLOBAL DE PINTURAS"] # Nombres conocidos
 PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
 INITIAL_START_DATE_SYNC = date(2025, 7, 1)
-NON_APPLICABLE_PURCHASE_FACTOR = 0.95 # Factor de compra que SÍ aplica para metas (100% - 5% = 95%)
+NON_APPLICABLE_PURCHASE_FACTOR = 0.88 # Factor de compra que SÍ aplica para metas (100% - 5% = 95%)
 
 # --- Constantes de Conexión ---
 IMAP_SERVER = "imap.gmail.com"
