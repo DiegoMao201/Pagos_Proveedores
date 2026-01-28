@@ -18,7 +18,6 @@ import pandas as pd
 import numpy as np
 import smtplib
 from email.mime.text import MIMEText
-from datetime import datetime
 import urllib.parse
 
 # --- SEGURIDAD ---
@@ -43,79 +42,87 @@ if df_full.empty:
 
 # --- UI PRINCIPAL ---
 st.title("🤝 Centro de Conciliación de Cuentas con Proveedores")
-st.markdown("Conciliación automática entre tu cartera y las facturas recibidas por correo electrónico.")
+st.markdown("Conciliación automática entre tu cartera (ERP) y las facturas recibidas por correo electrónico.")
 
-# --- SUBIDA DE FACTURAS DEL PROVEEDOR (DESDE CORREO) ---
-uploaded_file = st.file_uploader("Sube el listado de facturas del proveedor (Excel/CSV exportado del correo)", type=["xlsx", "csv"])
-if uploaded_file:
-    if uploaded_file.name.endswith(".xlsx"):
-        df_proveedor = pd.read_excel(uploaded_file)
-    else:
-        df_proveedor = pd.read_csv(uploaded_file)
-    st.success("Listado de facturas del proveedor cargado correctamente.")
+# --- CARGA DE DATOS CONCILIADOS ---
+st.markdown("### Carga de datos conciliados")
+st.info("Usamos el DataFrame conciliado que ya existe en sesión.")
 
-    # --- CONCILIACIÓN ---
-    def conciliar_cartera(df_sistema, df_proveedor):
-        # Normalizar columnas clave
-        df_sistema['num_factura'] = df_sistema['num_factura'].astype(str).str.strip()
-        df_proveedor['num_factura'] = df_proveedor['num_factura'].astype(str).str.strip()
-        merged = pd.merge(
-            df_proveedor, df_sistema, on='num_factura', how='left', suffixes=('_proveedor', '_sistema'), indicator=True
-        )
-        merged['estado_conciliacion'] = np.where(
-            merged['_merge'] == 'both',
-            'Conciliada',
-            'Falta en Sistema'
-        )
-        return merged
+master_df = st.session_state.get("master_df", pd.DataFrame())
+if master_df.empty:
+    st.warning("No hay datos conciliados cargados. Realiza la sincronización desde el Dashboard General.")
+    st.stop()
 
-    resultado_conciliacion = conciliar_cartera(df_full, df_proveedor)
-    st.dataframe(resultado_conciliacion, use_container_width=True)
+# Selección de proveedor
+proveedores = sorted(master_df['nombre_proveedor'].dropna().unique())
+proveedor_sel = st.selectbox("Selecciona el proveedor para conciliar:", proveedores)
 
-    # --- MENSAJE DE CONCILIACIÓN ---
-    facturas_faltantes = resultado_conciliacion[resultado_conciliacion['estado_conciliacion'] == 'Falta en Sistema']
-    if not facturas_faltantes.empty:
-        lista_faltantes = "\n".join(
-            f"- Factura: {row['num_factura']} | Valor: {row.get('valor_total_proveedor', 'N/A')}" for _, row in facturas_faltantes.iterrows()
-        )
-        mensaje_conciliacion = (
-            "Estimado proveedor,\n\n"
-            "Tras la revisión de nuestra cartera y su estado de cuenta, encontramos las siguientes facturas que aún no aparecen registradas en nuestro sistema:\n"
-            f"{lista_faltantes}\n\n"
-            "Por favor, confirme si estas facturas ya fueron enviadas o si requieren reenvío.\n\n"
-            "Gracias por su colaboración.\nFERREINOX S.A.S. BIC"
-        )
-    else:
-        mensaje_conciliacion = (
-            "Estimado proveedor,\n\n"
-            "Tras la revisión de nuestra cartera y su estado de cuenta, confirmamos que todas las facturas están conciliadas.\n\n"
-            "Gracias por su colaboración.\nFERREINOX S.A.S. BIC"
-        )
+df_prov = master_df[master_df['nombre_proveedor'] == proveedor_sel].copy()
+if df_prov.empty:
+    st.info("No hay facturas para este proveedor.")
+    st.stop()
 
-    st.markdown("#### ✉️ Mensaje de Conciliación para Enviar")
-    st.code(mensaje_conciliacion, language="text")
+# Mostramos la conciliación
+st.markdown("### Estado de Conciliación")
+cols_to_show = [
+    'num_factura', 'valor_total_erp', 'valor_total_correo',
+    'fecha_emision_erp', 'fecha_vencimiento_erp', 'estado_conciliacion'
+]
+cols_to_show = [c for c in cols_to_show if c in df_prov.columns]
+st.dataframe(df_prov[cols_to_show], use_container_width=True)
 
-    # --- ENVÍO DE CORREO ---
-    proveedor_email = st.text_input("Correo del proveedor para conciliación")
-    if st.button("📧 Enviar conciliación por correo", disabled=not proveedor_email):
-        try:
-            msg = MIMEText(mensaje_conciliacion)
-            msg['Subject'] = "Conciliación de Cartera FERREINOX"
-            msg['From'] = st.secrets.email["address"]
-            msg['To'] = proveedor_email
+# Facturas solo en correo (faltan en ERP)
+faltan_en_erp = df_prov[df_prov['estado_conciliacion'] == '📧 Solo en Correo']
+# Facturas solo en ERP (pendiente de correo)
+faltan_en_correo = df_prov[df_prov['estado_conciliacion'] == '📬 Pendiente de Correo']
+# Discrepancias de valor
+discrepancias = df_prov[df_prov['estado_conciliacion'] == '⚠️ Discrepancia de Valor']
 
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(st.secrets.email["address"], st.secrets.email["password"])
-                server.sendmail(msg['From'], [msg['To']], msg.as_string())
-            st.success("Conciliación enviada por correo.")
-        except Exception as e:
-            st.error(f"Error al enviar correo: {e}")
-
-    # --- ENVÍO DE WHATSAPP ---
-    telefono_proveedor = st.text_input("Número WhatsApp del proveedor (solo números, con código país)")
-    mensaje_wsp = urllib.parse.quote(mensaje_conciliacion)
-    if telefono_proveedor:
-        url_wsp = f"https://wa.me/{telefono_proveedor}?text={mensaje_wsp}"
-        st.link_button("📲 Enviar conciliación por WhatsApp", url_wsp, use_container_width=True)
+# --- MENSAJE DE CONCILIACIÓN ---
+mensaje = f"Estimado proveedor {proveedor_sel},\n\n"
+if not faltan_en_erp.empty or not faltan_en_correo.empty or not discrepancias.empty:
+    mensaje += "Tras la revisión de nuestra cartera y su estado de cuenta, encontramos lo siguiente:\n\n"
+    if not faltan_en_erp.empty:
+        mensaje += "Facturas que aparecen en su estado de cuenta pero NO en nuestro sistema:\n"
+        for _, row in faltan_en_erp.iterrows():
+            mensaje += f"- Factura: {row['num_factura']} | Valor: {row.get('valor_total_correo', 'N/A')}\n"
+        mensaje += "\n"
+    if not faltan_en_correo.empty:
+        mensaje += "Facturas que aparecen en nuestro sistema pero NO en su estado de cuenta:\n"
+        for _, row in faltan_en_correo.iterrows():
+            mensaje += f"- Factura: {row['num_factura']} | Valor: {row.get('valor_total_erp', 'N/A')}\n"
+        mensaje += "\n"
+    if not discrepancias.empty:
+        mensaje += "Facturas con discrepancia de valor:\n"
+        for _, row in discrepancias.iterrows():
+            mensaje += f"- Factura: {row['num_factura']} | Valor ERP: {row.get('valor_total_erp', 'N/A')} | Valor Correo: {row.get('valor_total_correo', 'N/A')}\n"
+        mensaje += "\n"
+    mensaje += "Por favor, confirme o envíe los documentos faltantes o aclare las diferencias.\n\n"
 else:
-    st.info("Por favor, sube el estado de cuenta del proveedor para iniciar la conciliación.")
+    mensaje += "¡Todas las facturas están conciliadas correctamente!\n\n"
+mensaje += "Gracias por su colaboración.\nFERREINOX S.A.S. BIC"
+
+st.markdown("#### ✉️ Mensaje de Conciliación para Enviar")
+st.code(mensaje, language="text")
+
+# --- ENVÍO DE CORREO ---
+proveedor_email = st.text_input("Correo del proveedor para conciliación")
+if st.button("📧 Enviar conciliación por correo", disabled=not proveedor_email):
+    try:
+        msg = MIMEText(mensaje)
+        msg['Subject'] = "Conciliación de Cartera FERREINOX"
+        msg['From'] = st.secrets.email["address"]
+        msg['To'] = proveedor_email
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets.email["address"], st.secrets.email["password"])
+            server.sendmail(msg['From'], [msg['To']], msg.as_string())
+        st.success("Conciliación enviada por correo.")
+    except Exception as e:
+        st.error(f"Error al enviar correo: {e}")
+
+# --- ENVÍO DE WHATSAPP ---
+telefono_proveedor = st.text_input("Número WhatsApp del proveedor (solo números, con código país)")
+mensaje_wsp = urllib.parse.quote(mensaje)
+if telefono_proveedor:
+    url_wsp = f"https://wa.me/{telefono_proveedor}?text={mensaje_wsp}"
+    st.link_button("📲 Enviar conciliación por WhatsApp", url_wsp, use_container_width=True)
