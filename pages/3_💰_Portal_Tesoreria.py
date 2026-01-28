@@ -81,10 +81,14 @@ if email_df['fecha_dt'].notna().any():
         min_value=min_fecha,
         max_value=max_fecha
     )
-    # Convertir fechas_sel a timezone-aware
-    start_dt = pd.Timestamp(fechas_sel[0]).tz_localize(COLOMBIA_TZ)
-    end_dt = pd.Timestamp(fechas_sel[1]).tz_localize(COLOMBIA_TZ)
-    email_df = email_df[(email_df['fecha_dt'] >= start_dt) & (email_df['fecha_dt'] <= end_dt)]
+    # Validar que fechas_sel tenga dos fechas
+    if isinstance(fechas_sel, (list, tuple)) and len(fechas_sel) == 2:
+        # Convertir fechas_sel a timezone-aware
+        start_dt = pd.Timestamp(fechas_sel[0]).tz_localize(COLOMBIA_TZ)
+        end_dt = pd.Timestamp(fechas_sel[1]).tz_localize(COLOMBIA_TZ)
+        email_df = email_df[(email_df['fecha_dt'] >= start_dt) & (email_df['fecha_dt'] <= end_dt)]
+    else:
+        st.info("No se seleccionó un rango de fechas válido. Se mostrarán todas las facturas sin filtrar por fecha.")
 else:
     st.info("No hay fechas válidas en los datos de correo. Se mostrarán todas las facturas sin filtrar por fecha.")
 
