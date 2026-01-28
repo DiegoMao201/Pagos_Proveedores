@@ -89,8 +89,7 @@ if 'nombre_proveedor_correo' not in email_df.columns:
     st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'. Revisa la sincronización.")
     st.stop()
 
-prov_sel_norm = [normalizar_texto(p) for p in prov_seleccionados]
-email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(prov_sel_norm)]
+email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(lista_objetivo_norm)]
 
 # Filtramos por fecha si aplica
 if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
