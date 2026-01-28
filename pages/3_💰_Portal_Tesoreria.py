@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime
+import pytz
 
 st.title("💰 Portal de Tesorería - Facturas Faltantes en ERP")
 st.markdown(
@@ -112,12 +113,15 @@ facturas_en_erp_set = set(erp_df['num_factura'].unique())
 email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_erp_set)]
 
 # --- Enriquecimiento: Días de antigüedad ---
+from app import COLOMBIA_TZ  # Usa la constante global de tu app
+
 if not email_analysis.empty:
     # Normaliza fechas y elimina nulos
     email_analysis = email_analysis[email_analysis['fecha_dt'].notna()].copy()
-    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.normalize()
-    today = pd.Timestamp.now().normalize()
-    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt']).dt.days
+    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer') \
+        if email_analysis['fecha_dt'].dt.tz is None else email_analysis['fecha_dt'].dt.tz_convert(COLOMBIA_TZ)
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.normalize()).dt.days
 
     def clasificar_estado(dias):
         if dias <= 5:
