@@ -7,14 +7,24 @@ Enfoque: Conciliación Avanzada Correo vs ERP para Proveedores Objetivo.
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime
-import pytz
-from common.utils import COLOMBIA_TZ  # <--- Agrega esta línea
+from common.utils import COLOMBIA_TZ
 
 st.title("💰 Portal de Tesorería - Facturas Faltantes en ERP")
 st.markdown(
-    "A continuación se muestran **solo las facturas recibidas por correo de los proveedores objetivo** "
-    "que aún **no están registradas en el ERP**. El listado de proveedores objetivo se toma de `PROVEDORES_CORREO.xlsx`."
+    """
+    <style>
+    .kpi-box {background: #f8fafc; border-radius: 12px; padding: 1.5em 1em; margin-bottom: 1.5em; box-shadow: 0 2px 8px #0001;}
+    .kpi-title {font-size: 1.1em; color: #0C2D57; margin-bottom: 0.2em;}
+    .kpi-value {font-size: 2.2em; font-weight: bold; color: #1f77b4;}
+    .kpi-sub {font-size: 1em; color: #555;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown(
+    "A continuación se muestran <b>todas las facturas recibidas por correo de los proveedores objetivo</b> "
+    "que <b>aún no están registradas en el ERP</b>. El listado de proveedores objetivo se toma de <code>PROVEDORES_CORREO.xlsx</code>.",
+    unsafe_allow_html=True
 )
 
 # --- Leer archivo de proveedores objetivo desde la raíz ---
@@ -29,7 +39,6 @@ def normalizar_texto(texto):
     if pd.isna(texto): return ""
     return str(texto).strip().upper().replace('.', '').replace(',', '').replace('-', '').replace(' ', '')
 
-# Buscar columna de proveedor objetivo
 col_prov = next((c for c in df_proveedores_obj.columns if 'proveedor' in c.lower() or 'nombre' in c.lower()), None)
 if not col_prov:
     st.error("El archivo debe tener una columna identificable como 'Proveedor'.")
@@ -45,54 +54,12 @@ if email_df.empty or erp_df.empty:
     st.warning("No hay datos de correo o ERP cargados. Realiza la sincronización desde el Dashboard General.")
     st.stop()
 
-# Normalizar columna de proveedor en email_df
 if 'nombre_proveedor_correo' not in email_df.columns:
     st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'. Revisa la sincronización.")
     st.stop()
 email_df['nombre_proveedor_correo'] = email_df['nombre_proveedor_correo'].astype(str).str.strip().str.upper()
 
-# Detectar columna de fecha en email_df
-fecha_cols = [c for c in email_df.columns if 'fecha' in c.lower()]
-fecha_col = None
-for c in ['fecha_emision_correo', 'fecha_lectura', 'fecha_dt', 'fecha']:
-    if c in email_df.columns:
-        fecha_col = c
-        break
-if not fecha_col and fecha_cols:
-    fecha_col = fecha_cols[0]
-
-# Renombrar la columna de fecha a 'fecha_dt' para el análisis
-if fecha_col and fecha_col != 'fecha_dt':
-    email_df = email_df.rename(columns={fecha_col: 'fecha_dt'})
-elif not fecha_col:
-    email_df['fecha_dt'] = pd.NaT
-
-# Limpieza previa: convierte todo a string y reemplaza valores vacíos/nulos
-email_df['fecha_dt'] = email_df['fecha_dt'].astype(str).replace(['', ' ', 'NaT', 'None', None, pd.NaT, pd.NA], pd.NA)
-email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
-
-# --- PASO 1: Filtro de fechas robusto ---
-if email_df['fecha_dt'].notna().any():
-    min_fecha = email_df['fecha_dt'].min().date()
-    max_fecha = email_df['fecha_dt'].max().date()
-    fechas_sel = st.date_input(
-        "Filtrar por rango de fechas de recepción (correo):",
-        value=(min_fecha, max_fecha),
-        min_value=min_fecha,
-        max_value=max_fecha
-    )
-    # Validar que fechas_sel tenga dos fechas
-    if isinstance(fechas_sel, (list, tuple)) and len(fechas_sel) == 2:
-        # Convertir fechas_sel a timezone-aware
-        start_dt = pd.Timestamp(fechas_sel[0]).tz_localize(COLOMBIA_TZ)
-        end_dt = pd.Timestamp(fechas_sel[1]).tz_localize(COLOMBIA_TZ)
-        email_df = email_df[(email_df['fecha_dt'] >= start_dt) & (email_df['fecha_dt'] <= end_dt)]
-    else:
-        st.info("No se seleccionó un rango de fechas válido. Se mostrarán todas las facturas sin filtrar por fecha.")
-else:
-    st.info("No hay fechas válidas en los datos de correo. Se mostrarán todas las facturas sin filtrar por fecha.")
-
-# --- PASO 2: El Cruce (Matching) ---
+# --- Matching: solo proveedores objetivo y facturas que faltan en ERP ---
 email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(lista_objetivo_norm)]
 
 if 'num_factura' not in email_analysis.columns or 'num_factura' not in erp_df.columns:
@@ -104,55 +71,52 @@ erp_df['num_factura'] = erp_df['num_factura'].astype(str).str.strip()
 facturas_en_erp_set = set(erp_df['num_factura'].unique())
 email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_erp_set)]
 
-# --- Enriquecimiento: Días de antigüedad ---
-if not email_analysis.empty:
-    email_analysis = email_analysis[email_analysis['fecha_dt'].notna()].copy()
-    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer') if email_analysis['fecha_dt'].dt.tz is None else email_analysis['fecha_dt'].dt.tz_convert(COLOMBIA_TZ)
-    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.normalize()).dt.days
-
-    def clasificar_estado(dias):
-        if dias <= 5:
-            return "🟢 Reciente (Trámite Normal)"
-        elif dias <= 15:
-            return "🟡 Alerta (Seguimiento)"
-        else:
-            return "🔴 Crítico / Posiblemente Pagada"
-    email_analysis['estado_auditoria'] = email_analysis['dias_antiguedad'].apply(clasificar_estado)
-    email_analysis['valor_total'] = email_analysis['valor_total_correo'] if 'valor_total_correo' in email_analysis.columns else email_analysis.get('valor_total', 0)
-    email_analysis['nombre_proveedor'] = email_analysis['nombre_proveedor_correo']
-
-# --- DASHBOARD DE RESULTADOS ---
+# --- Visualización profesional ---
 if email_analysis.empty:
     st.balloons()
-    st.success("✅ **¡Integridad Total!** Todas las facturas de los proveedores seleccionados en este rango de fechas ya existen en el ERP.")
+    st.success("✅ <b>¡Integridad Total!</b> Todas las facturas de los proveedores objetivo ya existen en el ERP.", unsafe_allow_html=True)
 else:
-    st.divider()
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    total_faltante = email_analysis['valor_total'].sum()
+    # KPIs
+    total_faltante = email_analysis['valor_total_correo'].sum() if 'valor_total_correo' in email_analysis.columns else 0
     cant_facturas = len(email_analysis)
-    criticas = len(email_analysis[email_analysis['estado_auditoria'].str.contains("Crítico")])
-    top_prov = email_analysis['nombre_proveedor'].mode()[0] if not email_analysis.empty else "N/A"
+    top_prov = email_analysis['nombre_proveedor_correo'].mode()[0] if not email_analysis.empty else "N/A"
 
-    kpi1.metric("💰 Valor 'Flotante'", f"$ {total_faltante:,.0f}", delta="No radicado en ERP", delta_color="inverse")
-    kpi2.metric("📄 Facturas Faltantes", cant_facturas)
-    kpi3.metric("🚨 Facturas Críticas (>15 días)", criticas, delta="- Prioridad Alta", delta_color="inverse")
-    kpi4.metric("🏆 Proveedor con más pendientes", top_prov)
+    st.markdown(
+        f"""
+        <div class="kpi-box">
+            <div class="kpi-title">💰 Valor Total Faltante</div>
+            <div class="kpi-value">${total_faltante:,.0f}</div>
+            <div class="kpi-sub">No radicado en ERP</div>
+        </div>
+        <div class="kpi-box">
+            <div class="kpi-title">📄 Facturas Faltantes</div>
+            <div class="kpi-value">{cant_facturas}</div>
+            <div class="kpi-sub">Documentos únicos</div>
+        </div>
+        <div class="kpi-box">
+            <div class="kpi-title">🏆 Proveedor con más pendientes</div>
+            <div class="kpi-value">{top_prov}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     st.divider()
-    st.subheader("📋 Detalle de Facturas para Gestión")
+    st.subheader("📋 Detalle de Facturas Faltantes en ERP")
+    display_cols = [
+        'nombre_proveedor_correo', 'num_factura', 'valor_total_correo',
+        'fecha_emision_correo', 'fecha_vencimiento_correo'
+    ]
+    display_cols = [c for c in display_cols if c in email_analysis.columns]
     st.dataframe(
-        email_analysis[
-            ['estado_auditoria', 'nombre_proveedor', 'num_factura', 'fecha_dt', 'dias_antiguedad', 'valor_total']
-        ].sort_values(by='dias_antiguedad', ascending=False),
+        email_analysis[display_cols].sort_values(by='nombre_proveedor_correo'),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "estado_auditoria": st.column_config.TextColumn("Diagnóstico IA"),
-            "nombre_proveedor": "Proveedor",
+            "nombre_proveedor_correo": "Proveedor",
             "num_factura": "N° Factura",
-            "fecha_dt": st.column_config.DateColumn("Fecha Recibido"),
-            "dias_antiguedad": st.column_config.ProgressColumn("Días en Limbo", format="%d días", min_value=0, max_value=60),
-            "valor_total": st.column_config.NumberColumn("Valor Total", format="$ %.2f"),
+            "valor_total_correo": st.column_config.NumberColumn("Valor", format="$ %d"),
+            "fecha_emision_correo": st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
+            "fecha_vencimiento_correo": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
         }
     )
