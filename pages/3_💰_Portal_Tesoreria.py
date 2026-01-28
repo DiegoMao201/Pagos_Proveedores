@@ -199,9 +199,30 @@ if not os.path.exists(archivo_proveedores):
     st.stop()
 
 proveedores_correo = pd.read_excel(archivo_proveedores)
-proveedores_correo.columns = [c.strip().lower() for c in proveedores_correo.columns]
-if not {'código nit', 'proveedor'}.issubset(proveedores_correo.columns):
-    st.error("El archivo debe tener las columnas 'Código NIT' y 'Proveedor'.")
+
+# Normalizar nombres de columnas
+def normaliza_col(col):
+    return (
+        col.strip()
+        .lower()
+        .replace('á', 'a')
+        .replace('é', 'e')
+        .replace('í', 'i')
+        .replace('ó', 'o')
+        .replace('ú', 'u')
+        .replace('ñ', 'n')
+        .replace(' ', '_')
+    )
+
+proveedores_correo.columns = [normaliza_col(c) for c in proveedores_correo.columns]
+
+# Buscar columnas equivalentes
+col_codigo = next((c for c in proveedores_correo.columns if 'codigo' in c), None)
+col_nit = next((c for c in proveedores_correo.columns if 'nit' in c), None)
+col_proveedor = next((c for c in proveedores_correo.columns if 'proveedor' in c), None)
+
+if not col_codigo or not col_nit or not col_proveedor:
+    st.error("El archivo debe tener columnas identificables como 'Codigo', 'Nit' y 'Proveedor'.")
     st.stop()
 
 # --- Cargar datos de facturas del correo y ERP desde sesión ---
@@ -212,7 +233,7 @@ if email_df.empty or erp_df.empty:
     st.stop()
 
 # Normalizar nombres de proveedor para el cruce
-proveedores_lista = proveedores_correo['proveedor'].astype(str).str.strip().str.upper().unique().tolist()
+proveedores_lista = proveedores_correo[col_proveedor].astype(str).str.strip().str.upper().unique().tolist()
 email_df['nombre_proveedor_correo'] = email_df['nombre_proveedor_correo'].astype(str).str.strip().str.upper()
 erp_df['nombre_proveedor_erp'] = erp_df['nombre_proveedor_erp'].astype(str).str.strip().str.upper()
 
