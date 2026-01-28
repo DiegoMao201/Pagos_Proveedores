@@ -113,8 +113,9 @@ email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_
 
 # --- Enriquecimiento: Días de antigüedad ---
 if not email_analysis.empty:
-    today = pd.Timestamp.now().date()
-    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.date).astype(int)
+    today = pd.Timestamp.now(tz=None).normalize()
+    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce')
+    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.normalize()).dt.days
 
     def clasificar_estado(dias):
         if dias <= 5:
