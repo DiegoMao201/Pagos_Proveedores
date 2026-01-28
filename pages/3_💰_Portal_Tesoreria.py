@@ -63,8 +63,19 @@ if not fecha_col:
     st.error("No se encontró ninguna columna de fecha en los datos del correo.")
     st.stop()
 
-# Renombrar la columna de fecha a 'fecha_dt' para el análisis
-email_df = email_df.rename(columns={fecha_col: 'fecha_dt'})
+# --- Renombrar la columna de fecha a 'fecha_dt' para el análisis ---
+if fecha_col != 'fecha_dt':
+    email_df = email_df.rename(columns={fecha_col: 'fecha_dt'})
+
+# Limpieza previa: reemplaza strings vacíos y valores nulos por NaN
+email_df['fecha_dt'] = email_df['fecha_dt'].replace(['', ' ', None, pd.NaT], pd.NA)
+
+# Solo intenta convertir si hay al menos un valor no nulo
+if email_df['fecha_dt'].notna().any():
+    email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
+else:
+    st.error("No hay fechas válidas en los datos de correo para analizar.")
+    st.stop()
 
 # --- Filtro de fechas ---
 if not email_df.empty and 'fecha_dt' in email_df.columns:
