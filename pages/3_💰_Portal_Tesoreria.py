@@ -77,7 +77,18 @@ if email_analysis.empty:
     st.success("✅ <b>¡Integridad Total!</b> Todas las facturas de los proveedores objetivo ya existen en el ERP.", unsafe_allow_html=True)
 else:
     # KPIs
-    total_faltante = email_analysis['valor_total_correo'].sum() if 'valor_total_correo' in email_analysis.columns else 0
+    if 'valor_total_correo' in email_analysis.columns:
+        email_analysis['valor_total_correo'] = (
+            email_analysis['valor_total_correo']
+            .astype(str)
+            .str.replace('$', '', regex=False)
+            .str.replace(',', '', regex=False)
+            .str.strip()
+        )
+        email_analysis['valor_total_correo'] = pd.to_numeric(email_analysis['valor_total_correo'], errors='coerce').fillna(0)
+        total_faltante = email_analysis['valor_total_correo'].sum()
+    else:
+        total_faltante = 0
     cant_facturas = len(email_analysis)
     top_prov = email_analysis['nombre_proveedor_correo'].mode()[0] if not email_analysis.empty else "N/A"
 
