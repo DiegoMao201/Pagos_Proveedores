@@ -18,6 +18,7 @@ import gspread
 import io
 import pytz
 from google.oauth2.service_account import Credentials
+import os
 
 # ======================================================================================
 # --- INICIO DEL BLOQUE DE SEGURIDAD ---
@@ -189,7 +190,56 @@ def procesar_pago_lote(gs_client: gspread.Client, lote_id: str, df_reporte: pd.D
         return False
 
 # --- 4. INICIO DE LA APLICACIÓN ---
-st.title("💰 Portal de Pagos de Tesorería")
+st.title("💰 Portal de Tesorería")
+
+# --- Leer archivo de proveedores desde la raíz ---
+archivo_proveedores = "PROVEDORES_CORREO.xlsx"
+if not os.path.exists(archivo_proveedores):
+    st.error(f"No se encontró el archivo '{archivo_proveedores}' en la raíz del proyecto.")
+    st.stop()
+
+proveedores_correo = pd.read_excel(archivo_proveedores)
+proveedores_correo.columns = [c.strip().lower() for c in proveedores_correo.columns]
+if not {'código nit', 'proveedor'}.issubset(proveedores_correo.columns):
+    st.error("El archivo debe tener las columnas 'Código NIT' y 'Proveedor'.")
+    st.stop()
+
+# --- Cargar datos de facturas del correo y ERP desde sesión ---
+email_df = st.session_state.get("email_df", pd.DataFrame())
+erp_df = st.session_state.get("erp_df", pd.DataFrame())
+if email_df.empty or erp_df.empty:
+    st.warning("No hay datos de correo o ERP cargados. Realiza la sincronización desde el Dashboard General.")
+    st.stop()
+
+# Normalizar nombres de proveedor para el cruce
+proveedores_lista = proveedores_correo['proveedor'].astype(str).str.strip().str.upper().unique().tolist()
+email_df['nombre_proveedor_correo'] = email_df['nombre_proveedor_correo'].astype(str).str.strip().str.upper()
+erp_df['nombre_proveedor_erp'] = erp_df['nombre_proveedor_erp'].astype(str).str.strip().str.upper()
+
+# Filtrar facturas del correo solo de esos proveedores
+facturas_correo = email_df[email_df['nombre_proveedor_correo'].isin(proveedores_lista)].copy()
+
+# Cruce: facturas del correo que NO están en el ERP (por número de factura)
+facturas_erp = erp_df[['num_factura', 'nombre_proveedor_erp']].copy()
+facturas_erp['num_factura'] = facturas_erp['num_factura'].astype(str).str.strip()
+facturas_correo['num_factura'] = facturas_correo['num_factura'].astype(str).str.strip()
+
+facturas_faltantes = facturas_correo[~facturas_correo['num_factura'].isin(facturas_erp['num_factura'])]
+
+st.header("Facturas en el correo que faltan en el ERP para los proveedores seleccionados")
+if facturas_faltantes.empty:
+    st.success("¡No faltan facturas en el ERP para estos proveedores!")
+else:
+    st.dataframe(
+        facturas_faltantes[
+            ['nombre_proveedor_correo', 'num_factura', 'valor_total_correo', 'fecha_emision_correo', 'fecha_vencimiento_correo']
+        ],
+        use_container_width=True
+    )
+    st.info(f"Total facturas faltantes: {len(facturas_faltantes)}")
+
+# --- INICIO DE LA APLICACIÓN ---
+st.title("💰 Portal de Tesorería")
 st.markdown("Selecciona un lote de pago pendiente para ver su detalle y confirmar su pago.")
 
 gs_client = connect_to_google_sheets()
