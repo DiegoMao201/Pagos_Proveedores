@@ -6,93 +6,71 @@ Enfoque: Conciliación Avanzada Correo vs ERP para Proveedores Objetivo.
 
 import streamlit as st
 import pandas as pd
-import io
-import pytz
-from datetime import datetime, timedelta
-import plotly.express as px  # Agregamos gráficos para el "dashboard"
+import os
+from datetime import datetime
 
-# Configuración de página para dar más espacio horizontal
-st.set_page_config(page_title="Auditoría de Facturación", layout="wide", page_icon="🕵️‍♂️")
+st.title("💰 Portal de Tesorería - Facturas Faltantes en ERP")
+st.markdown(
+    "A continuación se muestran **solo las facturas recibidas por correo de los proveedores objetivo** "
+    "que aún **no están registradas en el ERP**. El listado de proveedores objetivo se toma de `PROVEDORES_CORREO.xlsx`."
+)
 
-# ======================================================================================
-# --- 0. SEGURIDAD Y CONFIGURACIÓN ---
-# ======================================================================================
-
-if 'password_correct' not in st.session_state:
-    st.session_state['password_correct'] = False
-
-if not st.session_state["password_correct"]:
-    st.error("🔒 Acceso Denegado. Por favor inicia sesión en el Dashboard General.")
+# --- Leer archivo de proveedores objetivo desde la raíz ---
+archivo_proveedores = "PROVEDORES_CORREO.xlsx"
+if not os.path.exists(archivo_proveedores):
+    st.error(f"No se encontró el archivo '{archivo_proveedores}' en la raíz del proyecto.")
     st.stop()
 
-COLOMBIA_TZ = pytz.timezone('America/Bogota')
-
-# ======================================================================================
-# --- 1. FUNCIONES DE UTILIDAD Y NORMALIZACIÓN (El Cerebro) ---
-# ======================================================================================
-
-def to_excel(df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Auditoria_Facturas')
-        # Ajuste automático de columnas
-        worksheet = writer.sheets['Auditoria_Facturas']
-        for idx, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.set_column(idx, idx, max_len)
-    return output.getvalue()
+df_proveedores_obj = pd.read_excel(archivo_proveedores)
 
 def normalizar_texto(texto):
-    """Limpieza agresiva para maximizar coincidencias (Match Rate)."""
     if pd.isna(texto): return ""
     return str(texto).strip().upper().replace('.', '').replace(',', '').replace('-', '').replace(' ', '')
 
-# ======================================================================================
-# --- 2. LÓGICA DE NEGOCIO Y CARGA DE DATOS ---
-# ======================================================================================
-
-st.title("🕵️‍♂️ Auditoría Inteligente de Facturas")
-st.markdown("### Control de Integridad: Correo vs ERP")
-
-# --- A. Carga de Proveedores Objetivo ---
-archivo_proveedores = "PROVEDORES_CORREO.xlsx"
-df_proveedores_obj = pd.DataFrame()
-
-try:
-    df_proveedores_obj = pd.read_excel(archivo_proveedores)
-    # Buscamos la columna correcta
-    col_prov = next((c for c in df_proveedores_obj.columns if 'proveedor' in c.lower() or 'nombre' in c.lower()), None)
-    if col_prov:
-        lista_objetivo_raw = df_proveedores_obj[col_prov].dropna().unique().tolist()
-        lista_objetivo_norm = [normalizar_texto(p) for p in lista_objetivo_raw]
-    else:
-        st.error("❌ El archivo de proveedores no tiene una columna 'Nombre' o 'Proveedor'.")
-        st.stop()
-except FileNotFoundError:
-    st.error(f"⚠️ Falta el archivo maestro: '{archivo_proveedores}'.")
-    st.stop()
-except Exception as e:
-    st.error(f"Error leyendo proveedores: {e}")
+# Buscar columna de proveedor objetivo
+col_prov = next((c for c in df_proveedores_obj.columns if 'proveedor' in c.lower() or 'nombre' in c.lower()), None)
+if not col_prov:
+    st.error("El archivo debe tener una columna identificable como 'Proveedor'.")
     st.stop()
 
-# --- B. Recuperar Datos de Sesión (Sincronizados en Dashboard) ---
+lista_objetivo_raw = df_proveedores_obj[col_prov].dropna().unique().tolist()
+lista_objetivo_norm = [normalizar_texto(p) for p in lista_objetivo_raw]
+
+# --- Cargar datos de facturas del correo y ERP desde sesión ---
 email_df = st.session_state.get("email_df", pd.DataFrame()).copy()
 erp_df = st.session_state.get("erp_df", pd.DataFrame()).copy()
-
 if email_df.empty or erp_df.empty:
-    st.warning("⚠️ No hay datos sincronizados. Ve al Dashboard General y actualiza la data.")
+    st.warning("No hay datos de correo o ERP cargados. Realiza la sincronización desde el Dashboard General.")
     st.stop()
 
-# --- C. Filtros de Proveedores Objetivo ---
-# Normaliza la columna de proveedor del correo
+# --- Normalizar columna de proveedor en email_df ---
 if 'nombre_proveedor_correo' not in email_df.columns:
     st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'. Revisa la sincronización.")
     st.stop()
 
-# --- Filtro de Fechas ---
+email_df['nombre_proveedor_correo'] = email_df['nombre_proveedor_correo'].astype(str).str.strip().str.upper()
+
+# --- Detectar columna de fecha en email_df ---
+fecha_cols = [c for c in email_df.columns if 'fecha' in c.lower()]
+fecha_col = None
+for c in ['fecha_dt', 'fecha_emision_correo', 'fecha_lectura', 'fecha']:
+    if c in email_df.columns:
+        fecha_col = c
+        break
+if not fecha_col and fecha_cols:
+    fecha_col = fecha_cols[0]
+if not fecha_col:
+    st.error("No se encontró ninguna columna de fecha en los datos del correo.")
+    st.stop()
+
+# Renombrar la columna de fecha a 'fecha_dt' para el análisis
+email_df = email_df.rename(columns={fecha_col: 'fecha_dt'})
+
+# --- Filtro de fechas ---
 if not email_df.empty and 'fecha_dt' in email_df.columns:
-    min_fecha = pd.to_datetime(email_df['fecha_dt']).min().date()
-    max_fecha = pd.to_datetime(email_df['fecha_dt']).max().date()
+    email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
+    min_fecha = email_df['fecha_dt'].min().date()
+    max_fecha = email_df['fecha_dt'].max().date()
     fechas_sel = st.date_input(
         "Filtrar por rango de fechas de recepción (correo):",
         value=(min_fecha, max_fecha),
@@ -103,7 +81,6 @@ else:
     fechas_sel = None
 
 # --- PASO 2: El Cruce (Matching) ---
-# Normalizamos llaves clave: Número de Factura
 email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(lista_objetivo_norm)]
 
 if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
@@ -113,14 +90,21 @@ if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
         (email_analysis['fecha_dt'] <= pd.to_datetime(end_d))
     ]
 
-# --- PASO 3: Enriquecimiento Inteligente ---
+# --- PASO 3: Mostrar solo facturas que faltan en el ERP ---
+if 'num_factura' not in email_analysis.columns or 'num_factura' not in erp_df.columns:
+    st.error("Falta la columna 'num_factura' en los datos para el cruce.")
+    st.stop()
+
+email_analysis['num_factura'] = email_analysis['num_factura'].astype(str).str.strip()
+erp_df['num_factura'] = erp_df['num_factura'].astype(str).str.strip()
+facturas_en_erp_set = set(erp_df['num_factura'].unique())
+email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_erp_set)]
+
+# --- Enriquecimiento: Días de antigüedad ---
 if not email_analysis.empty:
     today = pd.Timestamp.now().date()
-    
-    # Calcular días desde recepción
-    email_analysis['dias_antiguedad'] = (pd.to_datetime(today) - pd.to_datetime(email_analysis['fecha_dt'])).dt.days
-    
-    # CLASIFICACIÓN DEL ESTADO (La lógica de negocio)
+    email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.date).astype(int)
+
     def clasificar_estado(dias):
         if dias <= 5:
             return "🟢 Reciente (Trámite Normal)"
@@ -128,24 +112,17 @@ if not email_analysis.empty:
             return "🟡 Alerta (Seguimiento)"
         else:
             return "🔴 Crítico / Posiblemente Pagada"
-
     email_analysis['estado_auditoria'] = email_analysis['dias_antiguedad'].apply(clasificar_estado)
-    
-    # Formateo de moneda para visualización
-    email_analysis['valor_formato'] = email_analysis['valor_total'].apply(lambda x: f"$ {x:,.0f}")
+    email_analysis['valor_total'] = email_analysis['valor_total_correo'] if 'valor_total_correo' in email_analysis.columns else email_analysis.get('valor_total', 0)
+    email_analysis['nombre_proveedor'] = email_analysis['nombre_proveedor_correo']
 
-# ======================================================================================
-# --- 5. DASHBOARD DE RESULTADOS ---
-# ======================================================================================
-
+# --- DASHBOARD DE RESULTADOS ---
 if email_analysis.empty:
     st.balloons()
     st.success("✅ **¡Integridad Total!** Todas las facturas de los proveedores seleccionados en este rango de fechas ya existen en el ERP.")
 else:
-    # --- A. Métricas KPI (Top Level) ---
     st.divider()
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    
     total_faltante = email_analysis['valor_total'].sum()
     cant_facturas = len(email_analysis)
     criticas = len(email_analysis[email_analysis['estado_auditoria'].str.contains("Crítico")])
@@ -157,93 +134,19 @@ else:
     kpi4.metric("🏆 Proveedor con más pendientes", top_prov)
 
     st.divider()
-
-    # --- B. Gráficos de Análisis Rápido ---
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        st.subheader("Distribución por Estado")
-        fig_estado = px.pie(email_analysis, names='estado_auditoria', title='Estado de Antigüedad', hole=0.4, 
-                            color_discrete_map={
-                                "🟢 Reciente (Trámite Normal)": "#2ecc71",
-                                "🟡 Alerta (Seguimiento)": "#f1c40f",
-                                "🔴 Crítico / Posiblemente Pagada": "#e74c3c"
-                            })
-        st.plotly_chart(fig_estado, use_container_width=True)
-    
-    with col_chart2:
-        st.subheader("Monto Pendiente por Proveedor")
-        df_group = email_analysis.groupby('nombre_proveedor')['valor_total'].sum().reset_index().sort_values('valor_total', ascending=True)
-        fig_bar = px.bar(df_group, x='valor_total', y='nombre_proveedor', orientation='h', text_auto='.2s')
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # --- C. Tabla Detallada Interactiva ---
     st.subheader("📋 Detalle de Facturas para Gestión")
-    st.info("💡 **Nota:** Si una factura es 'Crítica', verifica si ya fue pagada. Si es 'Reciente', es posible que Contabilidad aún no la haya ingresado.")
-
-    # Preparamos el DF para el editor visual
-    df_display = email_analysis[[
-        'estado_auditoria',
-        'nombre_proveedor', 
-        'num_factura', 
-        'fecha_dt', 
-        'dias_antiguedad', 
-        'valor_total',
-        'asunto_correo' 
-    ]].sort_values(by='dias_antiguedad', ascending=False) # Las más antiguas primero
-
-    # Usamos column_config para hacer la tabla hermosa y funcional
-    st.data_editor(
-        df_display,
+    st.dataframe(
+        email_analysis[
+            ['estado_auditoria', 'nombre_proveedor', 'num_factura', 'fecha_dt', 'dias_antiguedad', 'valor_total']
+        ].sort_values(by='dias_antiguedad', ascending=False),
+        use_container_width=True,
+        hide_index=True,
         column_config={
-            "estado_auditoria": st.column_config.TextColumn(
-                "Diagnóstico IA",
-                help="Clasificación basada en la fecha de recepción",
-                width="medium"
-            ),
+            "estado_auditoria": st.column_config.TextColumn("Diagnóstico IA"),
             "nombre_proveedor": "Proveedor",
             "num_factura": "N° Factura",
             "fecha_dt": st.column_config.DateColumn("Fecha Recibido"),
-            "dias_antiguedad": st.column_config.ProgressColumn(
-                "Días en Limbo",
-                help="Días desde que llegó al correo",
-                format="%d días",
-                min_value=0,
-                max_value=60, # Escala visual
-            ),
-            "valor_total": st.column_config.NumberColumn(
-                "Valor Total",
-                format="$ %.2f"
-            ),
-            "asunto_correo": st.column_config.TextColumn("Contexto (Asunto)", width="large"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        disabled=True # Solo lectura
+            "dias_antiguedad": st.column_config.ProgressColumn("Días en Limbo", format="%d días", min_value=0, max_value=60),
+            "valor_total": st.column_config.NumberColumn("Valor Total", format="$ %.2f"),
+        }
     )
-
-    # --- D. Exportación ---
-    col_dl1, col_dl2 = st.columns([1, 4])
-    with col_dl1:
-        st.download_button(
-            label="📥 Descargar Reporte de Auditoría",
-            data=to_excel(email_analysis),
-            file_name=f"Auditoria_Facturacion_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.ms-excel",
-        )
-
-# ======================================================================================
-# --- 6. SECCIÓN DE AYUDA / DEBUGGING (Opcional) ---
-# ======================================================================================
-with st.expander("🛠️ Herramientas de Diagnóstico (Si algo no cuadra)"):
-    st.write("Si ves facturas aquí que SI están en el ERP, revisa cómo están escritas:")
-    st.write(f"- Total Facturas en ERP (Cargadas): {len(erp_df)}")
-    st.write(f"- Total Facturas en Correo (Filtradas): {len(email_analysis)}")
-    
-    col_dbg1, col_dbg2 = st.columns(2)
-    with col_dbg1:
-        txt_verif = st.text_input("Probar un N° de Factura específico:")
-    if txt_verif:
-        norm_verif = normalizar_texto(txt_verif)
-        en_erp = norm_verif in facturas_en_erp_set
-        st.write(f"🔍 Factura '{txt_verif}' (Norm: {norm_verif}) -> ¿Está en ERP?: **{'SÍ' if en_erp else 'NO'}**")
