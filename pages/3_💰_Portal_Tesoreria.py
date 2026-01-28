@@ -1,325 +1,268 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Portal de Tesorería (Versión 4.0 - Mejorado + Cruce Provedores).
-
-Esta página es para el uso exclusivo del equipo de Tesorería. 
-Funcionalidades principales:
-1. CRUCE DE FACTURACIÓN: Identificar facturas de proveedores clave (definidos en Excel)
-   que llegaron al correo pero no están en el ERP.
-2. GESTIÓN DE PAGOS: Visualizar y pagar lotes generados por Gerencia.
+Módulo de Auditoría de Facturación (Versión 5.0 - Intelligence Edition).
+Enfoque: Conciliación Avanzada Correo vs ERP para Proveedores Objetivo.
 """
 
-# --- 0. IMPORTACIÓN DE LIBRERÍAS ---
 import streamlit as st
 import pandas as pd
-import gspread
 import io
 import pytz
-from google.oauth2.service_account import Credentials
-import os
+from datetime import datetime, timedelta
+import plotly.express as px  # Agregamos gráficos para el "dashboard"
+
+# Configuración de página para dar más espacio horizontal
+st.set_page_config(page_title="Auditoría de Facturación", layout="wide", page_icon="🕵️‍♂️")
 
 # ======================================================================================
-# --- INICIO DEL BLOQUE DE SEGURIDAD ---
+# --- 0. SEGURIDAD Y CONFIGURACIÓN ---
 # ======================================================================================
 
-# 1. Se asegura de que la variable de sesión exista.
 if 'password_correct' not in st.session_state:
     st.session_state['password_correct'] = False
 
-# 2. Verifica si la contraseña es correcta.
 if not st.session_state["password_correct"]:
-    st.error("🔒 Debes iniciar sesión para acceder a esta página.")
-    st.info("Por favor, ve a la página principal 'Dashboard General' para ingresar la contraseña.")
+    st.error("🔒 Acceso Denegado. Por favor inicia sesión en el Dashboard General.")
     st.stop()
 
-# --- FIN DEL BLOQUE DE SEGURIDAD ---
-
-
-# --- INICIO: Lógica de conexión y utilidades ---
-
 COLOMBIA_TZ = pytz.timezone('America/Bogota')
-GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
-GSHEET_LOTES_NAME = "Historial_Lotes_Pago"
-PENDING_STATUSES = ["Pendiente de Pago", "Pendiente de Pago URGENTE"]
 
-@st.cache_resource(show_spinner="Conectando a Google Sheets...")
-def connect_to_google_sheets() -> gspread.Client:
-    """Establece la conexión con la API de Google Sheets de forma segura."""
-    try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds_dict = st.secrets["google_credentials"]
-        if creds_dict.get("private_key_id") is None:
-            creds_dict.pop("private_key_id", None)
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"❌ Error crítico al autenticar con Google Sheets: {e}")
-        return None
+# ======================================================================================
+# --- 1. FUNCIONES DE UTILIDAD Y NORMALIZACIÓN (El Cerebro) ---
+# ======================================================================================
 
 def to_excel(df: pd.DataFrame) -> bytes:
-    """Convierte un DataFrame a un archivo Excel en memoria."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Detalle_Pago')
-        for column in df:
-            try:
-                # Calcular ancho máximo
-                col_len = max(df[column].astype(str).map(len).max(), len(column)) + 2
-                col_idx = df.columns.get_loc(column)
-                writer.sheets['Detalle_Pago'].set_column(col_idx, col_idx, col_len)
-            except:
-                pass 
+        df.to_excel(writer, index=False, sheet_name='Auditoria_Facturas')
+        # Ajuste automático de columnas
+        worksheet = writer.sheets['Auditoria_Facturas']
+        for idx, col in enumerate(df.columns):
+            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(idx, idx, max_len)
     return output.getvalue()
 
-@st.cache_data(ttl=300, show_spinner="Cargando Lotes de Pago...")
-def load_data(_gs_client: gspread.Client):
-    """Carga los lotes y las facturas desde Google Sheets."""
-    try:
-        spreadsheet = _gs_client.open_by_key(st.secrets["google_sheet_id"])
-        
-        # Cargar historial de lotes
-        historial_ws = spreadsheet.worksheet(GSHEET_LOTES_NAME)
-        df_lotes = pd.DataFrame(historial_ws.get_all_records())
-        
-        # Cargar reporte consolidado
-        reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        reporte_data = reporte_ws.get_all_values()
-        
-        if len(reporte_data) < 2:
-            return df_lotes, pd.DataFrame()
+def normalizar_texto(texto):
+    """Limpieza agresiva para maximizar coincidencias (Match Rate)."""
+    if pd.isna(texto): return ""
+    return str(texto).strip().upper().replace('.', '').replace(',', '').replace('-', '').replace(' ', '')
 
-        # Normalizar encabezados
-        reporte_headers = [str(h).strip().lower().replace(' ', '_') for h in reporte_data[0]]
-        df_reporte = pd.DataFrame(reporte_data[1:], columns=reporte_headers)
+# ======================================================================================
+# --- 2. LÓGICA DE NEGOCIO Y CARGA DE DATOS ---
+# ======================================================================================
 
-        if 'nombre_proveedor_erp' in df_reporte.columns:
-            df_reporte.rename(columns={'nombre_proveedor_erp': 'nombre_proveedor'}, inplace=True)
-            
-        # Limpiar duplicados de columnas
-        df_reporte = df_reporte.loc[:, ~df_reporte.columns.duplicated(keep='first')]
+st.title("🕵️‍♂️ Auditoría Inteligente de Facturas")
+st.markdown("### Control de Integridad: Correo vs ERP")
 
-        return df_lotes, df_reporte
+# --- A. Carga de Proveedores Objetivo ---
+archivo_proveedores = "PROVEDORES_CORREO.xlsx"
+df_proveedores_obj = pd.DataFrame()
+
+try:
+    df_proveedores_obj = pd.read_excel(archivo_proveedores)
+    # Buscamos la columna correcta
+    col_prov = next((c for c in df_proveedores_obj.columns if 'proveedor' in c.lower() or 'nombre' in c.lower()), None)
+    if col_prov:
+        lista_objetivo_raw = df_proveedores_obj[col_prov].dropna().unique().tolist()
+        lista_objetivo_norm = [normalizar_texto(p) for p in lista_objetivo_raw]
+    else:
+        st.error("❌ El archivo de proveedores no tiene una columna 'Nombre' o 'Proveedor'.")
+        st.stop()
+except FileNotFoundError:
+    st.error(f"⚠️ Falta el archivo maestro: '{archivo_proveedores}'.")
+    st.stop()
+except Exception as e:
+    st.error(f"Error leyendo proveedores: {e}")
+    st.stop()
+
+# --- B. Recuperar Datos de Sesión (Sincronizados en Dashboard) ---
+email_df = st.session_state.get("email_df", pd.DataFrame()).copy()
+erp_df = st.session_state.get("erp_df", pd.DataFrame()).copy()
+
+if email_df.empty or erp_df.empty:
+    st.warning("⚠️ No hay datos sincronizados. Ve al Dashboard General y actualiza la data.")
+    st.stop()
+
+# ======================================================================================
+# --- 3. BARRA LATERAL DE FILTROS GLOBALES ---
+# ======================================================================================
+
+with st.sidebar:
+    st.header("🔍 Filtros de Auditoría")
+    
+    # 1. Filtro de Fechas (Afecta al análisis del CORREO)
+    if 'fecha_recepcion' in email_df.columns:
+        email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_recepcion']).dt.date
+        min_date = email_df['fecha_dt'].min()
+        max_date = email_df['fecha_dt'].max()
         
-    except Exception as e:
-        st.error(f"Error al cargar datos de Sheets: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-
-def procesar_pago_lote(gs_client: gspread.Client, lote_id: str, df_reporte: pd.DataFrame):
-    """Actualiza estados a 'Pagado'."""
-    try:
-        spreadsheet = gs_client.open_by_key(st.secrets["google_sheet_id"])
-        historial_ws = spreadsheet.worksheet(GSHEET_LOTES_NAME)
-        
-        # 1. Actualizar Lote
-        cell = historial_ws.find(lote_id)
-        if not cell:
-            st.error("No se encontró el ID del lote.")
-            return False
-        
-        headers = historial_ws.row_values(1)
-        estado_col = headers.index('estado_lote') + 1
-        historial_ws.update_cell(cell.row, estado_col, 'Pagado')
-
-        # 2. Actualizar Facturas
-        facturas_lote = df_reporte[df_reporte['id_lote_pago'] == lote_id]
-        if facturas_lote.empty:
-            return True # Se pagó el lote (quizás vacío), éxito parcial
-
-        reporte_ws = spreadsheet.worksheet(GSHEET_REPORT_NAME)
-        rep_headers = reporte_ws.row_values(1)
-        estado_fac_col = rep_headers.index('estado_factura') + 1
-        
-        updates = []
-        for index, _ in facturas_lote.iterrows():
-            row_idx = int(index) + 2
-            updates.append({
-                'range': gspread.utils.rowcol_to_a1(row_idx, estado_fac_col),
-                'values': [['Pagada']]
-            })
-            
-        if updates:
-            reporte_ws.batch_update(updates)
-            
-        return True
-    except Exception as e:
-        st.error(f"Error al procesar pago: {e}")
-        return False
-
-# --- Funciones de Normalización para el Cruce ---
-def normaliza_columna(col_name):
-    """Limpia nombres de columnas: minúsculas, sin espacios, sin tildes."""
-    return (
-        col_name.strip()
-        .lower()
-        .replace('á', 'a').replace('é', 'e').replace('í', 'i')
-        .replace('ó', 'o').replace('ú', 'u')
-        .replace('ñ', 'n').replace(' ', '_')
-        .replace('.', '')
+        fechas_sel = st.date_input("Rango de Fecha (Recepción Correo)", [min_date, max_date])
+    
+    # 2. Filtro de Proveedores (Solo los del Excel Objetivo)
+    prov_seleccionados = st.multiselect(
+        "Filtrar por Proveedor:", 
+        options=lista_objetivo_raw,
+        default=lista_objetivo_raw # Por defecto todos
     )
 
-def normalizar_texto(texto):
-    """Limpia texto de celdas para comparaciones."""
-    if pd.isna(texto): return ""
-    return str(texto).strip().upper()
+# ======================================================================================
+# --- 4. MOTOR DE ANÁLISIS (CORE) ---
+# ======================================================================================
 
-# --- INICIO DE LA APLICACIÓN ---
-st.title("💰 Portal de Tesorería")
+# --- PASO 1: Filtrado Inicial ---
+# Filtramos el DF de Correo primero por los proveedores seleccionados en el sidebar
+prov_sel_norm = [normalizar_texto(p) for p in prov_seleccionados]
+email_analysis = email_df[email_df['nombre_proveedor'].apply(normalizar_texto).isin(prov_sel_norm)]
 
-# ==============================================================================
-# SECCIÓN 1: CRUCE DE FACTURACIÓN (Lógica Solicitada)
-# ==============================================================================
-st.header("1. Verificación de Facturas Faltantes (Cruce Proveedores)")
-st.markdown("Cruce entre facturas recibidas en **Correo** vs registradas en **ERP**, filtrado exclusivamente por tu archivo de **Proveedores Objetivo**.")
+# Filtramos por fecha si aplica
+if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
+    start_d, end_d = fechas_sel
+    email_analysis = email_analysis[
+        (email_analysis['fecha_dt'] >= start_d) & 
+        (email_analysis['fecha_dt'] <= end_d)
+    ]
 
-# 1. Cargar archivo de proveedores
-archivo_proveedores = "PROVEDORES_CORREO.xlsx"
+# --- PASO 2: El Cruce (Matching) ---
+# Normalizamos llaves clave: Número de Factura
+email_analysis['key_factura'] = email_analysis['num_factura'].apply(normalizar_texto)
+erp_df['key_factura'] = erp_df['num_factura'].apply(normalizar_texto)
 
-if not os.path.exists(archivo_proveedores):
-    st.error(f"⚠️ No se encontró el archivo '{archivo_proveedores}' en la raíz. Por favor cárgalo.")
+facturas_en_erp_set = set(erp_df['key_factura'].unique())
+
+# Identificamos las que NO están en ERP
+df_faltantes = email_analysis[~email_analysis['key_factura'].isin(facturas_en_erp_set)].copy()
+
+# --- PASO 3: Enriquecimiento Inteligente ---
+if not df_faltantes.empty:
+    today = pd.Timestamp.now().date()
+    
+    # Calcular días desde recepción
+    df_faltantes['dias_antiguedad'] = (pd.to_datetime(today) - pd.to_datetime(df_faltantes['fecha_dt'])).dt.days
+    
+    # CLASIFICACIÓN DEL ESTADO (La lógica de negocio)
+    def clasificar_estado(dias):
+        if dias <= 5:
+            return "🟢 Reciente (Trámite Normal)"
+        elif dias <= 15:
+            return "🟡 Alerta (Seguimiento)"
+        else:
+            return "🔴 Crítico / Posiblemente Pagada"
+
+    df_faltantes['estado_auditoria'] = df_faltantes['dias_antiguedad'].apply(clasificar_estado)
+    
+    # Formateo de moneda para visualización
+    df_faltantes['valor_formato'] = df_faltantes['valor_total'].apply(lambda x: f"$ {x:,.0f}")
+
+# ======================================================================================
+# --- 5. DASHBOARD DE RESULTADOS ---
+# ======================================================================================
+
+if df_faltantes.empty:
+    st.balloons()
+    st.success("✅ **¡Integridad Total!** Todas las facturas de los proveedores seleccionados en este rango de fechas ya existen en el ERP.")
 else:
-    try:
-        # Cargar Excel
-        df_proveedores_obj = pd.read_excel(archivo_proveedores)
-        
-        # Normalizar columnas del Excel para evitar errores si cambian los nombres
-        df_proveedores_obj.columns = [normaliza_columna(c) for c in df_proveedores_obj.columns]
-        
-        # Identificar la columna del nombre del proveedor
-        col_prov = next((c for c in df_proveedores_obj.columns if 'proveedor' in c or 'nombre' in c), None)
-        
-        if not col_prov:
-            st.error("El archivo de proveedores debe tener una columna llamada 'Proveedor' o 'Nombre'.")
-        else:
-            # 2. Obtener datos de Sesión (Correo y ERP)
-            email_df = st.session_state.get("email_df", pd.DataFrame())
-            erp_df = st.session_state.get("erp_df", pd.DataFrame())
+    # --- A. Métricas KPI (Top Level) ---
+    st.divider()
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    
+    total_faltante = df_faltantes['valor_total'].sum()
+    cant_facturas = len(df_faltantes)
+    criticas = len(df_faltantes[df_faltantes['estado_auditoria'].str.contains("Crítico")])
+    top_prov = df_faltantes['nombre_proveedor'].mode()[0] if not df_faltantes.empty else "N/A"
 
-            if email_df.empty or erp_df.empty:
-                st.warning("⚠️ No hay datos cargados de Correo o ERP. Realiza la sincronización en el Dashboard General primero.")
-            else:
-                # 3. Preparar Listas para el Cruce
-                
-                # Lista de proveedores objetivo (desde el Excel) normalizada
-                lista_proveedores_obj = df_proveedores_obj[col_prov].apply(normalizar_texto).unique().tolist()
-                
-                # Crear copias para no afectar los dataframes originales de la sesión
-                email_analysis = email_df.copy()
-                erp_analysis = erp_df.copy()
-                
-                # Asegurar columnas necesarias en Email
-                if 'nombre_proveedor_correo' not in email_analysis.columns:
-                    st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'.")
-                else:
-                    # Normalizar nombres en el DF de correo
-                    email_analysis['proveedor_norm'] = email_analysis['nombre_proveedor_correo'].apply(normalizar_texto)
-                    
-                    # 4. FILTRADO: Quedarnos SOLO con los proveedores del Excel
-                    email_filtrado = email_analysis[email_analysis['proveedor_norm'].isin(lista_proveedores_obj)]
-                    
-                    if email_filtrado.empty:
-                        st.info("ℹ️ No se encontraron facturas en el correo de los proveedores listados en el Excel.")
-                    else:
-                        # 5. EL CRUCE: Comparar facturas (usando número de factura)
-                        
-                        # Normalizar número de factura en ambos lados (quitar espacios, asegurar string)
-                        email_filtrado['num_factura_clean'] = email_filtrado['num_factura'].astype(str).str.strip()
-                        erp_analysis['num_factura_clean'] = erp_analysis['num_factura'].astype(str).str.strip()
-                        
-                        # Identificar facturas que están en Correo (filtrado) pero NO en ERP
-                        facturas_en_erp = erp_analysis['num_factura_clean'].tolist()
-                        
-                        df_faltantes = email_filtrado[~email_filtrado['num_factura_clean'].isin(facturas_en_erp)].copy()
-                        
-                        # 6. MOSTRAR RESULTADOS
-                        if df_faltantes.empty:
-                            st.success("✅ ¡Todo al día! Todas las facturas de tus proveedores objetivo ya están en el ERP.")
-                        else:
-                            st.warning(f"🚨 Se encontraron **{len(df_faltantes)}** facturas en el correo que FALTAN en el ERP.")
-                            
-                            # Seleccionar columnas relevantes para mostrar
-                            cols_to_show = [
-                                'nombre_proveedor_correo', 
-                                'num_factura', 
-                                'valor_total_correo', 
-                                'fecha_emision_correo', 
-                                'asunto_correo'
-                            ]
-                            # Filtrar solo columnas que existan
-                            cols_final = [c for c in cols_to_show if c in df_faltantes.columns]
-                            
-                            st.dataframe(
-                                df_faltantes[cols_final],
-                                use_container_width=True,
-                                hide_index=True
-                            )
-                            
-                            # Botón de descarga para el reporte de faltantes
-                            st.download_button(
-                                label="📥 Descargar Reporte de Faltantes (Excel)",
-                                data=to_excel(df_faltantes[cols_final]),
-                                file_name="Facturas_Faltantes_ERP.xlsx",
-                                mime="application/vnd.ms-excel"
-                            )
+    kpi1.metric("💰 Valor 'Flotante'", f"$ {total_faltante:,.0f}", delta="No radicado en ERP", delta_color="inverse")
+    kpi2.metric("📄 Facturas Faltantes", cant_facturas)
+    kpi3.metric("🚨 Facturas Críticas (>15 días)", criticas, delta="- Prioridad Alta", delta_color="inverse")
+    kpi4.metric("🏆 Proveedor con más pendientes", top_prov)
 
-    except Exception as e:
-        st.error(f"Error al procesar el archivo de proveedores o realizar el cruce: {e}")
+    st.divider()
 
-st.divider()
+    # --- B. Gráficos de Análisis Rápido ---
+    col_chart1, col_chart2 = st.columns(2)
+    
+    with col_chart1:
+        st.subheader("Distribución por Estado")
+        fig_estado = px.pie(df_faltantes, names='estado_auditoria', title='Estado de Antigüedad', hole=0.4, 
+                            color_discrete_map={
+                                "🟢 Reciente (Trámite Normal)": "#2ecc71",
+                                "🟡 Alerta (Seguimiento)": "#f1c40f",
+                                "🔴 Crítico / Posiblemente Pagada": "#e74c3c"
+                            })
+        st.plotly_chart(fig_estado, use_container_width=True)
+    
+    with col_chart2:
+        st.subheader("Monto Pendiente por Proveedor")
+        df_group = df_faltantes.groupby('nombre_proveedor')['valor_total'].sum().reset_index().sort_values('valor_total', ascending=True)
+        fig_bar = px.bar(df_group, x='valor_total', y='nombre_proveedor', orientation='h', text_auto='.2s')
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-# ==============================================================================
-# SECCIÓN 2: GESTIÓN DE LOTES DE PAGO (Funcionalidad Original Tesorería)
-# ==============================================================================
-st.header("2. Gestión de Lotes de Pago")
+    # --- C. Tabla Detallada Interactiva ---
+    st.subheader("📋 Detalle de Facturas para Gestión")
+    st.info("💡 **Nota:** Si una factura es 'Crítica', verifica si ya fue pagada. Si es 'Reciente', es posible que Contabilidad aún no la haya ingresado.")
 
-gs_client = connect_to_google_sheets()
-if gs_client:
-    df_lotes, df_reporte = load_data(gs_client)
+    # Preparamos el DF para el editor visual
+    df_display = df_faltantes[[
+        'estado_auditoria',
+        'nombre_proveedor', 
+        'num_factura', 
+        'fecha_dt', 
+        'dias_antiguedad', 
+        'valor_total',
+        'asunto_correo' 
+    ]].sort_values(by='dias_antiguedad', ascending=False) # Las más antiguas primero
 
-    # Filtrar lotes pendientes
-    if not df_lotes.empty:
-        df_pendientes = df_lotes[df_lotes['estado_lote'].isin(PENDING_STATUSES)].copy()
-        
-        # Ordenar (Urgentes primero)
-        df_pendientes['es_urgente'] = df_pendientes['estado_lote'].apply(lambda x: 'URGENTE' in str(x))
-        df_pendientes.sort_values(by=['es_urgente', 'fecha_creacion'], ascending=[False, False], inplace=True)
+    # Usamos column_config para hacer la tabla hermosa y funcional
+    st.data_editor(
+        df_display,
+        column_config={
+            "estado_auditoria": st.column_config.TextColumn(
+                "Diagnóstico IA",
+                help="Clasificación basada en la fecha de recepción",
+                width="medium"
+            ),
+            "nombre_proveedor": "Proveedor",
+            "num_factura": "N° Factura",
+            "fecha_dt": st.column_config.DateColumn("Fecha Recibido"),
+            "dias_antiguedad": st.column_config.ProgressColumn(
+                "Días en Limbo",
+                help="Días desde que llegó al correo",
+                format="%d días",
+                min_value=0,
+                max_value=60, # Escala visual
+            ),
+            "valor_total": st.column_config.NumberColumn(
+                "Valor Total",
+                format="$ %.2f"
+            ),
+            "asunto_correo": st.column_config.TextColumn("Contexto (Asunto)", width="large"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        disabled=True # Solo lectura
+    )
 
-        if df_pendientes.empty:
-            st.info("No hay lotes pendientes de pago.")
-        else:
-            st.markdown("Selecciona un lote para procesar su pago.")
-            
-            # Mostrar tabla resumen
-            st.dataframe(
-                df_pendientes[['id_lote', 'estado_lote', 'fecha_creacion', 'num_facturas', 'total_pagado_lote']],
-                use_container_width=True, 
-                hide_index=True
-            )
-            
-            # Selector de Lote
-            lote_id = st.selectbox("Seleccionar Lote:", df_pendientes['id_lote'].unique())
-            
-            if lote_id:
-                lote_data = df_pendientes[df_pendientes['id_lote'] == lote_id].iloc[0]
-                facturas_lote = df_reporte[df_reporte['id_lote_pago'] == lote_id].copy()
-                
-                st.subheader(f"Detalle Lote: {lote_id}")
-                c1, c2 = st.columns(2)
-                c1.metric("Total a Pagar", f"$ {float(lote_data.get('total_pagado_lote', 0)):,.0f}")
-                c2.metric("Facturas", lote_data.get('num_facturas', 0))
-                
-                st.dataframe(facturas_lote, use_container_width=True)
-                
-                # Acciones
-                col_btn1, col_btn2 = st.columns([1, 1])
-                with col_btn1:
-                    st.download_button(
-                        "📄 Descargar Soporte Excel",
-                        data=to_excel(facturas_lote),
-                        file_name=f"Pago_{lote_id}.xlsx"
-                    )
-                with col_btn2:
-                    if st.button("✅ Confirmar Pago Realizado", type="primary"):
-                        if procesar_pago_lote(gs_client, lote_id, df_reporte):
-                            st.success(f"Lote {lote_id} marcado como PAGADO.")
-                            st.cache_data.clear()
-                            st.rerun()
+    # --- D. Exportación ---
+    col_dl1, col_dl2 = st.columns([1, 4])
+    with col_dl1:
+        st.download_button(
+            label="📥 Descargar Reporte de Auditoría",
+            data=to_excel(df_faltantes),
+            file_name=f"Auditoria_Facturacion_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.ms-excel",
+        )
+
+# ======================================================================================
+# --- 6. SECCIÓN DE AYUDA / DEBUGGING (Opcional) ---
+# ======================================================================================
+with st.expander("🛠️ Herramientas de Diagnóstico (Si algo no cuadra)"):
+    st.write("Si ves facturas aquí que SI están en el ERP, revisa cómo están escritas:")
+    st.write(f"- Total Facturas en ERP (Cargadas): {len(erp_df)}")
+    st.write(f"- Total Facturas en Correo (Filtradas): {len(email_analysis)}")
+    
+    col_dbg1, col_dbg2 = st.columns(2)
+    with col_dbg1:
+        txt_verif = st.text_input("Probar un N° de Factura específico:")
+    if txt_verif:
+        norm_verif = normalizar_texto(txt_verif)
+        en_erp = norm_verif in facturas_en_erp_set
+        st.write(f"🔍 Factura '{txt_verif}' (Norm: {norm_verif}) -> ¿Está en ERP?: **{'SÍ' if en_erp else 'NO'}**")
