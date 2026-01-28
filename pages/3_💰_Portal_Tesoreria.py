@@ -44,43 +44,34 @@ if email_df.empty or erp_df.empty:
     st.warning("No hay datos de correo o ERP cargados. Realiza la sincronización desde el Dashboard General.")
     st.stop()
 
-# --- Normalizar columna de proveedor en email_df ---
+# Normalizar columna de proveedor en email_df
 if 'nombre_proveedor_correo' not in email_df.columns:
     st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'. Revisa la sincronización.")
     st.stop()
-
 email_df['nombre_proveedor_correo'] = email_df['nombre_proveedor_correo'].astype(str).str.strip().str.upper()
 
-# --- Detectar columna de fecha en email_df ---
+# Detectar columna de fecha en email_df
 fecha_cols = [c for c in email_df.columns if 'fecha' in c.lower()]
 fecha_col = None
-for c in ['fecha_dt', 'fecha_emision_correo', 'fecha_lectura', 'fecha']:
+for c in ['fecha_emision_correo', 'fecha_lectura', 'fecha_dt', 'fecha']:
     if c in email_df.columns:
         fecha_col = c
         break
 if not fecha_col and fecha_cols:
     fecha_col = fecha_cols[0]
-if not fecha_col:
-    st.error("No se encontró ninguna columna de fecha en los datos del correo.")
-    st.stop()
 
 # Renombrar la columna de fecha a 'fecha_dt' para el análisis
-if fecha_col != 'fecha_dt':
+if fecha_col and fecha_col != 'fecha_dt':
     email_df = email_df.rename(columns={fecha_col: 'fecha_dt'})
+elif not fecha_col:
+    email_df['fecha_dt'] = pd.NaT
 
 # Limpieza previa: convierte todo a string y reemplaza valores vacíos/nulos
 email_df['fecha_dt'] = email_df['fecha_dt'].astype(str).replace(['', ' ', 'NaT', 'None', None, pd.NaT, pd.NA], pd.NA)
+email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
 
-# Solo intenta convertir si hay al menos un valor no nulo
+# --- PASO 1: Filtro de fechas robusto ---
 if email_df['fecha_dt'].notna().any():
-    email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
-else:
-    st.error("No hay fechas válidas en los datos de correo para analizar.")
-    st.stop()
-
-# --- Filtro de fechas ---
-if not email_df.empty and 'fecha_dt' in email_df.columns:
-    email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_dt'], errors='coerce')
     min_fecha = email_df['fecha_dt'].min().date()
     max_fecha = email_df['fecha_dt'].max().date()
     fechas_sel = st.date_input(
@@ -89,20 +80,14 @@ if not email_df.empty and 'fecha_dt' in email_df.columns:
         min_value=min_fecha,
         max_value=max_fecha
     )
+    # Si el usuario no cambia el filtro, por defecto muestra TODO el rango real
+    email_df = email_df[(email_df['fecha_dt'] >= pd.to_datetime(fechas_sel[0])) & (email_df['fecha_dt'] <= pd.to_datetime(fechas_sel[1]))]
 else:
-    fechas_sel = None
+    st.info("No hay fechas válidas en los datos de correo. Se mostrarán todas las facturas sin filtrar por fecha.")
 
 # --- PASO 2: El Cruce (Matching) ---
 email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(lista_objetivo_norm)]
 
-if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
-    start_d, end_d = fechas_sel
-    email_analysis = email_analysis[
-        (email_analysis['fecha_dt'] >= pd.to_datetime(start_d)) &
-        (email_analysis['fecha_dt'] <= pd.to_datetime(end_d))
-    ]
-
-# --- PASO 3: Mostrar solo facturas que faltan en el ERP ---
 if 'num_factura' not in email_analysis.columns or 'num_factura' not in erp_df.columns:
     st.error("Falta la columna 'num_factura' en los datos para el cruce.")
     st.stop()
@@ -113,13 +98,11 @@ facturas_en_erp_set = set(erp_df['num_factura'].unique())
 email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_erp_set)]
 
 # --- Enriquecimiento: Días de antigüedad ---
-from app import COLOMBIA_TZ  # Usa la constante global de tu app
+from app import COLOMBIA_TZ
 
 if not email_analysis.empty:
-    # Normaliza fechas y elimina nulos
     email_analysis = email_analysis[email_analysis['fecha_dt'].notna()].copy()
-    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer') \
-        if email_analysis['fecha_dt'].dt.tz is None else email_analysis['fecha_dt'].dt.tz_convert(COLOMBIA_TZ)
+    email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer') if email_analysis['fecha_dt'].dt.tz is None else email_analysis['fecha_dt'].dt.tz_convert(COLOMBIA_TZ)
     today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
     email_analysis['dias_antiguedad'] = (today - email_analysis['fecha_dt'].dt.normalize()).dt.days
 
