@@ -9,6 +9,7 @@ import pandas as pd
 import os
 from datetime import datetime
 import pytz
+from common.utils import COLOMBIA_TZ  # <--- Agrega esta línea
 
 st.title("💰 Portal de Tesorería - Facturas Faltantes en ERP")
 st.markdown(
@@ -100,8 +101,6 @@ facturas_en_erp_set = set(erp_df['num_factura'].unique())
 email_analysis = email_analysis[~email_analysis['num_factura'].isin(facturas_en_erp_set)]
 
 # --- Enriquecimiento: Días de antigüedad ---
-from app import COLOMBIA_TZ
-
 if not email_analysis.empty:
     email_analysis = email_analysis[email_analysis['fecha_dt'].notna()].copy()
     email_analysis['fecha_dt'] = pd.to_datetime(email_analysis['fecha_dt'], errors='coerce').dt.tz_localize(COLOMBIA_TZ, ambiguous='infer') if email_analysis['fecha_dt'].dt.tz is None else email_analysis['fecha_dt'].dt.tz_convert(COLOMBIA_TZ)
