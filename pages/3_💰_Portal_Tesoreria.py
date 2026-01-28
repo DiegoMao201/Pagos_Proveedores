@@ -83,36 +83,14 @@ if email_df.empty or erp_df.empty:
     st.warning("⚠️ No hay datos sincronizados. Ve al Dashboard General y actualiza la data.")
     st.stop()
 
-# ======================================================================================
-# --- 3. BARRA LATERAL DE FILTROS GLOBALES ---
-# ======================================================================================
+# --- C. Filtros de Proveedores Objetivo ---
+# Normaliza la columna de proveedor del correo
+if 'nombre_proveedor_correo' not in email_df.columns:
+    st.error("El DataFrame de correo no tiene la columna 'nombre_proveedor_correo'. Revisa la sincronización.")
+    st.stop()
 
-with st.sidebar:
-    st.header("🔍 Filtros de Auditoría")
-    
-    # 1. Filtro de Fechas (Afecta al análisis del CORREO)
-    if 'fecha_recepcion' in email_df.columns:
-        email_df['fecha_dt'] = pd.to_datetime(email_df['fecha_recepcion']).dt.date
-        min_date = email_df['fecha_dt'].min()
-        max_date = email_df['fecha_dt'].max()
-        
-        fechas_sel = st.date_input("Rango de Fecha (Recepción Correo)", [min_date, max_date])
-    
-    # 2. Filtro de Proveedores (Solo los del Excel Objetivo)
-    prov_seleccionados = st.multiselect(
-        "Filtrar por Proveedor:", 
-        options=lista_objetivo_raw,
-        default=lista_objetivo_raw # Por defecto todos
-    )
-
-# ======================================================================================
-# --- 4. MOTOR DE ANÁLISIS (CORE) ---
-# ======================================================================================
-
-# --- PASO 1: Filtrado Inicial ---
-# Filtramos el DF de Correo primero por los proveedores seleccionados en el sidebar
 prov_sel_norm = [normalizar_texto(p) for p in prov_seleccionados]
-email_analysis = email_df[email_df['nombre_proveedor'].apply(normalizar_texto).isin(prov_sel_norm)]
+email_analysis = email_df[email_df['nombre_proveedor_correo'].apply(normalizar_texto).isin(prov_sel_norm)]
 
 # Filtramos por fecha si aplica
 if isinstance(fechas_sel, list) and len(fechas_sel) == 2:
