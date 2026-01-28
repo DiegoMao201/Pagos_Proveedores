@@ -80,8 +80,10 @@ if email_df['fecha_dt'].notna().any():
         min_value=min_fecha,
         max_value=max_fecha
     )
-    # Si el usuario no cambia el filtro, por defecto muestra TODO el rango real
-    email_df = email_df[(email_df['fecha_dt'] >= pd.to_datetime(fechas_sel[0])) & (email_df['fecha_dt'] <= pd.to_datetime(fechas_sel[1]))]
+    # Convertir fechas_sel a timezone-aware
+    start_dt = pd.Timestamp(fechas_sel[0]).tz_localize(COLOMBIA_TZ)
+    end_dt = pd.Timestamp(fechas_sel[1]).tz_localize(COLOMBIA_TZ)
+    email_df = email_df[(email_df['fecha_dt'] >= start_dt) & (email_df['fecha_dt'] <= end_dt)]
 else:
     st.info("No hay fechas válidas en los datos de correo. Se mostrarán todas las facturas sin filtrar por fecha.")
 
