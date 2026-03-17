@@ -25,6 +25,7 @@ ALERTA_SOLO_CORREO_DIAS = 5
 CRITICO_SOLO_CORREO_DIAS = 8
 ALERTA_SOLO_ERP_DIAS = 5
 CRITICO_SOLO_ERP_DIAS = 10
+VENTANA_OPERATIVA_DIAS = 40
 
 
 def require_authentication() -> None:
@@ -463,6 +464,17 @@ def compute_summary(cases_df: pd.DataFrame) -> dict:
     }
 
 
+def priority_rank(prioridad: str) -> int:
+    ranking = {
+        "Critico": 0,
+        "Alerta": 1,
+        "Revision": 2,
+        "Seguimiento": 3,
+        "Sin fecha": 4,
+    }
+    return ranking.get(prioridad, 9)
+
+
 def metric_card(label: str, value: str, copy: str) -> str:
     return f"""
     <div class="mini-card">
@@ -632,94 +644,62 @@ if cases_df.empty:
     st.warning("Realiza la sincronizacion en Dashboard General para habilitar el centro operativo de alertas.")
     st.stop()
 
-cases_df = cases_df.sort_values(["prioridad", "dias_conciliacion", "valor"], ascending=[True, False, False]).reset_index(drop=True)
-summary = compute_summary(cases_df)
+today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+fecha_inicio_default = (today - pd.Timedelta(days=VENTANA_OPERATIVA_DIAS)).date()
+fecha_fin_default = today.date()
+
+cases_df["priority_order"] = cases_df["prioridad"].apply(priority_rank)
+cases_df = cases_df.sort_values(["priority_order", "dias_conciliacion", "valor"], ascending=[True, False, False]).reset_index(drop=True)
 
 st.markdown(
     f"""
     <div class="portal-shell">
         <div class="portal-kicker">Portal Tesoreria Ferreinox</div>
-        <h1 class="portal-title">Centro de alertas y envio de correos de conciliacion</h1>
+        <h1 class="portal-title">Alertas claras de conciliacion</h1>
         <p class="portal-subtitle">
-            Vista operativa para detectar facturas fuera de cruce entre ERP y correo, priorizarlas por dias de conciliacion
-            y despachar correos claros al proveedor desde una sola pantalla.
+            Solo muestra la ventana operativa util para decidir hoy que conciliar y que correo enviar.
         </p>
         <div class="badge-row">
-            {badge_markup(f'Fuente activa: {source_label}', 'badge-info')}
-            {badge_markup('Solo proveedores objetivo de PROVEDORES_CORREO.xlsx', 'badge-neutral')}
-            {badge_markup('Priorizacion automatica por antiguedad', 'badge-ok')}
-        </div>
-        <div class="hero-grid">
-            <div class="hero-pill">
-                <div class="hero-pill-label">Casos visibles</div>
-                <div class="hero-pill-value">{summary['total_casos']}</div>
-            </div>
-            <div class="hero-pill">
-                <div class="hero-pill-label">Listos para correo</div>
-                <div class="hero-pill-value">{summary['total_accionables']}</div>
-            </div>
-            <div class="hero-pill">
-                <div class="hero-pill-label">Criticos</div>
-                <div class="hero-pill-value">{summary['total_criticos']}</div>
-            </div>
-            <div class="hero-pill">
-                <div class="hero-pill-label">Valor en gestion</div>
-                <div class="hero-pill-value">{format_money(summary['valor_accionable'])}</div>
-            </div>
+            {badge_markup(f'Fuente: {source_label}', 'badge-info')}
+            {badge_markup(f'Ventana sugerida: ultimos {VENTANA_OPERATIVA_DIAS} dias', 'badge-ok')}
+            {badge_markup('Mas claro, menos ruido', 'badge-neutral')}
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-metric_cols = st.columns(4)
-metric_payload = [
-    ("Casos accionables", str(summary["total_accionables"]), "Documentos que ya deben generar gestion."),
-    ("Casos criticos", str(summary["total_criticos"]), "Alertas fuera de SLA operativo."),
-    ("Proveedores en alerta", str(summary["proveedores_alerta"]), "Frentes que requieren contacto hoy."),
-    ("Alertas medias", str(summary["total_alertas"]), "Casos listos para recordatorio formal."),
-]
-for col, payload in zip(metric_cols, metric_payload):
-    with col:
-        st.markdown(metric_card(*payload), unsafe_allow_html=True)
-
-rule_cols = st.columns(3)
-rule_copy = [
-    (
-        "Correo sin ERP",
-        f"Desde {ALERTA_SOLO_CORREO_DIAS} dias pasa a alerta. Desde {CRITICO_SOLO_CORREO_DIAS} dias se clasifica como critico y debe escalarse.",
-    ),
-    (
-        "ERP sin correo",
-        f"Desde {ALERTA_SOLO_ERP_DIAS} dias se solicita XML/PDF al proveedor. Desde {CRITICO_SOLO_ERP_DIAS} dias se trata como criticidad alta.",
-    ),
-    (
-        "Discrepancias",
-        "Se separan para revision operativa. No se disparan en lote hasta confirmar el origen de la diferencia.",
-    ),
-]
-for col, (title, copy) in zip(rule_cols, rule_copy):
-    with col:
-        st.markdown(f"<div class='rule-card'><h4>{escape(title)}</h4><p>{escape(copy)}</p></div>", unsafe_allow_html=True)
-
 st.markdown("<div class='section-card'>", unsafe_allow_html=True)
-st.markdown("<div class='section-title'>Filtros operativos</div>", unsafe_allow_html=True)
+st.markdown("<div class='section-title'>Filtros</div>", unsafe_allow_html=True)
 st.markdown(
-    "<div class='section-copy'>Recorta la bandeja para concentrarte en lo urgente, descargar un corte o preparar el correo del proveedor.</div>",
+    "<div class='section-copy'>La pagina arranca por defecto en los ultimos 40 dias para evitar basura historica del ERP.</div>",
     unsafe_allow_html=True,
 )
 
-filter_cols = st.columns([1.3, 1.1, 1.1, 1.4])
+filter_cols = st.columns([1.3, 1.1, 1.2, 1.4, 1.4])
 tipo_opts = ["Todos"] + sorted(cases_df["tipo_alerta"].dropna().unique().tolist())
 prio_opts = sorted(cases_df["prioridad"].dropna().unique().tolist())
 prov_opts = ["Todos"] + sorted(cases_df["proveedor"].dropna().unique().tolist())
 
 tipo_sel = filter_cols[0].selectbox("Tipo de alerta", tipo_opts)
 prio_sel = filter_cols[1].multiselect("Prioridad", prio_opts, default=prio_opts)
-solo_listos = filter_cols[2].checkbox("Solo listos para correo", value=False)
+solo_listos = filter_cols[2].checkbox("Solo correo listo", value=False)
 proveedor_sel = filter_cols[3].selectbox("Proveedor", prov_opts)
+fecha_sel = filter_cols[4].date_input(
+    "Ventana fecha base",
+    value=(fecha_inicio_default, fecha_fin_default),
+    min_value=(today - pd.Timedelta(days=365 * 3)).date(),
+    max_value=fecha_fin_default,
+)
 
 filtered_df = cases_df.copy()
+if isinstance(fecha_sel, tuple) and len(fecha_sel) == 2:
+    fecha_inicio_sel, fecha_fin_sel = fecha_sel
+else:
+    fecha_inicio_sel = fecha_fin_sel = fecha_sel
+
+mask_fecha = filtered_df["fecha_base"].dt.date.between(fecha_inicio_sel, fecha_fin_sel, inclusive="both")
+filtered_df = filtered_df[mask_fecha.fillna(False)].copy()
 if tipo_sel != "Todos":
     filtered_df = filtered_df[filtered_df["tipo_alerta"] == tipo_sel]
 if prio_sel:
@@ -729,9 +709,26 @@ if solo_listos:
 if proveedor_sel != "Todos":
     filtered_df = filtered_df[filtered_df["proveedor"] == proveedor_sel]
 
+filtered_df = filtered_df.sort_values(["priority_order", "dias_conciliacion", "valor"], ascending=[True, False, False]).reset_index(drop=True)
+summary = compute_summary(filtered_df)
+
 st.markdown("</div>", unsafe_allow_html=True)
 
-tab_radar, tab_envio, tab_bitacora = st.tabs(["Radar operativo", "Centro de envio", "Bitacora"])
+metric_cols = st.columns(4)
+metric_payload = [
+    ("Casos", str(summary["total_casos"]), "Lo que si importa en la ventana elegida."),
+    ("Para correo", str(summary["total_accionables"]), "Ya deberian gestionarse."),
+    ("Criticos", str(summary["total_criticos"]), "Requieren atencion inmediata."),
+    ("Valor", format_money(summary["valor_accionable"]), "Monto hoy en seguimiento."),
+]
+for col, payload in zip(metric_cols, metric_payload):
+    with col:
+        st.markdown(metric_card(*payload), unsafe_allow_html=True)
+
+if filtered_df.empty:
+    st.info("No hay alertas en la ventana seleccionada. Si necesitas revisar historia, amplia el filtro de fechas.")
+
+tab_radar, tab_envio, tab_bitacora = st.tabs(["Radar", "Enviar", "Bitacora"])
 
 with tab_radar:
     radar_cols = st.columns([1.1, 0.9])
@@ -742,7 +739,7 @@ with tab_radar:
             .unstack(fill_value=0)
             .sort_index()
         )
-        st.markdown("### Volumen por tipo y prioridad")
+        st.markdown("### Donde esta el problema")
         if resumen_tipo.empty:
             st.info("Los filtros actuales no devuelven casos.")
         else:
@@ -756,7 +753,7 @@ with tab_radar:
             .head(8)
             .reset_index()
         )
-        st.markdown("### Proveedores mas expuestos")
+        st.markdown("### Proveedores a tocar")
         st.dataframe(
             top_proveedores,
             use_container_width=True,
@@ -768,7 +765,7 @@ with tab_radar:
             },
         )
 
-    st.markdown("### Bandeja de trabajo")
+    st.markdown("### Bandeja clara")
     radar_view = filtered_df[
         [
             "prioridad",
@@ -788,13 +785,13 @@ with tab_radar:
         hide_index=True,
         column_config={
             "prioridad": "Prioridad",
-            "tipo_alerta": "Tipo de alerta",
+            "tipo_alerta": "Novedad",
             "proveedor": "Proveedor",
             "num_factura": "Factura",
             "fecha_base_txt": "Fecha base",
             "dias_conciliacion": st.column_config.NumberColumn("Dias", format="%d"),
             "valor": st.column_config.NumberColumn("Valor", format="$ %d"),
-            "accion_sugerida": "Accion sugerida",
+            "accion_sugerida": "Que hacer",
             "listo_para_correo": st.column_config.CheckboxColumn("Listo correo"),
         },
     )
@@ -810,8 +807,8 @@ with tab_radar:
 
 with tab_envio:
     actionable_df = filtered_df[filtered_df["listo_para_correo"]].copy()
-    st.markdown("### Preparador de correo por proveedor")
-    st.caption("Como PROVEDORES_CORREO.xlsx no contiene correos, este modulo permite capturar y reutilizar contactos dentro de la sesion actual.")
+    st.markdown("### Correo por proveedor")
+    st.caption("Captura el destinatario, elige las facturas y envia.")
 
     if actionable_df.empty:
         st.info("No hay casos listos para correo con los filtros actuales.")
