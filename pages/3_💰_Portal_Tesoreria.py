@@ -450,6 +450,94 @@ def build_cases_from_raw_session(proveedores_objetivo_norm: list[str]) -> pd.Dat
     return pd.concat(frames, ignore_index=True)
 
 
+def resolve_detail_action(estado_conciliacion: str) -> str:
+    if estado_conciliacion == "📧 Solo en Correo":
+        return "Confirmar radicacion y estado de recepcion"
+    if estado_conciliacion == "📬 Pendiente de Correo":
+        return "Enviar XML y PDF"
+    if estado_conciliacion == "⚠️ Discrepancia de Valor":
+        return "Aclarar diferencia de valor"
+    if estado_conciliacion == "✅ Conciliada":
+        return "Sin accion"
+    return "Revisar"
+
+
+def build_reconciliation_detail(master_df: pd.DataFrame, proveedores_objetivo_norm: list[str]) -> pd.DataFrame:
+    if master_df.empty:
+        return pd.DataFrame()
+
+    df = master_df.copy()
+    if "nombre_proveedor" not in df.columns:
+        if "nombre_proveedor_erp" in df.columns or "nombre_proveedor_correo" in df.columns:
+            df["nombre_proveedor"] = df.get("nombre_proveedor_erp", pd.Series(index=df.index)).fillna(
+                df.get("nombre_proveedor_correo", pd.Series(index=df.index))
+            )
+        else:
+            return pd.DataFrame()
+
+    if "estado_conciliacion" not in df.columns or "num_factura" not in df.columns:
+        return pd.DataFrame()
+
+    df["proveedor_norm"] = df["nombre_proveedor"].apply(normalizar_texto)
+    df = df[df["proveedor_norm"].isin(proveedores_objetivo_norm)].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    for col in ["fecha_emision_erp", "fecha_vencimiento_erp", "fecha_emision_correo", "fecha_vencimiento_correo"]:
+        if col in df.columns:
+            df[col] = coerce_datetime(df[col])
+
+    for col in ["valor_total_erp", "valor_total_correo"]:
+        if col in df.columns:
+            df[col] = coerce_numeric(df[col])
+
+    fecha_erp = df.get("fecha_emision_erp", pd.Series(pd.NaT, index=df.index))
+    fecha_correo = df.get("fecha_emision_correo", pd.Series(pd.NaT, index=df.index))
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+
+    df["fecha_referencia"] = fecha_erp.fillna(fecha_correo)
+    df["dias_desde_emision"] = (today - df["fecha_referencia"].dt.normalize()).dt.days.fillna(-1)
+    df["fecha_referencia_txt"] = df["fecha_referencia"].dt.strftime("%Y-%m-%d").fillna("Sin fecha")
+    df["valor_total_erp"] = df.get("valor_total_erp", pd.Series(0, index=df.index)).fillna(0)
+    df["valor_total_correo"] = df.get("valor_total_correo", pd.Series(0, index=df.index)).fillna(0)
+    df["accion_cliente"] = df["estado_conciliacion"].apply(resolve_detail_action)
+    return df
+
+
+def build_provider_message(proveedor: str, detail_df: pd.DataFrame) -> str:
+    mensaje = f"Estimado proveedor {proveedor},\n\n"
+    faltan_en_erp = detail_df[detail_df["estado_conciliacion"] == "📧 Solo en Correo"]
+    faltan_en_correo = detail_df[detail_df["estado_conciliacion"] == "📬 Pendiente de Correo"]
+    discrepancias = detail_df[detail_df["estado_conciliacion"] == "⚠️ Discrepancia de Valor"]
+
+    if not faltan_en_erp.empty or not faltan_en_correo.empty or not discrepancias.empty:
+        mensaje += "Tras la revision de conciliacion encontramos lo siguiente:\n\n"
+        if not faltan_en_erp.empty:
+            mensaje += "Facturas que aparecen en correo pero aun no vemos conciliadas en ERP:\n"
+            for _, row in faltan_en_erp.iterrows():
+                mensaje += f"- Factura: {row['num_factura']} | Valor correo: {format_money(row.get('valor_total_correo', 0))} | Accion: {row['accion_cliente']}\n"
+            mensaje += "\n"
+        if not faltan_en_correo.empty:
+            mensaje += "Facturas que aparecen en ERP pero requieren soporte electronico:\n"
+            for _, row in faltan_en_correo.iterrows():
+                mensaje += f"- Factura: {row['num_factura']} | Valor ERP: {format_money(row.get('valor_total_erp', 0))} | Accion: {row['accion_cliente']}\n"
+            mensaje += "\n"
+        if not discrepancias.empty:
+            mensaje += "Facturas con diferencia entre ERP y correo:\n"
+            for _, row in discrepancias.iterrows():
+                mensaje += (
+                    f"- Factura: {row['num_factura']} | ERP: {format_money(row.get('valor_total_erp', 0))}"
+                    f" | Correo: {format_money(row.get('valor_total_correo', 0))} | Accion: {row['accion_cliente']}\n"
+                )
+            mensaje += "\n"
+        mensaje += "Por favor confirme o envie la informacion faltante para cerrar la conciliacion.\n\n"
+    else:
+        mensaje += "Todas las facturas de la ventana actual se encuentran conciliadas correctamente.\n\n"
+
+    mensaje += "Gracias por su colaboracion.\nTesoreria Ferreinox S.A.S. BIC"
+    return mensaje
+
+
 def compute_summary(cases_df: pd.DataFrame) -> dict:
     actionable = cases_df[cases_df["listo_para_correo"]].copy()
     criticos = actionable[actionable["prioridad"] == "Critico"]
@@ -497,7 +585,7 @@ def split_emails(raw_value: str) -> list[str]:
     return valid
 
 
-def generate_email_content(proveedor: str, casos_df: pd.DataFrame, tono: str) -> tuple[str, str, str]:
+def generate_email_content(proveedor: str, casos_df: pd.DataFrame, tono: str, detail_df: pd.DataFrame | None = None) -> tuple[str, str, str]:
     casos_df = casos_df.sort_values(["prioridad", "dias_conciliacion"], ascending=[True, False]).copy()
     total_valor = format_money(casos_df["valor"].sum())
     max_dias = int(casos_df["dias_conciliacion"].max()) if not casos_df.empty else 0
@@ -516,35 +604,57 @@ def generate_email_content(proveedor: str, casos_df: pd.DataFrame, tono: str) ->
     resumen_tipo = ", ".join(sorted(casos_df["tipo_alerta"].unique().tolist()))
     subject = f"Ferreinox | Alerta de conciliacion {proveedor} | {len(casos_df)} documentos"
 
-    lineas = []
-    for _, row in casos_df.iterrows():
-        lineas.append(
-            f"- Factura {row['num_factura']} | {row['tipo_alerta']} | {row['fecha_base_txt']} | {int(row['dias_conciliacion']) if row['dias_conciliacion'] >= 0 else 'Sin fecha'} dias | {format_money(row['valor'])}"
+    if detail_df is not None and not detail_df.empty:
+        plain_text = (
+            f"Estimado proveedor {proveedor},\n\n"
+            f"{intro_map[tono]}\n\n"
+            f"Resumen: {len(detail_df)} documentos en revision, valor estimado {total_valor}, antiguedad maxima {max_dias} dias.\n"
+            f"Tipo de novedad: {resumen_tipo}.\n\n"
+            + build_provider_message(proveedor, detail_df).split("\n\n", 1)[1]
         )
 
-    plain_text = (
-        f"Estimado proveedor {proveedor},\n\n"
-        f"{intro_map[tono]}\n\n"
-        f"Resumen: {len(casos_df)} documentos, valor estimado {total_valor}, antiguedad maxima {max_dias} dias.\n"
-        f"Tipo de novedad: {resumen_tipo}.\n\n"
-        + "\n".join(lineas)
-        + "\n\n"
-        + cierre_map[tono]
-        + "\n\nTesoreria Ferreinox S.A.S. BIC"
-    )
+        filas_html = "".join(
+            [
+                "<tr>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(str(row['num_factura']))}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['estado_conciliacion'])}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:right'>{escape(format_money(row.get('valor_total_erp', 0)))}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:right'>{escape(format_money(row.get('valor_total_correo', 0)))}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['accion_cliente'])}</td>"
+                "</tr>"
+                for _, row in detail_df.iterrows()
+            ]
+        )
+    else:
+        lineas = []
+        for _, row in casos_df.iterrows():
+            lineas.append(
+                f"- Factura {row['num_factura']} | {row['tipo_alerta']} | {row['fecha_base_txt']} | {int(row['dias_conciliacion']) if row['dias_conciliacion'] >= 0 else 'Sin fecha'} dias | {format_money(row['valor'])}"
+            )
 
-    filas_html = "".join(
-        [
-            "<tr>"
-            f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(str(row['num_factura']))}</td>"
-            f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['tipo_alerta'])}</td>"
-            f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['fecha_base_txt'])}</td>"
-            f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:center'>{'Sin fecha' if row['dias_conciliacion'] < 0 else int(row['dias_conciliacion'])}</td>"
-            f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:right'>{escape(format_money(row['valor']))}</td>"
-            "</tr>"
-            for _, row in casos_df.iterrows()
-        ]
-    )
+        plain_text = (
+            f"Estimado proveedor {proveedor},\n\n"
+            f"{intro_map[tono]}\n\n"
+            f"Resumen: {len(casos_df)} documentos, valor estimado {total_valor}, antiguedad maxima {max_dias} dias.\n"
+            f"Tipo de novedad: {resumen_tipo}.\n\n"
+            + "\n".join(lineas)
+            + "\n\n"
+            + cierre_map[tono]
+            + "\n\nTesoreria Ferreinox S.A.S. BIC"
+        )
+
+        filas_html = "".join(
+            [
+                "<tr>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(str(row['num_factura']))}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['tipo_alerta'])}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5'>{escape(row['fecha_base_txt'])}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:center'>{'Sin fecha' if row['dias_conciliacion'] < 0 else int(row['dias_conciliacion'])}</td>"
+                f"<td style='padding:8px;border-bottom:1px solid #e6edf5;text-align:right'>{escape(format_money(row['valor']))}</td>"
+                "</tr>"
+                for _, row in casos_df.iterrows()
+            ]
+        )
 
     html_body = f"""
     <div style="font-family:Segoe UI, Arial, sans-serif;color:#17324d;max-width:760px">
@@ -573,10 +683,10 @@ def generate_email_content(proveedor: str, casos_df: pd.DataFrame, tono: str) ->
             <thead>
                 <tr style="background:#f7fbff;color:#34506a;text-align:left">
                     <th style='padding:10px'>Factura</th>
-                    <th style='padding:10px'>Novedad</th>
-                    <th style='padding:10px'>Fecha base</th>
-                    <th style='padding:10px;text-align:center'>Dias</th>
-                    <th style='padding:10px;text-align:right'>Valor</th>
+                    <th style='padding:10px'>Estado</th>
+                    <th style='padding:10px;text-align:right'>ERP</th>
+                    <th style='padding:10px;text-align:right'>Correo</th>
+                    <th style='padding:10px'>Accion</th>
                 </tr>
             </thead>
             <tbody>{filas_html}</tbody>
@@ -619,6 +729,7 @@ if "tesoreria_envios_log" not in st.session_state:
 _, proveedores_objetivo_norm = load_target_suppliers()
 master_df, source_label = load_master_source()
 cases_df = build_cases_from_master(master_df, proveedores_objetivo_norm)
+detail_df = build_reconciliation_detail(master_df, proveedores_objetivo_norm)
 
 if cases_df.empty:
     cases_df = build_cases_from_raw_session(proveedores_objetivo_norm)
@@ -712,6 +823,14 @@ if proveedor_sel != "Todos":
 filtered_df = filtered_df.sort_values(["priority_order", "dias_conciliacion", "valor"], ascending=[True, False, False]).reset_index(drop=True)
 summary = compute_summary(filtered_df)
 
+filtered_detail_df = detail_df.copy()
+if not filtered_detail_df.empty:
+    mask_detail_fecha = filtered_detail_df["fecha_referencia"].dt.date.between(fecha_inicio_sel, fecha_fin_sel, inclusive="both")
+    filtered_detail_df = filtered_detail_df[mask_detail_fecha.fillna(False)].copy()
+    if proveedor_sel != "Todos":
+        filtered_detail_df = filtered_detail_df[filtered_detail_df["nombre_proveedor"] == proveedor_sel]
+    filtered_detail_df = filtered_detail_df.sort_values(["fecha_referencia", "num_factura"], ascending=[False, True])
+
 st.markdown("</div>", unsafe_allow_html=True)
 
 metric_cols = st.columns(4)
@@ -796,6 +915,46 @@ with tab_radar:
         },
     )
 
+    st.markdown("### Cruce detallado por proveedor")
+    if filtered_detail_df.empty:
+        st.info("No hay detalle conciliado del proveedor en la ventana seleccionada.")
+    else:
+        proveedores_detalle = sorted(filtered_detail_df["nombre_proveedor"].dropna().unique().tolist())
+        proveedor_detalle_default = proveedor_sel if proveedor_sel != "Todos" and proveedor_sel in proveedores_detalle else proveedores_detalle[0]
+        proveedor_detalle = st.selectbox("Proveedor para ver cruce completo", proveedores_detalle, index=proveedores_detalle.index(proveedor_detalle_default))
+        detalle_proveedor_df = filtered_detail_df[filtered_detail_df["nombre_proveedor"] == proveedor_detalle].copy()
+        resumen_detalle_cols = st.columns(3)
+        resumen_detalle_cols[0].metric("Documentos", len(detalle_proveedor_df))
+        resumen_detalle_cols[1].metric("No conciliados", int((detalle_proveedor_df["estado_conciliacion"] != "✅ Conciliada").sum()))
+        resumen_detalle_cols[2].metric("Conciliados", int((detalle_proveedor_df["estado_conciliacion"] == "✅ Conciliada").sum()))
+        detalle_view = detalle_proveedor_df[
+            [
+                "num_factura",
+                "valor_total_erp",
+                "valor_total_correo",
+                "fecha_emision_erp",
+                "fecha_vencimiento_erp",
+                "fecha_emision_correo",
+                "estado_conciliacion",
+                "accion_cliente",
+            ]
+        ].copy()
+        st.dataframe(
+            detalle_view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "num_factura": "Factura",
+                "valor_total_erp": st.column_config.NumberColumn("ERP", format="$ %d"),
+                "valor_total_correo": st.column_config.NumberColumn("Correo", format="$ %d"),
+                "fecha_emision_erp": st.column_config.DateColumn("Emision ERP", format="YYYY-MM-DD"),
+                "fecha_vencimiento_erp": st.column_config.DateColumn("Vence ERP", format="YYYY-MM-DD"),
+                "fecha_emision_correo": st.column_config.DateColumn("Emision correo", format="YYYY-MM-DD"),
+                "estado_conciliacion": "Estado",
+                "accion_cliente": "Accion concreta",
+            },
+        )
+
     csv_data = filtered_df.drop(columns=["fecha_base"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "Descargar corte operativo CSV",
@@ -816,11 +975,44 @@ with tab_envio:
         proveedores_envio = sorted(actionable_df["proveedor"].unique().tolist())
         proveedor_envio = st.selectbox("Proveedor a gestionar", proveedores_envio)
         provider_cases = actionable_df[actionable_df["proveedor"] == proveedor_envio].copy()
+        provider_detail_df = filtered_detail_df[filtered_detail_df["nombre_proveedor"] == proveedor_envio].copy() if not filtered_detail_df.empty else pd.DataFrame()
 
         tipos_proveedor = ["Todas las alertas"] + sorted(provider_cases["tipo_alerta"].unique().tolist())
         tipo_envio_sel = st.radio("Cobertura del correo", tipos_proveedor, horizontal=True)
         if tipo_envio_sel != "Todas las alertas":
             provider_cases = provider_cases[provider_cases["tipo_alerta"] == tipo_envio_sel].copy()
+            if not provider_detail_df.empty:
+                estados_mapeados = {
+                    SOLO_CORREO: "📧 Solo en Correo",
+                    SOLO_ERP: "📬 Pendiente de Correo",
+                    DISCREPANCIA: "⚠️ Discrepancia de Valor",
+                }
+                provider_detail_df = provider_detail_df[
+                    provider_detail_df["estado_conciliacion"] == estados_mapeados.get(tipo_envio_sel, provider_detail_df["estado_conciliacion"])
+                ].copy()
+
+        if not provider_detail_df.empty:
+            st.markdown("#### Cruce del proveedor")
+            st.dataframe(
+                provider_detail_df[
+                    [
+                        "num_factura",
+                        "valor_total_erp",
+                        "valor_total_correo",
+                        "estado_conciliacion",
+                        "accion_cliente",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "num_factura": "Factura",
+                    "valor_total_erp": st.column_config.NumberColumn("ERP", format="$ %d"),
+                    "valor_total_correo": st.column_config.NumberColumn("Correo", format="$ %d"),
+                    "estado_conciliacion": "Estado",
+                    "accion_cliente": "Accion",
+                },
+            )
 
         provider_cases = provider_cases.sort_values(["prioridad", "dias_conciliacion"], ascending=[True, False]).copy()
         provider_cases["seleccionar"] = True
@@ -877,7 +1069,12 @@ with tab_envio:
         if selected_cases.empty:
             st.warning("Selecciona al menos una factura para construir el correo.")
         else:
-            subject, plain_text, html_body = generate_email_content(proveedor_envio, selected_cases, tono)
+            selected_detail_df = pd.DataFrame()
+            if not provider_detail_df.empty:
+                selected_detail_df = provider_detail_df[
+                    provider_detail_df["num_factura"].astype(str).isin(selected_cases["num_factura"].astype(str))
+                ].copy()
+            subject, plain_text, html_body = generate_email_content(proveedor_envio, selected_cases, tono, selected_detail_df)
             preview_cols = st.columns([1.0, 1.0])
             with preview_cols[0]:
                 st.markdown("#### Resumen del envio")
