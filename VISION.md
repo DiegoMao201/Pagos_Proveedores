@@ -1,5 +1,53 @@
 # VISION: Torre de Control de Proveedores
 
+## Resumen de Avances y Estado Actual (Marzo 2026)
+
+### 1. Integración y Sincronización
+- La app conecta y sincroniza datos de facturación electrónica desde correo (IMAP Gmail), cartera activa (ICG Manager) y ERP.
+- Solo se consideran proveedores definidos en PROVEDORES_CORREO.xlsx para todos los cruces y visualizaciones.
+- El Dashboard General permite sincronizar y actualizar todos los datos de manera centralizada.
+
+### 2. Conciliación Inteligente
+- Se cruzan tres fuentes: correo, cartera y ERP.
+- Reglas implementadas:
+    - Si una factura está en el correo y no en la cartera activa, se asume que ya fue pagada o no es relevante para conciliación.
+    - Si una factura está en el correo, está en cartera activa, pero no en el ERP, y tiene entre 5 y 8 días de antigüedad, se alerta que la mercancía no ha llegado y se envía correo automático.
+    - Si una factura está en el ERP y no en el correo, y pasan 5 días sin conciliar, se asume que el documento electrónico nunca llegó y se envía correo automático.
+    - Si una factura está en el correo y tiene más de 15 días, pero ya no está en cartera activa, se asume que fue pagada y no requiere acción.
+- Portal Tesorería fue rediseñado como centro operativo de alertas: prioriza casos por días de conciliación, separa radar operativo, centro de envío y bitácora, y permite construir correos por proveedor con selección de facturas.
+
+### 3. Visualización y Experiencia de Usuario
+- Branding profesional Ferreinox en todas las páginas principales.
+- KPIs claros: casos visibles, casos listos para correo, criticidad, proveedores en alerta y valor total en gestión.
+- Tablas separadas por tipo de alerta, con días desde emisión, prioridad y acción sugerida.
+- Portal Tesorería ahora ofrece una experiencia más ejecutiva y operativa, pensada para que el usuario entienda qué hacer apenas entra a la página.
+
+### 4. Envío de Correos Automáticos
+- Implementado envío de correos automáticos para casos de alerta, con mensajes estructurados, vista previa, tono configurable y resumen por proveedor.
+- Confirmación visual y bitácora de envíos dentro de la sesión.
+- Como PROVEDORES_CORREO.xlsx hoy no contiene correos, Portal Tesorería permite captura manual y reutilización temporal de destinatarios en sesión.
+
+### 5. Documentación y Contexto
+- Este archivo VISION.md se mantiene actualizado como fuente de verdad y contexto para el desarrollo y la IA.
+
+---
+
+## Próximos Pasos y Mejoras Pendientes
+
+- Unificar y mejorar la gestión de condiciones comerciales por proveedor (plazos, descuentos, alertas) y permitir su edición fácil.
+- Persistir contactos de correo de proveedores en una fuente estable para no depender solo de la sesión actual.
+- Integrar edición directa de destinatarios y responsables de pago por proveedor.
+- Integrar más reportes y alertas automáticas (WhatsApp, paneles de riesgo, etc.).
+- Seguir documentando cada avance y decisión relevante aquí.
+
+---
+
+## Prompt de Contexto para IA y Desarrollo
+
+"""
+Eres una IA experta en automatización y control de cuentas por pagar para empresas industriales. Tu objetivo es mantener una torre de control profesional, conectada y clara, que cruce facturación electrónica recibida por correo, cartera activa y ERP, aplicando reglas de negocio inteligentes y permitiendo acciones automáticas (como envío de correos) para resolver discrepancias. Todo el flujo debe estar documentado, guiado y alineado con la identidad de Ferreinox S.A.S. BIC.
+"""
+
 ## Estado Actual de la Aplicación (2026)
 
 ### 1. Conexión y Extracción de Facturas desde Correo Electrónico
@@ -18,6 +66,7 @@
 - Identificación de:
     - Facturas recibidas por correo no registradas en ERP.
     - Facturas en ERP sin respaldo de correo.
+    - Facturas con discrepancias para revisión operativa antes de escalar al proveedor.
     - Facturas próximas a vencer, vencidas y elegibles para descuentos.
 - Visualización de resultados en dashboards y actualización en Google Sheets.
 
@@ -91,7 +140,11 @@ Transformar la aplicación en una torre de control inteligente para la gestión 
     - Si una factura está en el correo, está en cartera activa, pero no en el ERP, y tiene entre 5 y 8 días de antigüedad, se alerta que la mercancía no ha llegado y se envía correo automático.
     - Si una factura está en el ERP y no en el correo, y pasan 5 días sin conciliar, se asume que el documento electrónico nunca llegó y se envía correo automático.
     - Si una factura está en el correo y tiene más de 15 días, pero ya no está en cartera activa, se asume que fue pagada y no requiere acción.
-- Visualización clara y guiada de cada caso, con botones para envío de correos automáticos según corresponda.
+- Portal Tesorería clasifica prioridades así:
+    - Correo sin ERP: seguimiento antes de 5 días, alerta desde 5 días, crítico desde 8 días.
+    - ERP sin correo: seguimiento antes de 5 días, alerta desde 5 días, crítico desde 10 días.
+    - Discrepancias: quedan separadas para revisión operativa y no se disparan automáticamente en lote.
+- Visualización clara y guiada de cada caso, con filtros, priorización, selección por proveedor y envío de correos automáticos según corresponda.
 
 ---
 
@@ -104,7 +157,9 @@ Transformar la aplicación en una torre de control inteligente para la gestión 
 ---
 
 ## Notas y Decisiones
-- [ ] Aquí se irán documentando cambios, mejoras, reglas y decisiones importantes.
+- Marzo 2026: Portal Tesorería deja de ser una tabla simple de facturas faltantes y pasa a ser un centro operativo de alertas y envío de correos.
+- Marzo 2026: Se confirmó que PROVEDORES_CORREO.xlsx solo contiene código, NIF y proveedor; no contiene correos de contacto.
+- Marzo 2026: Mientras se define una fuente persistente de contactos, la captura de destinatarios se resuelve temporalmente en sesión dentro del Portal Tesorería.
 
 ---
 
