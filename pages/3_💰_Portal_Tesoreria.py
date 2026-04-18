@@ -197,7 +197,7 @@ st.markdown(
             <div class="hero-pill"><div class="hero-pill-label">Ahorro capturable</div><div class="hero-pill-value">{format_currency(total_discount)}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Proveedores</div><div class="hero-pill-value">{n_providers:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Vencidas + Riesgo 48h</div><div class="hero-pill-value">{n_overdue + n_risk:,}</div></div>
-            <div class="hero-pill"><div class="hero-pill-label">Solo en correo</div><div class="hero-pill-value">{only_email_count:,}</div></div>
+            <div class="hero-pill"><div class="hero-pill-label">Correo sin reflejo ERP</div><div class="hero-pill-value">{only_email_count:,}</div></div>
         </div>
     </div>
     """,
@@ -301,7 +301,7 @@ conciliated_df = filtered_master[
 tab_overview, tab_pay, tab_email, tab_unrec, tab_conc, tab_aging, tab_provider, tab_trace = st.tabs([
     "📊 Resumen Ejecutivo",
     f"💸 Que pagar ({len(pay_now_df):,})",
-    f"📨 Solo correo ({len(only_email_df):,})",
+    f"📨 Correo sin reflejo ERP ({len(only_email_df):,})",
     f"⚠️ No conciliado ({len(unresolved_df):,})",
     f"✅ Conciliado ({len(conciliated_df):,})",
     "📈 Analisis Aging",
@@ -458,15 +458,16 @@ with tab_pay:
 # ── Tab 3: Solo correo ─────────────────────────────────────────────
 with tab_email:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="table-header">Facturas en correo que faltan por ingresar a ERP</div>', unsafe_allow_html=True)
-    st.markdown('<div class="table-sub">Documentos XML detectados en el buzon que no tienen contraparte en cartera ERP.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-header">Facturas con correo pero sin reflejo en ERP</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-sub">Documentos XML detectados en el buzón que no aparecen en las fuentes ERP descargadas desde Dropbox.</div>', unsafe_allow_html=True)
 
     if only_email_df.empty:
-        st.success("No hay facturas que estén solo en correo para este filtro.")
+        st.success("No hay facturas con correo sin reflejo en ERP para este filtro.")
     else:
         ec1, ec2 = st.columns(2)
-        ec1.metric("Facturas solo en correo", f"{len(only_email_df):,}")
+        ec1.metric("Facturas sin reflejo ERP", f"{len(only_email_df):,}")
         ec2.metric("Valor total correo", format_currency(only_email_df["valor_total_correo"].sum()))
+        st.caption("Estas facturas no fueron encontradas en la cartera pendiente ni en la cartera saldada que la app descargó desde Dropbox.")
 
         st.dataframe(
             safe_display(only_email_df, [

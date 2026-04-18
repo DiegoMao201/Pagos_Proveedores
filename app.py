@@ -502,7 +502,7 @@ def display_master_overview(payload: dict) -> None:
     unresolved_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_conciliacion"] == "Pendiente sin correo")].copy()
     conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Pendiente anterior a lectura"])] .copy()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["💸 Que Debo Pagar", "📨 Falta Ingresar", "⚠️ No Conciliado", "✅ Conciliado"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💸 Que Debo Pagar", "📨 Correo Sin Reflejo ERP", "⚠️ No Conciliado", "✅ Conciliado"])
 
     with tab1:
         if pay_now_df.empty:
@@ -530,8 +530,9 @@ def display_master_overview(payload: dict) -> None:
 
     with tab2:
         if only_email_df.empty:
-            st.success("No hay facturas que estén solo en correo sin aparecer en ERP.")
+            st.success("No hay facturas con correo que no aparezcan en las fuentes ERP de Dropbox.")
         else:
+            st.caption("Estas facturas tienen soporte de correo, pero no existen en la cartera pendiente ni en la cartera saldada descargadas desde Dropbox.")
             st.dataframe(
                 safe_display(only_email_df, [
                     "proveedor_correo",

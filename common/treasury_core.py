@@ -306,6 +306,47 @@ def prepare_invoice_key(df: pd.DataFrame, provider_col: str, invoice_col: str = 
     return prepared
 
 
+def first_non_empty_value(series: pd.Series) -> Any:
+    valid = series.dropna().astype(str).str.strip()
+    valid = valid[valid.ne("") & valid.ne("nan") & valid.ne("None")]
+    if not valid.empty:
+        return valid.iloc[0]
+    non_null = series.dropna()
+    return non_null.iloc[0] if not non_null.empty else ""
+
+
+def aggregate_erp_invoice_rows(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    prepared = df.copy()
+    if "invoice_key" not in prepared.columns:
+        provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in prepared.columns else "proveedor_correo"
+        prepared = prepare_invoice_key(prepared, provider_col)
+
+    agg_map: dict[str, Any] = {
+        "nombre_proveedor_erp": first_non_empty_value,
+        "serie": first_non_empty_value,
+        "num_entrada": first_non_empty_value,
+        "num_factura": first_non_empty_value,
+        "fecha_emision_erp": "min",
+        "fecha_vencimiento_erp": "max",
+        "valor_total_erp": "sum",
+        "proveedor_norm": first_non_empty_value,
+    }
+    if "doc_erp" in prepared.columns:
+        agg_map["doc_erp"] = first_non_empty_value
+    if "estado_documento" in prepared.columns:
+        agg_map["estado_documento"] = first_non_empty_value
+
+    agg_map = {key: value for key, value in agg_map.items() if key in prepared.columns}
+    aggregated = prepared.groupby("invoice_key", dropna=False, as_index=False).agg(agg_map)
+    counts = prepared.groupby("invoice_key", dropna=False).size().reset_index(name="erp_movimientos")
+    aggregated = aggregated.merge(counts, on="invoice_key", how="left")
+    aggregated["estado_erp_fuente"] = source_label
+    return aggregated
+
+
 def build_provider_matching_maps(provider_df: pd.DataFrame) -> dict[str, dict[str, str]]:
     if provider_df.empty:
         return {
@@ -611,8 +652,7 @@ def load_pending_invoices_from_dropbox() -> pd.DataFrame:
             )
 
         df = prepare_invoice_key(df, "nombre_proveedor_erp")
-        df["estado_erp_fuente"] = "Pendiente"
-        return df
+        return aggregate_erp_invoice_rows(df, "Pendiente")
     except Exception as exc:
         st.error(f"❌ Error cargando cartera pendiente desde Dropbox: {exc}")
         return pd.DataFrame(columns=PENDING_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
@@ -645,8 +685,7 @@ def load_paid_invoices_from_dropbox() -> pd.DataFrame:
         df["fecha_vencimiento_erp"] = coerce_datetime(df["fecha_vencimiento_erp"])
         df = prepare_invoice_key(df, "nombre_proveedor_erp")
         df["doc_erp"] = ""
-        df["estado_erp_fuente"] = "Saldada"
-        return df
+        return aggregate_erp_invoice_rows(df, "Saldada")
     except Exception as exc:
         st.error(f"❌ Error cargando cartera saldada desde Dropbox: {exc}")
         return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
@@ -1020,6 +1059,7 @@ def build_master_dataframe(
 
     combined["en_pendiente"] = combined["num_factura_pend"].notna() if "num_factura_pend" in combined.columns else False
     combined["en_saldada"] = combined["num_factura_paid"].notna() if "num_factura_paid" in combined.columns else False
+    combined["movimiento_mixto_erp"] = combined["en_pendiente"] & combined["en_saldada"]
     combined["en_correo"] = combined["num_factura"].notna() & combined["proveedor_correo"].astype(str).ne("")
 
     # Determine which invoices are older than the email reading window.
@@ -1032,15 +1072,13 @@ def build_master_dataframe(
     combined["anterior_a_lectura_correo"] = _fe.notna() & (_fe < email_window_start)
 
     conditions = [
-        combined["en_pendiente"] & combined["en_saldada"],
         combined["en_pendiente"],
         combined["en_saldada"],
     ]
-    choices = ["Inconsistente ERP", "Pendiente", "Saldada"]
+    choices = ["Pendiente", "Saldada"]
     combined["estado_erp"] = pd.Series(pd.NA, index=combined.index, dtype="object")
     combined.loc[conditions[0], "estado_erp"] = choices[0]
     combined.loc[conditions[1] & combined["estado_erp"].isna(), "estado_erp"] = choices[1]
-    combined.loc[conditions[2] & combined["estado_erp"].isna(), "estado_erp"] = choices[2]
     combined["estado_erp"] = combined["estado_erp"].fillna("No ERP")
 
     combined["diferencia_valor"] = (combined["valor_erp"].fillna(0) - combined["valor_total_correo"].fillna(0)).abs()
@@ -1049,8 +1087,6 @@ def build_master_dataframe(
     combined["detalle_valor"] = value_status.apply(lambda item: item[1])
 
     def classify_status(row: pd.Series) -> str:
-        if row["estado_erp"] == "Inconsistente ERP":
-            return "Inconsistencia entre pendiente y saldada"
         if row["tiene_discrepancia_valor"] and row["estado_erp"] == "Pendiente":
             return "Pendiente con valor por revisar"
         if row["tiene_discrepancia_valor"] and row["estado_erp"] == "Saldada":
@@ -1075,9 +1111,9 @@ def build_master_dataframe(
         return "Sin clasificar"
 
     def build_reconciliation_detail(row: pd.Series) -> str:
-        if row["estado_erp"] == "Inconsistente ERP":
-            return "La factura aparece al mismo tiempo en cartera pendiente y cartera saldada."
         if row["estado_conciliacion"] == "Pendiente conciliada":
+            if row.get("movimiento_mixto_erp", False):
+                return "Existe en cartera pendiente, tiene soporte de correo y además presenta movimientos saldados en ERP. Se toma como pendiente por saldo abierto."
             if row.get("detalle_valor"):
                 return f"Existe en cartera pendiente y tiene soporte de correo. {row['detalle_valor']}."
             return "Existe en cartera pendiente y tiene soporte de correo conciliado."
@@ -1086,6 +1122,8 @@ def build_master_dataframe(
                 return f"Existe en cartera saldada y tiene soporte de correo. {row['detalle_valor']}."
             return "Existe en cartera saldada y tiene soporte de correo conciliado."
         if row["estado_conciliacion"] == "Pendiente sin correo":
+            if row.get("movimiento_mixto_erp", False):
+                return "Está en cartera pendiente y además tiene movimientos saldados en ERP, pero no se encontró soporte de correo para el saldo abierto."
             return "Está en cartera pendiente pero no se encontró XML o ZIP asociado en el buzón leído."
         if row["estado_conciliacion"] == "Pendiente anterior a lectura":
             return "Está en cartera pendiente. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
@@ -1094,7 +1132,7 @@ def build_master_dataframe(
         if row["estado_conciliacion"] == "Saldada anterior a lectura":
             return "Está en cartera saldada. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
         if row["estado_conciliacion"] == "Solo correo":
-            return "Tiene correo y XML, pero no aparece ni en cartera pendiente ni en cartera saldada."
+            return "Tiene correo y XML, pero no aparece en las fuentes ERP descargadas desde Dropbox (cartera pendiente ni cartera saldada)."
         if row["estado_conciliacion"] in {"Pendiente con valor por revisar", "Saldada con valor por revisar"}:
             return row.get("detalle_valor") or "Existe soporte de correo, pero el valor no coincide con ERP."
         return "Revisar manualmente este caso."
@@ -1123,7 +1161,8 @@ def build_master_dataframe(
     combined["motivo_base"] = combined.apply(
         lambda row: "Pendiente con soporte de correo" if row["estado_conciliacion"] == "Pendiente conciliada"
         else "Pendiente sin soporte recibido" if row["estado_conciliacion"] == "Pendiente sin correo"
-        else "Correo sin cartera pendiente" if row["estado_conciliacion"] == "Solo correo"
+        else "Correo sin reflejo en fuentes ERP Dropbox" if row["estado_conciliacion"] == "Solo correo"
+        else "Saldo abierto con movimientos mixtos ERP" if row.get("movimiento_mixto_erp", False)
         else "Factura ya saldada" if row["estado_erp"] == "Saldada"
         else "Revisar caso manualmente",
         axis=1,
