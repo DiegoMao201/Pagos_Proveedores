@@ -1543,13 +1543,30 @@ def export_df_to_excel(df: pd.DataFrame, sheet_name: str = "Datos", title: str =
 
     # Sanitize values that openpyxl / pandas cannot serialize to Excel
     clean = df.copy()
+
+    def normalize_excel_value(value: Any) -> Any:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            if value.tzinfo is not None:
+                return value.tz_localize(None)
+            return value
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.replace(tzinfo=None)
+            return value
+        return value
+
     for col in clean.columns:
         if pd.api.types.is_datetime64_any_dtype(clean[col]):
-            clean[col] = clean[col].where(clean[col].notna(), other=None)
+            series = clean[col]
+            if getattr(series.dt, "tz", None) is not None:
+                series = series.dt.tz_localize(None)
+            clean[col] = series.where(series.notna(), other=None)
         elif pd.api.types.is_float_dtype(clean[col]) or pd.api.types.is_integer_dtype(clean[col]):
             clean[col] = clean[col].where(clean[col].notna() & np.isfinite(clean[col].astype(float)), other=0)
         else:
-            clean[col] = clean[col].fillna("")
+            clean[col] = clean[col].map(normalize_excel_value).fillna("")
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
