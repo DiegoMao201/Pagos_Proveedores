@@ -142,6 +142,7 @@ master_df = ensure_columns(
         "condiciones_comerciales": "",
     },
 )
+master_df = master_df[master_df["estado_erp"] != "Saldada"].copy() if not master_df.empty else master_df
 plan_df = ensure_columns(
     payload.get("payment_plan_df", pd.DataFrame()),
     {"valor_descuento": 0.0, "valor_a_pagar": 0.0, "estado_vencimiento": "", "descuento_pct": 0.0},
@@ -161,10 +162,8 @@ if master_df.empty:
 
 # ─── Derived data ───────────────────────────────────────────────────
 pending_df = master_df[master_df["estado_erp"] == "Pendiente"].copy()
-paid_df = master_df[master_df["estado_erp"] == "Saldada"].copy()
 
 pending_value = pending_df["valor_erp"].sum() if not pending_df.empty else 0
-paid_value = paid_df["valor_erp"].sum() if not paid_df.empty else 0
 total_discount = plan_df["valor_descuento"].sum() if not plan_df.empty else 0
 total_net = plan_df["valor_a_pagar"].sum() if not plan_df.empty else 0
 n_overdue = int((master_df["estado_vencimiento"] == "🔴 Vencida").sum())
@@ -190,11 +189,11 @@ st.markdown(
         <div style="font-size:2.4rem;font-weight:800;line-height:1.05;margin-top:.35rem;">Portal Ejecutivo de Tesoreria</div>
         <div style="margin-top:.85rem;max-width:920px;line-height:1.55;font-size:1rem;opacity:.95;">
             Control integral de cartera pendiente, conciliación documental, riesgo de mora, oportunidades de descuento y trazabilidad de pagos.
-            Todas las decisiones de pago nacen de esta vista.
+            Esta vista se enfoca solo en lo pendiente y en el cruce real contra correo.
         </div>
         <div class="hero-grid">
             <div class="hero-pill"><div class="hero-pill-label">Cartera pendiente</div><div class="hero-pill-value">{format_currency(pending_value)}</div></div>
-            <div class="hero-pill"><div class="hero-pill-label">Cartera saldada</div><div class="hero-pill-value">{format_currency(paid_value)}</div></div>
+            <div class="hero-pill"><div class="hero-pill-label">Pendiente sin correo</div><div class="hero-pill-value">{no_email_count:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Ahorro capturable</div><div class="hero-pill-value">{format_currency(total_discount)}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Proveedores</div><div class="hero-pill-value">{n_providers:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Vencidas + Riesgo 48h</div><div class="hero-pill-value">{n_overdue + n_risk:,}</div></div>
@@ -288,15 +287,12 @@ pay_now_df = filtered_master[
 ].copy()
 only_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Solo correo"].copy()
 unresolved_df = filtered_master[
-    filtered_master["estado_conciliacion"].isin([
-        "Pendiente sin correo", "Pendiente con valor por revisar",
-        "Saldada con valor por revisar", "Inconsistencia entre pendiente y saldada",
-    ])
+    (filtered_master["estado_erp"] == "Pendiente")
+    & (filtered_master["estado_conciliacion"] == "Pendiente sin correo")
 ].copy()
 conciliated_df = filtered_master[
     filtered_master["estado_conciliacion"].isin([
-        "Pendiente conciliada", "Saldada conciliada",
-        "Pendiente anterior a lectura", "Saldada anterior a lectura",
+        "Pendiente conciliada", "Pendiente anterior a lectura",
     ])
 ].copy()
 
@@ -321,7 +317,7 @@ with tab_overview:
 
     f_overdue = int((filtered_master["estado_vencimiento"] == "🔴 Vencida").sum()) if not filtered_master.empty else 0
     f_risk = int((filtered_master["estado_vencimiento"] == "🟠 Riesgo 48h").sum()) if not filtered_master.empty else 0
-    f_missing = int((filtered_master["estado_conciliacion"] == "Pendiente sin correo").sum()) if not filtered_master.empty else 0
+    f_missing = int(((filtered_master["estado_erp"] == "Pendiente") & (filtered_master["estado_conciliacion"] == "Pendiente sin correo")).sum()) if not filtered_master.empty else 0
     f_savings = filtered_plan["valor_descuento"].sum() if not filtered_plan.empty else 0
 
     st.write(
@@ -498,34 +494,34 @@ with tab_email:
 # ── Tab 4: No conciliado ───────────────────────────────────────────
 with tab_unrec:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="table-header">Facturas que requieren revision de conciliacion</div>', unsafe_allow_html=True)
-    st.markdown('<div class="table-sub">Diferencias de valor, documentos sin soporte o inconsistencias entre ERP y correo.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-header">Facturas pendientes sin soporte de correo</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-sub">Solo se muestran facturas pendientes que todavía no tienen soporte documental encontrado en el buzón.</div>', unsafe_allow_html=True)
 
     if unresolved_df.empty:
-        st.success("No hay facturas con conciliación pendiente en este filtro.")
+        st.success("No hay facturas pendientes sin correo en este filtro.")
     else:
         uc1, uc2, uc3 = st.columns(3)
-        uc1.metric("Facturas por conciliar", f"{len(unresolved_df):,}")
+        uc1.metric("Pendientes sin correo", f"{len(unresolved_df):,}")
         uc2.metric("Valor ERP involucrado", format_currency(unresolved_df["valor_erp"].sum()))
-        uc3.metric("Diferencia neta", format_currency(unresolved_df["diferencia_valor"].sum()))
+        uc3.metric("Proveedores impactados", f"{unresolved_df['proveedor'].nunique():,}")
 
         st.dataframe(
             safe_display(unresolved_df, [
-                "proveedor", "num_factura", "estado_erp", "estado_conciliacion",
-                "valor_erp", "valor_total_correo", "diferencia_valor", "detalle_conciliacion",
+                "proveedor", "num_factura", "estado_conciliacion",
+                "valor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "detalle_conciliacion",
             ], sort_by=["proveedor", "num_factura"]),
             use_container_width=True,
             hide_index=True,
             column_config={
                 "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %,.0f"),
-                "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
-                "diferencia_valor": st.column_config.NumberColumn("Diferencia", format="$ %,.0f"),
+                "fecha_emision_erp": st.column_config.DateColumn("Emisión", format="YYYY-MM-DD"),
+                "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
             },
         )
 
         excel_unrec = export_df_to_excel(
-            unresolved_df[["proveedor", "num_factura", "estado_erp", "estado_conciliacion",
-                           "valor_erp", "valor_total_correo", "diferencia_valor", "detalle_conciliacion"]],
+            unresolved_df[["proveedor", "num_factura", "estado_conciliacion",
+                           "valor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "detalle_conciliacion"]],
             sheet_name="No_Conciliado", title="Ferreinox — Facturas No Conciliadas",
         )
         st.download_button("📥 Descargar no conciliadas", excel_unrec,
@@ -537,7 +533,7 @@ with tab_unrec:
 # ── Tab 5: Conciliado ──────────────────────────────────────────────
 with tab_conc:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="table-header">Cartera ya conciliada — ERP + Correo verificados</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-header">Cartera pendiente ya conciliada — ERP + Correo verificados</div>', unsafe_allow_html=True)
 
     if conciliated_df.empty:
         st.info("No hay facturas conciliadas en este filtro.")

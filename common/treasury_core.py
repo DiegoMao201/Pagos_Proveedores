@@ -244,6 +244,13 @@ def normalize_supplier_key(value: Any) -> str:
     return SUPPLIER_ALIASES.get(normalized, normalized)
 
 
+def normalize_supplier_fingerprint(value: Any) -> str:
+    if pd.isna(value) or value is None:
+        return ""
+    tokens = [token for token in re.findall(r"[A-Z0-9]+", str(value).upper()) if token]
+    return "".join(sorted(tokens))
+
+
 def normalize_invoice_number(value: Any) -> str:
     return normalize_text(value)
 
@@ -297,6 +304,100 @@ def prepare_invoice_key(df: pd.DataFrame, provider_col: str, invoice_col: str = 
     prepared[invoice_col] = prepared[invoice_col].apply(normalize_invoice_number)
     prepared["invoice_key"] = prepared["proveedor_norm"] + "|" + prepared[invoice_col]
     return prepared
+
+
+def build_provider_matching_maps(provider_df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    if provider_df.empty:
+        return {
+            "nif_to_norm": {},
+            "fingerprint_to_norm": {},
+        }
+
+    prepared = provider_df.copy()
+    if "proveedor_norm" not in prepared.columns and "proveedor" in prepared.columns:
+        prepared["proveedor_norm"] = prepared["proveedor"].apply(normalize_supplier_key)
+
+    prepared["supplier_fingerprint"] = prepared.get("proveedor", pd.Series(index=prepared.index, dtype=object)).apply(normalize_supplier_fingerprint)
+    prepared["nif_norm"] = prepared.get("nif", pd.Series(index=prepared.index, dtype=object)).apply(normalize_text)
+
+    nif_to_norm: dict[str, str] = {}
+    for _, row in prepared.iterrows():
+        nif_norm = str(row.get("nif_norm", "") or "")
+        proveedor_norm = str(row.get("proveedor_norm", "") or "")
+        if nif_norm and proveedor_norm and nif_norm not in nif_to_norm:
+            nif_to_norm[nif_norm] = proveedor_norm
+
+    fingerprint_counts = prepared.groupby("supplier_fingerprint")["proveedor_norm"].nunique().to_dict()
+    fingerprint_to_norm: dict[str, str] = {}
+    for _, row in prepared.iterrows():
+        fingerprint = str(row.get("supplier_fingerprint", "") or "")
+        proveedor_norm = str(row.get("proveedor_norm", "") or "")
+        if fingerprint and proveedor_norm and fingerprint_counts.get(fingerprint) == 1:
+            fingerprint_to_norm[fingerprint] = proveedor_norm
+
+    return {
+        "nif_to_norm": nif_to_norm,
+        "fingerprint_to_norm": fingerprint_to_norm,
+    }
+
+
+def align_email_records_to_erp(
+    email_df: pd.DataFrame,
+    pending_df: pd.DataFrame,
+    paid_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if email_df.empty:
+        return email_df
+
+    erp_frames = []
+    for frame in [pending_df, paid_df]:
+        if frame.empty:
+            continue
+        provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in frame.columns else "proveedor_correo"
+        prepared = frame.copy()
+        if "invoice_key" not in prepared.columns:
+            prepared = prepare_invoice_key(prepared, provider_col)
+        prepared["num_factura"] = prepared["num_factura"].apply(normalize_invoice_number)
+        prepared["supplier_fingerprint"] = prepared.get(provider_col, pd.Series(index=prepared.index, dtype=object)).apply(normalize_supplier_fingerprint)
+        erp_frames.append(prepared[["invoice_key", "num_factura", "proveedor_norm", "supplier_fingerprint"]])
+
+    if not erp_frames:
+        return email_df
+
+    erp_df = pd.concat(erp_frames, ignore_index=True).drop_duplicates(subset=["invoice_key"], keep="first")
+    erp_keys = set(erp_df["invoice_key"].astype(str).tolist())
+
+    aligned = email_df.copy()
+    aligned["email_supplier_fingerprint"] = aligned.get("proveedor_correo", pd.Series(index=aligned.index, dtype=object)).apply(normalize_supplier_fingerprint)
+
+    for idx, row in aligned.iterrows():
+        current_key = str(row.get("invoice_key", "") or "")
+        invoice_number = normalize_invoice_number(row.get("num_factura", ""))
+        if not invoice_number or current_key in erp_keys:
+            continue
+
+        candidates = erp_df[erp_df["num_factura"] == invoice_number].copy()
+        if candidates.empty:
+            continue
+
+        provider_norm = str(row.get("proveedor_norm", "") or "")
+        if provider_norm:
+            exact_candidates = candidates[candidates["proveedor_norm"] == provider_norm]
+            if not exact_candidates.empty:
+                candidates = exact_candidates
+
+        if len(candidates) > 1:
+            fingerprint = str(row.get("email_supplier_fingerprint", "") or "")
+            if fingerprint:
+                fingerprint_candidates = candidates[candidates["supplier_fingerprint"] == fingerprint]
+                if len(fingerprint_candidates) == 1:
+                    candidates = fingerprint_candidates
+
+        if len(candidates) == 1:
+            aligned.at[idx, "proveedor_norm"] = candidates["proveedor_norm"].iloc[0]
+            aligned.at[idx, "invoice_key"] = candidates["invoice_key"].iloc[0]
+
+    return aligned.drop(columns=["email_supplier_fingerprint"], errors="ignore")
 
 
 @st.cache_resource(show_spinner="Conectando a Google Sheets...")
@@ -551,7 +652,7 @@ def load_paid_invoices_from_dropbox() -> pd.DataFrame:
         return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
 
 
-def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[dict]:
+def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_maps: Optional[dict[str, dict[str, str]]] = None) -> Optional[dict]:
     try:
         namespaces = {
             "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
@@ -576,6 +677,10 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[
             ".//cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name",
             ".//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName",
         ])
+        supplier_nif = find_text([
+            ".//cac:AccountingSupplierParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID",
+            ".//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:CompanyID",
+        ])
         invoice_number = find_text(["./cbc:ID"])
         issue_date = find_text(["./cbc:IssueDate"])
         due_date = find_text(["./cbc:DueDate", ".//cac:PaymentMeans/cbc:PaymentDueDate"])
@@ -585,12 +690,21 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[
             return None
 
         supplier_norm = normalize_supplier_key(supplier_name)
+        supplier_nif_norm = normalize_text(supplier_nif)
+        supplier_fingerprint = normalize_supplier_fingerprint(supplier_name)
+
+        if provider_maps:
+            supplier_norm = provider_maps.get("nif_to_norm", {}).get(supplier_nif_norm, supplier_norm)
+            if supplier_norm not in target_suppliers:
+                supplier_norm = provider_maps.get("fingerprint_to_norm", {}).get(supplier_fingerprint, supplier_norm)
+
         if target_suppliers and supplier_norm not in target_suppliers:
             return None
 
         return {
             "proveedor_correo": supplier_name,
             "proveedor_norm": supplier_norm,
+            "supplier_nif": supplier_nif_norm,
             "num_factura": normalize_invoice_number(invoice_number),
             "fecha_emision_correo": issue_date,
             "fecha_vencimiento_correo": due_date,
@@ -600,7 +714,7 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[
         return None
 
 
-def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]) -> tuple[list[dict], dict]:
+def extract_invoice_records_from_message(message_obj, target_suppliers: set[str], provider_maps: Optional[dict[str, dict[str, str]]] = None) -> tuple[list[dict], dict]:
     records = []
     stats = {"attachments_scanned": 0, "xml_files_scanned": 0, "invoice_rows_detected": 0}
 
@@ -633,7 +747,7 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
                             continue
                         stats["xml_files_scanned"] += 1
                         xml_content = zip_file.read(internal_name).decode("utf-8", "ignore")
-                        details = parse_invoice_xml(xml_content, target_suppliers)
+                        details = parse_invoice_xml(xml_content, target_suppliers, provider_maps)
                         if details:
                             details.update(
                                 {
@@ -652,7 +766,7 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
         if is_xml:
             stats["xml_files_scanned"] += 1
             xml_content = payload.decode("utf-8", "ignore")
-            details = parse_invoice_xml(xml_content, target_suppliers)
+            details = parse_invoice_xml(xml_content, target_suppliers, provider_maps)
             if details:
                 details.update(
                     {
@@ -669,7 +783,7 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
     return records, stats
 
 
-def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[str]) -> tuple[pd.DataFrame, dict]:
+def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[str], provider_df: Optional[pd.DataFrame] = None) -> tuple[pd.DataFrame, dict]:
     invoices_data = []
     stats = {
         "emails_found": 0,
@@ -679,6 +793,7 @@ def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[s
         "invoice_rows_detected": 0,
         "started_from": start_date.strftime("%Y-%m-%d"),
     }
+    provider_maps = build_provider_matching_maps(provider_df if provider_df is not None else pd.DataFrame())
 
     try:
         email_secrets = get_secret_section("email")
@@ -698,7 +813,7 @@ def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[s
         for index, message_id in enumerate(message_ids, start=1):
             _, data = mail.fetch(message_id, "(RFC822)")
             message_obj = email.message_from_bytes(data[0][1])
-            records, email_stats = extract_invoice_records_from_message(message_obj, target_suppliers)
+            records, email_stats = extract_invoice_records_from_message(message_obj, target_suppliers, provider_maps)
             invoices_data.extend(records)
 
             stats["emails_processed"] += 1
@@ -839,6 +954,8 @@ def build_master_dataframe(
     for frame in [pending_df, paid_df, email_df]:
         if "invoice_key" not in frame.columns:
             frame["invoice_key"] = pd.Series(dtype=str)
+
+    email_df = align_email_records_to_erp(email_df, pending_df, paid_df)
 
     pending_df = pending_df.drop_duplicates(subset=["invoice_key"], keep="last")
     paid_df = paid_df.drop_duplicates(subset=["invoice_key"], keep="last")
@@ -1278,7 +1395,7 @@ def sync_treasury_data() -> dict:
     st.write(f"📧 Leyendo correos desde **{start_date}** (incremental)")
     try:
         new_email_df, sync_stats = fetch_supplier_invoices_from_email(
-            start_date, target_suppliers
+            start_date, target_suppliers, provider_df
         )
         merged_email_df = merge_email_history(email_history_df, new_email_df)
         # Guardar historial de correo de inmediato para no perder progreso

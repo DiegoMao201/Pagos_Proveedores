@@ -321,7 +321,6 @@ def display_sidebar(payload: dict) -> None:
         st.divider()
         st.markdown("**Fuentes activas**")
         st.markdown('<span class="sidebar-chip">Dropbox · cartera pendiente</span>', unsafe_allow_html=True)
-        st.markdown('<span class="sidebar-chip">Dropbox · cartera saldada</span>', unsafe_allow_html=True)
         st.markdown('<span class="sidebar-chip">Gmail · XML y ZIP</span>', unsafe_allow_html=True)
         st.markdown('<span class="sidebar-chip">Google Sheets · trazabilidad</span>', unsafe_allow_html=True)
         st.divider()
@@ -337,7 +336,7 @@ def hero_section(payload: dict) -> None:
     alerts_df = payload["risk_alerts_df"]
 
     pending_amount = master_df.loc[master_df["estado_erp"] == "Pendiente", "valor_erp"].sum() if not master_df.empty else 0
-    paid_amount = master_df.loc[master_df["estado_erp"] == "Saldada", "valor_erp"].sum() if not master_df.empty else 0
+    pending_without_email = int(((master_df.get("estado_erp", pd.Series(dtype=object)) == "Pendiente") & (master_df.get("estado_conciliacion", pd.Series(dtype=object)) == "Pendiente sin correo")).sum()) if not master_df.empty else 0
     potential_savings = plan_df["valor_descuento"].sum() if not plan_df.empty else 0
     providers_count = master_df["proveedor"].nunique() if not master_df.empty else 0
 
@@ -346,10 +345,10 @@ def hero_section(payload: dict) -> None:
         <div class="hero-shell">
             <div class="hero-kicker">Ferreinox BI · sociedades BIC · 2026</div>
             <h1 class="hero-title">Centro Ejecutivo de Pagos, Conciliación y Descuentos a Proveedores</h1>
-            <div class="hero-copy">La plataforma integra cartera pendiente, cartera saldada, XML recibidos por correo y reglas comerciales para decidir con claridad qué pagar primero, qué ahorro capturar, qué discrepancias resolver y qué comunicaciones emitir con trazabilidad total.</div>
+            <div class="hero-copy">La plataforma integra cartera pendiente, XML recibidos por correo y reglas comerciales para decidir con claridad qué pagar primero, qué ahorro capturar, qué facturas siguen sin soporte y qué comunicaciones emitir con trazabilidad total.</div>
             <div class="hero-grid">
                 <div class="hero-pill"><div class="hero-pill-label">Pendiente actual</div><div class="hero-pill-value">{format_currency(pending_amount)}</div></div>
-                <div class="hero-pill"><div class="hero-pill-label">Saldado identificado</div><div class="hero-pill-value">{format_currency(paid_amount)}</div></div>
+                <div class="hero-pill"><div class="hero-pill-label">Pendiente sin correo</div><div class="hero-pill-value">{pending_without_email:,}</div></div>
                 <div class="hero-pill"><div class="hero-pill-label">Ahorro capturable</div><div class="hero-pill-value">{format_currency(potential_savings)}</div></div>
                 <div class="hero-pill"><div class="hero-pill-label">Proveedores monitoreados</div><div class="hero-pill-value">{providers_count:,}</div></div>
                 <div class="hero-pill"><div class="hero-pill-label">Alertas 48h</div><div class="hero-pill-value">{len(alerts_df):,}</div></div>
@@ -367,7 +366,7 @@ def kpi_row(payload: dict) -> None:
     due_now = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h"]))] if not master_df.empty else pd.DataFrame()
     only_email = master_df[master_df["estado_conciliacion"] == "Solo correo"] if not master_df.empty else pd.DataFrame()
     pending_without_email = master_df[master_df["estado_conciliacion"] == "Pendiente sin correo"] if not master_df.empty else pd.DataFrame()
-    conciliated = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"])] if not master_df.empty else pd.DataFrame()
+    conciliated = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Pendiente anterior a lectura"])] if not master_df.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Que debo pagar ya", format_currency(due_now["valor_erp"].sum() if not due_now.empty else 0), f"{len(due_now):,} facturas")
@@ -391,7 +390,6 @@ def display_source_health(payload: dict) -> None:
     source_summary = pd.DataFrame(
         [
             {"Fuente": "Cartera pendiente Dropbox", "Registros": summary["pending_rows"], "Observacion": "Base de facturas por pagar del año o pendientes ya consolidadas en maestro."},
-            {"Fuente": "Cartera saldada Dropbox", "Registros": summary["paid_rows"], "Observacion": "Facturas ya canceladas para evitar falsas alarmas y cruces errados."},
             {"Fuente": "Histórico correo proveedores", "Registros": len(payload["email_history_df"]), "Observacion": "Facturas XML y ZIP detectadas en el buzón objetivo."},
             {"Fuente": "Maestro facturas", "Registros": len(master_df), "Observacion": "Consolidado final para control y programación."},
             {"Fuente": "Trazabilidad lotes/correos", "Registros": summary["lots_registered"] + len(payload["email_log_df"]), "Observacion": "Histórico de lotes programados y evidencia de comunicación enviada."},
@@ -501,8 +499,8 @@ def display_master_overview(payload: dict) -> None:
 
     pay_now_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h", "🟡 Proxima a vencer"]))].copy()
     only_email_df = master_df[master_df["estado_conciliacion"] == "Solo correo"].copy()
-    unresolved_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente sin correo", "Pendiente con valor por revisar", "Saldada con valor por revisar", "Inconsistencia entre pendiente y saldada"])].copy()
-    conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"])] .copy()
+    unresolved_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_conciliacion"] == "Pendiente sin correo")].copy()
+    conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Pendiente anterior a lectura"])] .copy()
 
     tab1, tab2, tab3, tab4 = st.tabs(["💸 Que Debo Pagar", "📨 Falta Ingresar", "⚠️ No Conciliado", "✅ Conciliado"])
 
@@ -555,25 +553,24 @@ def display_master_overview(payload: dict) -> None:
 
     with tab3:
         if unresolved_df.empty:
-            st.success("No hay facturas con cruce pendiente o diferencia por revisar.")
+            st.success("No hay facturas pendientes sin correo.")
         else:
             st.dataframe(
                 safe_display(unresolved_df, [
                     "proveedor",
                     "num_factura",
-                    "estado_erp",
                     "estado_conciliacion",
                     "valor_erp",
-                    "valor_total_correo",
-                    "diferencia_valor",
+                    "fecha_emision_erp",
+                    "fecha_vencimiento_erp",
                     "detalle_conciliacion",
                 ], sort_by=["proveedor", "num_factura"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
-                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
-                    "diferencia_valor": st.column_config.NumberColumn("Diferencia", format="$ %d"),
+                    "fecha_emision_erp": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
+                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
                 },
             )
 
@@ -604,6 +601,8 @@ def main_app() -> None:
     inject_styles()
     ensure_authenticated()
     payload = payload_or_empty()
+    if not payload["master_df"].empty:
+        payload["master_df"] = payload["master_df"][payload["master_df"]["estado_erp"] != "Saldada"].copy()
     display_sidebar(payload)
     hero_section(payload)
     kpi_row(payload)

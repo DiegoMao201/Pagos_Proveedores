@@ -146,7 +146,7 @@ scheduled_df = lot_history_df.copy() if not lot_history_df.empty else pd.DataFra
 
 # Cartera conciliada
 reconciled_df = master_df[
-    master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"])
+    master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Pendiente anterior a lectura"])
 ].copy() if not master_df.empty else pd.DataFrame()
 
 
