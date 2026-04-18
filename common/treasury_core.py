@@ -171,14 +171,17 @@ _DATETIME_COLS = ["fecha_limite_descuento", "fecha_vencimiento_erp", "fecha_emis
 _BOOLEAN_COLS = ["registrada_para_pago", "riesgo_mora_48h"]
 
 DISCOUNT_PROVIDERS = {
-    "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
-    "ARMETALES S.A.": [{"days": 10, "rate": 0.02}],
-    "ASSA ABLOY COLOMBIA S.A.S": [{"days": 12, "rate": 0.025}],
-    "INDUMA S.C.A": [{"days": 15, "rate": 0.035}],
-    "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.03}],
-    "INDUSTRIAS GOYAINCOL SAS": [{"days": 30, "rate": 0.03}],
+    "ABRACOL S.A.S": [{"days": 8, "rate": 0.04}],
+    "ASSA ABLOY COLOMBIA S.A.S": [{"days": 8, "rate": 0.03}],
+    "DELTA GLOBAL S.A.S": [{"days": 10, "rate": 0.03}],
+    "INDUMA S.C.A": [{"days": 10, "rate": 0.025}, {"days": 30, "rate": 0.01}],
+    "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.05}],
+    "INDUSTRIAS GOYAINCOL SAS": [{"days": 30, "rate": 0.05}],
+    "ARTECOLA COLOMBIA S.A.S": [{"days": 10, "rate": 0.025}],
     "PINTUCO COLOMBIA S.A.S": [{"days": 15, "rate": 0.03}, {"days": 30, "rate": 0.02}],
-    "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.03}],
+    "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.025}, {"days": 20, "rate": 0.015}, {"days": 30, "rate": 0.007}],
+    "RODILLOS MASTDER S.A.S": [{"days": 10, "rate": 0.05}],
+    "SEGUREX LATAM S.A.S": [{"days": 8, "rate": 0.03}],
 }
 DISCOUNT_RULES_NORMALIZED = {
     re.sub(r"[^A-Z0-9]", "", provider.upper()): rules for provider, rules in DISCOUNT_PROVIDERS.items()
@@ -1511,3 +1514,87 @@ def build_email_log_row(lote_id: str, provider_name: str, to_email: str, cc_emai
         "estado_envio": status,
         "detalle_envio": detail,
     }
+
+
+def export_df_to_excel(df: pd.DataFrame, sheet_name: str = "Datos", title: str = "Reporte Ferreinox") -> io.BytesIO:
+    """Export a DataFrame to a professionally formatted Excel file returned as BytesIO."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=2)
+        ws = writer.sheets[sheet_name]
+
+        # Title row
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(df.columns), 1))
+        title_cell = ws.cell(row=1, column=1, value=title)
+        title_cell.font = Font(name="Calibri", size=14, bold=True, color="0C2D57")
+        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+
+        # Subtitle
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max(len(df.columns), 1))
+        sub_cell = ws.cell(row=2, column=1, value=f"Generado: {datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M')}")
+        sub_cell.font = Font(name="Calibri", size=9, italic=True, color="506070")
+
+        # Header style
+        header_fill = PatternFill(start_color="0C2D57", end_color="0C2D57", fill_type="solid")
+        header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+        thin_border = Border(
+            left=Side(style="thin", color="D0D8E0"),
+            right=Side(style="thin", color="D0D8E0"),
+            top=Side(style="thin", color="D0D8E0"),
+            bottom=Side(style="thin", color="D0D8E0"),
+        )
+
+        for col_idx in range(1, len(df.columns) + 1):
+            cell = ws.cell(row=3, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin_border
+
+        # Data styles
+        currency_cols = {c for c in df.columns if any(k in c.lower() for k in ["valor", "descuento", "ahorro", "diferencia"])}
+        pct_cols = {c for c in df.columns if "pct" in c.lower() or "porcentaje" in c.lower()}
+        stripe_fill = PatternFill(start_color="F5F8FB", end_color="F5F8FB", fill_type="solid")
+        data_font = Font(name="Calibri", size=10, color="223548")
+
+        for row_idx in range(4, 4 + len(df)):
+            for col_idx in range(1, len(df.columns) + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = data_font
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="center")
+                if (row_idx - 4) % 2 == 1:
+                    cell.fill = stripe_fill
+                col_name = df.columns[col_idx - 1]
+                if col_name in currency_cols:
+                    cell.number_format = '#,##0'
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                elif col_name in pct_cols:
+                    cell.number_format = '0.00%'
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Auto-width
+        for col_idx, col_name in enumerate(df.columns, 1):
+            max_len = max(len(str(col_name)), df[col_name].astype(str).str.len().max() if not df.empty else 0)
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 3, 12), 40)
+
+        ws.sheet_properties.tabColor = "0C2D57"
+        ws.freeze_panes = "A4"
+
+    buf.seek(0)
+    return buf
+
+
+def get_discount_summary_for_suppliers() -> pd.DataFrame:
+    """Build a summary table of all configured supplier discount rules."""
+    rows = []
+    for supplier, rules in DISCOUNT_PROVIDERS.items():
+        for rule in sorted(rules, key=lambda r: r["days"]):
+            rows.append({
+                "Proveedor": supplier,
+                "Días límite": rule["days"],
+                "Descuento %": rule["rate"],
+            })
+    return pd.DataFrame(rows)
