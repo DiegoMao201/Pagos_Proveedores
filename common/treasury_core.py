@@ -336,7 +336,8 @@ def update_worksheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame) -> 
             if pd.api.types.is_datetime64_any_dtype(df_to_upload[column]):
                 df_to_upload[column] = pd.to_datetime(df_to_upload[column], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        df_to_upload = df_to_upload.astype(str).replace({"nan": "", "NaT": "", "None": ""})
+        # Fill all NaN/NaT/None BEFORE converting to str to avoid float('nan') leaking into JSON
+        df_to_upload = df_to_upload.fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": "", "inf": "", "-inf": ""})
         data = [df_to_upload.columns.tolist()] + df_to_upload.values.tolist() if not df_to_upload.empty else [df_to_upload.columns.tolist()]
         worksheet.update(data, "A1")
 
