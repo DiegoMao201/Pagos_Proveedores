@@ -14,6 +14,7 @@ from common.treasury_core import (
     format_currency,
     get_secret_value,
     load_operational_payload,
+    safe_display,
     sync_treasury_data,
 )
 
@@ -509,16 +510,16 @@ def display_master_overview(payload: dict) -> None:
             st.success("No hay cartera pendiente con vencimiento cercano en este momento.")
         else:
             st.dataframe(
-                pay_now_df[[
-                "proveedor",
-                "num_factura",
-                "estado_conciliacion",
-                "estado_vencimiento",
-                "valor_erp",
-                "valor_a_pagar",
-                "valor_descuento",
-                "detalle_conciliacion",
-            ]].sort_values(by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
+                safe_display(pay_now_df, [
+                    "proveedor",
+                    "num_factura",
+                    "estado_conciliacion",
+                    "estado_vencimiento",
+                    "valor_erp",
+                    "valor_a_pagar",
+                    "valor_descuento",
+                    "detalle_conciliacion",
+                ], sort_by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -533,7 +534,7 @@ def display_master_overview(payload: dict) -> None:
             st.success("No hay facturas que estén solo en correo sin aparecer en ERP.")
         else:
             st.dataframe(
-                only_email_df[[
+                safe_display(only_email_df, [
                     "proveedor_correo",
                     "num_factura",
                     "valor_total_correo",
@@ -541,7 +542,7 @@ def display_master_overview(payload: dict) -> None:
                     "fecha_recepcion_correo",
                     "remitente_correo",
                     "detalle_conciliacion",
-                ]].sort_values(by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+                ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -556,7 +557,7 @@ def display_master_overview(payload: dict) -> None:
             st.success("No hay facturas con cruce pendiente o diferencia por revisar.")
         else:
             st.dataframe(
-                unresolved_df[[
+                safe_display(unresolved_df, [
                     "proveedor",
                     "num_factura",
                     "estado_erp",
@@ -565,7 +566,7 @@ def display_master_overview(payload: dict) -> None:
                     "valor_total_correo",
                     "diferencia_valor",
                     "detalle_conciliacion",
-                ]].sort_values(by=["proveedor", "num_factura"]),
+                ], sort_by=["proveedor", "num_factura"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -580,7 +581,7 @@ def display_master_overview(payload: dict) -> None:
             st.info("Aún no hay cartera conciliada para mostrar.")
         else:
             st.dataframe(
-                conciliated_df[[
+                safe_display(conciliated_df, [
                     "proveedor",
                     "num_factura",
                     "estado_erp",
@@ -588,7 +589,7 @@ def display_master_overview(payload: dict) -> None:
                     "valor_erp",
                     "valor_total_correo",
                     "detalle_conciliacion",
-                ]].sort_values(by=["proveedor", "num_factura"]),
+                ], sort_by=["proveedor", "num_factura"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={

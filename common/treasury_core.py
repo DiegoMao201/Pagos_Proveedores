@@ -125,6 +125,9 @@ EMAIL_LOG_COLUMNS = [
 MASTER_OPTIONAL_DEFAULTS = {
     "invoice_key": "",
     "proveedor": "",
+    "proveedor_norm": "",
+    "proveedor_erp": "",
+    "proveedor_correo": "",
     "num_factura": "",
     "estado_erp": "No ERP",
     "estado_conciliacion": "Sin clasificar",
@@ -139,16 +142,33 @@ MASTER_OPTIONAL_DEFAULTS = {
     "descuento_pct": 0.0,
     "fecha_limite_descuento": pd.NaT,
     "fecha_vencimiento_erp": pd.NaT,
+    "fecha_emision_erp": pd.NaT,
+    "fecha_emision_correo": pd.NaT,
+    "fecha_vencimiento_correo": pd.NaT,
+    "fecha_recepcion_correo": pd.NaT,
+    "fecha_programada_pago": pd.NaT,
     "estado_descuento": "No aplica",
     "registrada_para_pago": False,
     "riesgo_mora_48h": False,
-    "dias_para_vencer": pd.NA,
+    "dias_para_vencer": 0,
+    "remitente_correo": "",
+    "asunto_correo": "",
+    "nombre_adjunto": "",
+    "message_id": "",
+    "motivo_base": "",
     "lote_id": "",
     "estado_lote": "",
     "email_pago": "",
     "email_cc": "",
     "email_alertas": "",
+    "contacto_pagos": "",
+    "condiciones_comerciales": "",
+    "activo": True,
 }
+
+_NUMERIC_COLS = ["valor_erp", "valor_total_correo", "diferencia_valor", "valor_descuento", "valor_a_pagar", "descuento_pct", "dias_para_vencer"]
+_DATETIME_COLS = ["fecha_limite_descuento", "fecha_vencimiento_erp", "fecha_emision_erp", "fecha_emision_correo", "fecha_vencimiento_correo", "fecha_recepcion_correo", "fecha_programada_pago"]
+_BOOLEAN_COLS = ["registrada_para_pago", "riesgo_mora_48h"]
 
 DISCOUNT_PROVIDERS = {
     "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
@@ -1061,17 +1081,19 @@ def build_payment_plan(master_df: pd.DataFrame) -> pd.DataFrame:
         "email_pago",
         "email_cc",
     ]
-    return plan_df[display_columns]
+    return plan_df[[c for c in display_columns if c in plan_df.columns]]
 
 
 def build_risk_alerts(master_df: pd.DataFrame) -> pd.DataFrame:
     if master_df.empty:
         return pd.DataFrame()
-    alerts_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🟠 Riesgo 48h", "🔴 Vencida"]))].copy()
+    alerts_df = master_df[(master_df.get("estado_erp", pd.Series(dtype=object)) == "Pendiente") & (master_df.get("estado_vencimiento", pd.Series(dtype=object)).isin(["🟠 Riesgo 48h", "🔴 Vencida"]))].copy()
     if alerts_df.empty:
         return pd.DataFrame()
     alerts_df["tipo_alerta"] = alerts_df["estado_vencimiento"].map({"🟠 Riesgo 48h": "Riesgo de mora 48h", "🔴 Vencida": "Factura vencida"})
-    return alerts_df[["invoice_key", "proveedor", "num_factura", "valor_erp", "fecha_vencimiento_erp", "dias_para_vencer", "tipo_alerta", "email_alertas"]].sort_values(by=["dias_para_vencer", "proveedor"])
+    _acols = [c for c in ["invoice_key", "proveedor", "num_factura", "valor_erp", "fecha_vencimiento_erp", "dias_para_vencer", "tipo_alerta", "email_alertas"] if c in alerts_df.columns]
+    _asort = [c for c in ["dias_para_vencer", "proveedor"] if c in alerts_df.columns]
+    return alerts_df[_acols].sort_values(by=_asort) if _asort else alerts_df[_acols]
 
 
 def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
@@ -1083,23 +1105,49 @@ def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
         if column not in prepared.columns:
             prepared[column] = default
 
-    if "valor_descuento" in prepared.columns:
-        prepared["valor_descuento"] = prepared["valor_descuento"].apply(clean_numeric)
-    if "valor_a_pagar" in prepared.columns:
-        prepared["valor_a_pagar"] = prepared["valor_a_pagar"].apply(clean_numeric)
-    if "valor_erp" in prepared.columns:
-        prepared["valor_erp"] = prepared["valor_erp"].apply(clean_numeric)
-    if "valor_total_correo" in prepared.columns:
-        prepared["valor_total_correo"] = prepared["valor_total_correo"].apply(clean_numeric)
-    if "diferencia_valor" in prepared.columns:
-        prepared["diferencia_valor"] = prepared["diferencia_valor"].apply(clean_numeric)
+    for col in _NUMERIC_COLS:
+        if col in prepared.columns:
+            prepared[col] = prepared[col].apply(clean_numeric)
+
+    for col in _DATETIME_COLS:
+        if col in prepared.columns:
+            prepared[col] = coerce_datetime(prepared[col])
+
+    for col in _BOOLEAN_COLS:
+        if col in prepared.columns:
+            prepared[col] = (
+                prepared[col].astype(str).str.strip().str.lower()
+                .map({"true": True, "1": True, "1.0": True, "false": False, "0": False, "0.0": False})
+                .fillna(False)
+            )
 
     if (prepared["valor_a_pagar"] == 0).all() and "valor_erp" in prepared.columns:
         prepared["valor_a_pagar"] = prepared["valor_erp"] - prepared["valor_descuento"]
 
-    prepared["fecha_limite_descuento"] = coerce_datetime(prepared["fecha_limite_descuento"])
-    prepared["fecha_vencimiento_erp"] = coerce_datetime(prepared["fecha_vencimiento_erp"])
     return prepared
+
+
+def safe_display(
+    df: pd.DataFrame,
+    columns: list[str],
+    sort_by: Optional[list[str]] = None,
+    ascending: Any = True,
+) -> pd.DataFrame:
+    """Safely select columns and sort a DataFrame for display without KeyError."""
+    if df.empty:
+        return pd.DataFrame(columns=[c for c in columns if c in df.columns])
+    existing_sort = [c for c in (sort_by or []) if c in df.columns]
+    if existing_sort:
+        if isinstance(ascending, list) and sort_by:
+            asc_map = dict(zip(sort_by, ascending))
+            safe_asc = [asc_map.get(c, True) for c in existing_sort]
+        else:
+            safe_asc = ascending
+        result = df.sort_values(by=existing_sort, ascending=safe_asc)
+    else:
+        result = df
+    existing_cols = [c for c in columns if c in result.columns]
+    return result[existing_cols] if existing_cols else pd.DataFrame()
 
 
 def infer_payload_snapshot_metadata(payload: dict) -> dict[str, Any]:

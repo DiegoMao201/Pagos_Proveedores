@@ -4,7 +4,7 @@
 import pandas as pd
 import streamlit as st
 
-from common.treasury_core import ensure_authenticated, format_currency, load_operational_payload
+from common.treasury_core import ensure_authenticated, format_currency, load_operational_payload, safe_display
 
 
 st.set_page_config(page_title="Portal Tesoreria | Ferreinox", page_icon="💰", layout="wide")
@@ -215,7 +215,7 @@ def main() -> None:
             st.info("No hay facturas por pagar con urgencia en este filtro.")
         else:
             st.dataframe(
-                pay_now_df[[
+                safe_display(pay_now_df, [
                     "proveedor",
                     "num_factura",
                     "valor_erp",
@@ -223,7 +223,7 @@ def main() -> None:
                     "valor_a_pagar",
                     "estado_vencimiento",
                     "detalle_conciliacion",
-                ]],
+                ], sort_by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -241,14 +241,14 @@ def main() -> None:
             st.success("No hay facturas que estén solo en correo para este filtro.")
         else:
             st.dataframe(
-                only_email_df[[
+                safe_display(only_email_df, [
                     "proveedor_correo",
                     "num_factura",
                     "valor_total_correo",
                     "fecha_recepcion_correo",
                     "remitente_correo",
                     "detalle_conciliacion",
-                ]],
+                ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -262,7 +262,7 @@ def main() -> None:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("Facturas que requieren revision de conciliacion")
         st.dataframe(
-            unresolved_df[[
+            safe_display(unresolved_df, [
                 "proveedor",
                 "num_factura",
                 "estado_erp",
@@ -271,7 +271,7 @@ def main() -> None:
                 "valor_total_correo",
                 "diferencia_valor",
                 "detalle_conciliacion",
-            ]].sort_values(by=["proveedor", "num_factura"]) if not unresolved_df.empty else unresolved_df,
+            ], sort_by=["proveedor", "num_factura"]),
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -289,7 +289,7 @@ def main() -> None:
             st.info("No hay facturas conciliadas en este filtro.")
         else:
             st.dataframe(
-                conciliated_df[[
+                safe_display(conciliated_df, [
                     "proveedor",
                     "num_factura",
                     "estado_erp",
@@ -297,7 +297,7 @@ def main() -> None:
                     "valor_erp",
                     "valor_total_correo",
                     "detalle_conciliacion",
-                ]].sort_values(by=["proveedor", "num_factura"]),
+                ], sort_by=["proveedor", "num_factura"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
