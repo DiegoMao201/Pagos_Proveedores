@@ -282,8 +282,9 @@ def display_sidebar(payload: dict) -> None:
             unsafe_allow_html=True,
         )
         if st.button("🔄 Actualizar ahora", type="primary", use_container_width=True):
-            sync_treasury_data()
-            st.rerun()
+            result = sync_treasury_data()
+            if result:
+                st.rerun()
 
         snapshot_at = payload.get("snapshot_at")
         if payload.get("has_snapshot"):

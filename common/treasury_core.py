@@ -1184,34 +1184,112 @@ def infer_payload_snapshot_metadata(payload: dict) -> dict[str, Any]:
 
 
 def sync_treasury_data() -> dict:
+    """Sincronización progresiva: guarda cada paso de inmediato para no perder avance."""
     gs_client = connect_to_google_sheets()
     if not gs_client:
+        st.error("No fue posible conectar con Google Sheets.")
         return {}
 
+    sync_errors: list[str] = []
+    sync_stats: dict = {}
+    step = st.status("Sincronizando fuentes...", expanded=True)
+
+    # ── 1. Proveedores y datos ya guardados en Sheets ──────────────
+    step.update(label="Cargando maestro de proveedores y datos previos...")
     provider_df = load_provider_master(gs_client)
-    target_suppliers = set(provider_df[provider_df["activo"].fillna(True)]["proveedor_norm"].tolist())
+    target_suppliers = set(
+        provider_df[provider_df["activo"].fillna(True)]["proveedor_norm"].tolist()
+    )
     email_history_df = load_sheet_df(gs_client, SHEET_EMAIL_HISTORY)
     lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
     email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
-    start_date = determine_sync_start(email_history_df)
-
-    new_email_df, sync_stats = fetch_supplier_invoices_from_email(start_date, target_suppliers)
-    merged_email_df = merge_email_history(email_history_df, new_email_df)
-
-    pending_df = load_pending_invoices_from_dropbox()
-    paid_df = load_paid_invoices_from_dropbox()
-    if target_suppliers:
-        pending_df = pending_df[pending_df["proveedor_norm"].isin(target_suppliers)].copy()
-        paid_df = paid_df[paid_df["proveedor_norm"].isin(target_suppliers)].copy()
-
-    master_df = build_master_dataframe(pending_df, paid_df, merged_email_df, provider_df, lot_history_df)
-    payment_plan_df = build_payment_plan(master_df)
-    risk_alerts_df = build_risk_alerts(master_df)
-
     save_provider_master(gs_client, provider_df)
-    save_df_to_sheet(gs_client, SHEET_EMAIL_HISTORY, merged_email_df)
-    save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
-    save_df_to_sheet(gs_client, SHEET_PAYMENT_PLAN, payment_plan_df)
+    st.write(f"✅ Proveedores: {len(provider_df):,} | Historial correo previo: {len(email_history_df):,}")
+
+    # ── 2. Dropbox: cartera pendiente y saldada (rápido, ~segundos) ─
+    step.update(label="Descargando cartera desde Dropbox...")
+    pending_df = pd.DataFrame()
+    paid_df = pd.DataFrame()
+    try:
+        pending_df = load_pending_invoices_from_dropbox()
+        paid_df = load_paid_invoices_from_dropbox()
+        if target_suppliers:
+            pending_df = pending_df[pending_df["proveedor_norm"].isin(target_suppliers)].copy()
+            paid_df = paid_df[paid_df["proveedor_norm"].isin(target_suppliers)].copy()
+        st.write(f"✅ Pendientes Dropbox: {len(pending_df):,} | Saldadas Dropbox: {len(paid_df):,}")
+    except Exception as exc:
+        sync_errors.append(f"Dropbox: {exc}")
+        st.warning(f"⚠️ Error cargando Dropbox: {exc}")
+
+    # ── 3. Guardar foto parcial solo con Dropbox (si hay datos) ─────
+    #    Así al reabrir la app ya se ve cartera aunque el correo falle.
+    merged_email_df = email_history_df  # lo que ya existía
+    try:
+        partial_master = build_master_dataframe(
+            pending_df, paid_df, merged_email_df, provider_df, lot_history_df
+        )
+        save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, partial_master)
+        st.write(f"✅ Foto parcial guardada: {len(partial_master):,} registros (Dropbox + historial previo)")
+    except Exception as exc:
+        sync_errors.append(f"Foto parcial: {exc}")
+        st.warning(f"⚠️ No se pudo guardar foto parcial: {exc}")
+        partial_master = pd.DataFrame()
+
+    # ── 4. Correo: solo la ventana incremental ──────────────────────
+    step.update(label="Leyendo correos nuevos (incremental)...")
+    start_date = determine_sync_start(email_history_df)
+    st.write(f"📧 Leyendo correos desde **{start_date}** (incremental)")
+    try:
+        new_email_df, sync_stats = fetch_supplier_invoices_from_email(
+            start_date, target_suppliers
+        )
+        merged_email_df = merge_email_history(email_history_df, new_email_df)
+        # Guardar historial de correo de inmediato para no perder progreso
+        save_df_to_sheet(gs_client, SHEET_EMAIL_HISTORY, merged_email_df)
+        st.write(
+            f"✅ Correos procesados: {sync_stats.get('emails_processed', 0):,} | "
+            f"XML encontrados: {sync_stats.get('invoice_rows_detected', 0):,} | "
+            f"Historial total: {len(merged_email_df):,}"
+        )
+    except Exception as exc:
+        sync_errors.append(f"Correo: {exc}")
+        st.warning(f"⚠️ Error leyendo correo: {exc}. Se conserva historial previo ({len(merged_email_df):,} registros).")
+
+    # ── 5. Construir maestro final con toda la información ──────────
+    step.update(label="Construyendo maestro consolidado...")
+    try:
+        master_df = build_master_dataframe(
+            pending_df, paid_df, merged_email_df, provider_df, lot_history_df
+        )
+        payment_plan_df = build_payment_plan(master_df)
+        risk_alerts_df = build_risk_alerts(master_df)
+        save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
+        save_df_to_sheet(gs_client, SHEET_PAYMENT_PLAN, payment_plan_df)
+        st.write(
+            f"✅ Maestro final: {len(master_df):,} | "
+            f"Plan de pagos: {len(payment_plan_df):,} | "
+            f"Alertas: {len(risk_alerts_df):,}"
+        )
+    except Exception as exc:
+        sync_errors.append(f"Maestro: {exc}")
+        st.warning(f"⚠️ Error construyendo maestro final: {exc}")
+        master_df = partial_master if not partial_master.empty else pd.DataFrame()
+        master_df = ensure_master_dataframe_schema(master_df)
+        payment_plan_df = build_payment_plan(master_df)
+        risk_alerts_df = build_risk_alerts(master_df)
+        # Guardar aunque sea parcial
+        try:
+            save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
+        except Exception:
+            pass
+
+    # ── 6. Resultado ────────────────────────────────────────────────
+    if sync_errors:
+        step.update(label="Sincronización completada con advertencias", state="error")
+        for err in sync_errors:
+            st.error(f"⛔ {err}")
+    else:
+        step.update(label="Sincronización completada correctamente", state="complete")
 
     payload = {
         "provider_df": provider_df,
@@ -1236,6 +1314,7 @@ def sync_treasury_data() -> dict:
 
 
 def load_operational_payload() -> dict:
+    """Carga la foto guardada en Google Sheets. No toca correo ni Dropbox."""
     payload = st.session_state.get("treasury_payload")
     if payload:
         return payload
@@ -1244,16 +1323,41 @@ def load_operational_payload() -> dict:
     if not gs_client:
         return {}
 
-    provider_df = load_provider_master(gs_client)
-    master_df = ensure_master_dataframe_schema(load_sheet_df(gs_client, SHEET_MASTER_INVOICES))
+    try:
+        provider_df = load_provider_master(gs_client)
+    except Exception:
+        provider_df = pd.DataFrame()
+
+    try:
+        master_df = ensure_master_dataframe_schema(
+            load_sheet_df(gs_client, SHEET_MASTER_INVOICES)
+        )
+    except Exception:
+        master_df = pd.DataFrame()
+
+    try:
+        email_history_df = load_sheet_df(gs_client, SHEET_EMAIL_HISTORY)
+    except Exception:
+        email_history_df = pd.DataFrame()
+
+    try:
+        lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
+    except Exception:
+        lot_history_df = pd.DataFrame()
+
+    try:
+        email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
+    except Exception:
+        email_log_df = pd.DataFrame()
+
     payload = {
         "provider_df": provider_df,
-        "email_history_df": load_sheet_df(gs_client, SHEET_EMAIL_HISTORY),
+        "email_history_df": email_history_df,
         "master_df": master_df,
         "payment_plan_df": build_payment_plan(master_df),
         "risk_alerts_df": build_risk_alerts(master_df),
-        "lot_history_df": load_sheet_df(gs_client, SHEET_PAYMENT_LOTS),
-        "email_log_df": load_sheet_df(gs_client, SHEET_EMAIL_LOG),
+        "lot_history_df": lot_history_df,
+        "email_log_df": email_log_df,
         "snapshot_source": "sheets_cache",
     }
     payload.update(infer_payload_snapshot_metadata(payload))
