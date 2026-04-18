@@ -11,6 +11,14 @@ st.set_page_config(page_title="Portal Tesoreria | Ferreinox", page_icon="💰", 
 ensure_authenticated()
 
 
+def ensure_columns(df: pd.DataFrame, defaults: dict[str, object]) -> pd.DataFrame:
+    prepared = df.copy()
+    for column, default in defaults.items():
+        if column not in prepared.columns:
+            prepared[column] = default
+    return prepared
+
+
 def inject_styles() -> None:
     st.markdown(
         """
@@ -97,8 +105,26 @@ def provider_summary(master_df: pd.DataFrame, plan_df: pd.DataFrame) -> pd.DataF
 def main() -> None:
     inject_styles()
     payload = load_operational_payload()
-    master_df = payload.get("master_df", pd.DataFrame())
-    plan_df = payload.get("payment_plan_df", pd.DataFrame())
+    master_df = ensure_columns(
+        payload.get("master_df", pd.DataFrame()),
+        {
+            "detalle_conciliacion": "",
+            "valor_descuento": 0.0,
+            "valor_a_pagar": 0.0,
+            "proveedor_correo": "",
+            "fecha_recepcion_correo": pd.NaT,
+            "remitente_correo": "",
+            "valor_total_correo": 0.0,
+        },
+    )
+    plan_df = ensure_columns(
+        payload.get("payment_plan_df", pd.DataFrame()),
+        {
+            "valor_descuento": 0.0,
+            "valor_a_pagar": 0.0,
+            "estado_vencimiento": "",
+        },
+    )
     alerts_df = payload.get("risk_alerts_df", pd.DataFrame())
 
     st.title("Portal Ejecutivo de Tesoreria")

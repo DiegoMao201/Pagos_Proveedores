@@ -122,6 +122,34 @@ EMAIL_LOG_COLUMNS = [
     "detalle_envio",
 ]
 
+MASTER_OPTIONAL_DEFAULTS = {
+    "invoice_key": "",
+    "proveedor": "",
+    "num_factura": "",
+    "estado_erp": "No ERP",
+    "estado_conciliacion": "Sin clasificar",
+    "estado_vencimiento": "No aplica",
+    "valor_erp": 0.0,
+    "valor_total_correo": 0.0,
+    "diferencia_valor": 0.0,
+    "detalle_valor": "",
+    "detalle_conciliacion": "",
+    "valor_descuento": 0.0,
+    "valor_a_pagar": 0.0,
+    "descuento_pct": 0.0,
+    "fecha_limite_descuento": pd.NaT,
+    "fecha_vencimiento_erp": pd.NaT,
+    "estado_descuento": "No aplica",
+    "registrada_para_pago": False,
+    "riesgo_mora_48h": False,
+    "dias_para_vencer": pd.NA,
+    "lote_id": "",
+    "estado_lote": "",
+    "email_pago": "",
+    "email_cc": "",
+    "email_alertas": "",
+}
+
 DISCOUNT_PROVIDERS = {
     "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
     "ARMETALES S.A.": [{"days": 10, "rate": 0.02}],
@@ -1046,6 +1074,34 @@ def build_risk_alerts(master_df: pd.DataFrame) -> pd.DataFrame:
     return alerts_df[["invoice_key", "proveedor", "num_factura", "valor_erp", "fecha_vencimiento_erp", "dias_para_vencer", "tipo_alerta", "email_alertas"]].sort_values(by=["dias_para_vencer", "proveedor"])
 
 
+def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
+    if master_df.empty:
+        return master_df.copy()
+
+    prepared = master_df.copy()
+    for column, default in MASTER_OPTIONAL_DEFAULTS.items():
+        if column not in prepared.columns:
+            prepared[column] = default
+
+    if "valor_descuento" in prepared.columns:
+        prepared["valor_descuento"] = prepared["valor_descuento"].apply(clean_numeric)
+    if "valor_a_pagar" in prepared.columns:
+        prepared["valor_a_pagar"] = prepared["valor_a_pagar"].apply(clean_numeric)
+    if "valor_erp" in prepared.columns:
+        prepared["valor_erp"] = prepared["valor_erp"].apply(clean_numeric)
+    if "valor_total_correo" in prepared.columns:
+        prepared["valor_total_correo"] = prepared["valor_total_correo"].apply(clean_numeric)
+    if "diferencia_valor" in prepared.columns:
+        prepared["diferencia_valor"] = prepared["diferencia_valor"].apply(clean_numeric)
+
+    if (prepared["valor_a_pagar"] == 0).all() and "valor_erp" in prepared.columns:
+        prepared["valor_a_pagar"] = prepared["valor_erp"] - prepared["valor_descuento"]
+
+    prepared["fecha_limite_descuento"] = coerce_datetime(prepared["fecha_limite_descuento"])
+    prepared["fecha_vencimiento_erp"] = coerce_datetime(prepared["fecha_vencimiento_erp"])
+    return prepared
+
+
 def sync_treasury_data() -> dict:
     gs_client = connect_to_google_sheets()
     if not gs_client:
@@ -1105,12 +1161,13 @@ def load_operational_payload() -> dict:
         return {}
 
     provider_df = load_provider_master(gs_client)
+    master_df = ensure_master_dataframe_schema(load_sheet_df(gs_client, SHEET_MASTER_INVOICES))
     payload = {
         "provider_df": provider_df,
         "email_history_df": load_sheet_df(gs_client, SHEET_EMAIL_HISTORY),
-        "master_df": load_sheet_df(gs_client, SHEET_MASTER_INVOICES),
-        "payment_plan_df": load_sheet_df(gs_client, SHEET_PAYMENT_PLAN),
-        "risk_alerts_df": build_risk_alerts(load_sheet_df(gs_client, SHEET_MASTER_INVOICES)),
+        "master_df": master_df,
+        "payment_plan_df": build_payment_plan(master_df),
+        "risk_alerts_df": build_risk_alerts(master_df),
         "lot_history_df": load_sheet_df(gs_client, SHEET_PAYMENT_LOTS),
         "email_log_df": load_sheet_df(gs_client, SHEET_EMAIL_LOG),
     }
