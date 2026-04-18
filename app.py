@@ -367,7 +367,7 @@ def kpi_row(payload: dict) -> None:
     due_now = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h"]))] if not master_df.empty else pd.DataFrame()
     only_email = master_df[master_df["estado_conciliacion"] == "Solo correo"] if not master_df.empty else pd.DataFrame()
     pending_without_email = master_df[master_df["estado_conciliacion"] == "Pendiente sin correo"] if not master_df.empty else pd.DataFrame()
-    conciliated = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"])] if not master_df.empty else pd.DataFrame()
+    conciliated = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"])] if not master_df.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Que debo pagar ya", format_currency(due_now["valor_erp"].sum() if not due_now.empty else 0), f"{len(due_now):,} facturas")
@@ -502,7 +502,7 @@ def display_master_overview(payload: dict) -> None:
     pay_now_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h", "🟡 Proxima a vencer"]))].copy()
     only_email_df = master_df[master_df["estado_conciliacion"] == "Solo correo"].copy()
     unresolved_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente sin correo", "Pendiente con valor por revisar", "Saldada con valor por revisar", "Inconsistencia entre pendiente y saldada"])].copy()
-    conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"])] .copy()
+    conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"])] .copy()
 
     tab1, tab2, tab3, tab4 = st.tabs(["💸 Que Debo Pagar", "📨 Falta Ingresar", "⚠️ No Conciliado", "✅ Conciliado"])
 

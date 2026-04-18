@@ -173,7 +173,7 @@ n_upcoming = int((master_df["estado_vencimiento"] == "🟡 Proxima a vencer").su
 n_providers = master_df["proveedor"].nunique()
 only_email_count = int((master_df["estado_conciliacion"] == "Solo correo").sum())
 no_email_count = int((master_df["estado_conciliacion"] == "Pendiente sin correo").sum())
-conciliated_count = int(master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"]).sum())
+conciliated_count = int(master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"]).sum())
 
 # Aging
 if not pending_df.empty:
@@ -294,7 +294,10 @@ unresolved_df = filtered_master[
     ])
 ].copy()
 conciliated_df = filtered_master[
-    filtered_master["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"])
+    filtered_master["estado_conciliacion"].isin([
+        "Pendiente conciliada", "Saldada conciliada",
+        "Pendiente anterior a lectura", "Saldada anterior a lectura",
+    ])
 ].copy()
 
 

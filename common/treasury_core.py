@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import dropbox
 import gspread
+import numpy as np
 import pandas as pd
 import pytz
 import requests
@@ -904,6 +905,15 @@ def build_master_dataframe(
     combined["en_saldada"] = combined["num_factura_paid"].notna() if "num_factura_paid" in combined.columns else False
     combined["en_correo"] = combined["num_factura"].notna() & combined["proveedor_correo"].astype(str).ne("")
 
+    # Determine which invoices are older than the email reading window.
+    # The email sync starts from Jan 1 of the current year, so invoices
+    # emitted before that date will never have email support found.
+    email_window_start = pd.Timestamp(date(datetime.now(COLOMBIA_TZ).year, 1, 1), tz=COLOMBIA_TZ)
+    _fe = combined["fecha_emision_erp"].copy()
+    # Use emission date; fall back to due date if emission is missing
+    _fe = _fe.fillna(combined["fecha_vencimiento_erp"])
+    combined["anterior_a_lectura_correo"] = _fe.notna() & (_fe < email_window_start)
+
     conditions = [
         combined["en_pendiente"] & combined["en_saldada"],
         combined["en_pendiente"],
@@ -931,10 +941,17 @@ def build_master_dataframe(
         if row["estado_erp"] == "Pendiente" and row["en_correo"]:
             return "Pendiente conciliada"
         if row["estado_erp"] == "Pendiente" and not row["en_correo"]:
+            # If the invoice was emitted before the email reading window,
+            # it is expected not to have email support — not a real gap.
+            if row.get("anterior_a_lectura_correo", False):
+                return "Pendiente anterior a lectura"
             return "Pendiente sin correo"
         if row["estado_erp"] == "Saldada" and row["en_correo"]:
             return "Saldada conciliada"
         if row["estado_erp"] == "Saldada" and not row["en_correo"]:
+            # Old paid invoices without email are expected — not a gap.
+            if row.get("anterior_a_lectura_correo", False):
+                return "Saldada anterior a lectura"
             return "Saldada sin correo"
         if row["estado_erp"] == "No ERP" and row["en_correo"]:
             return "Solo correo"
@@ -953,8 +970,12 @@ def build_master_dataframe(
             return "Existe en cartera saldada y tiene soporte de correo conciliado."
         if row["estado_conciliacion"] == "Pendiente sin correo":
             return "Está en cartera pendiente pero no se encontró XML o ZIP asociado en el buzón leído."
+        if row["estado_conciliacion"] == "Pendiente anterior a lectura":
+            return "Está en cartera pendiente. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
         if row["estado_conciliacion"] == "Saldada sin correo":
             return "Está en cartera saldada pero no se encontró XML o ZIP asociado en el buzón leído."
+        if row["estado_conciliacion"] == "Saldada anterior a lectura":
+            return "Está en cartera saldada. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
         if row["estado_conciliacion"] == "Solo correo":
             return "Tiene correo y XML, pero no aparece ni en cartera pendiente ni en cartera saldada."
         if row["estado_conciliacion"] in {"Pendiente con valor por revisar", "Saldada con valor por revisar"}:
@@ -1520,9 +1541,19 @@ def export_df_to_excel(df: pd.DataFrame, sheet_name: str = "Datos", title: str =
     """Export a DataFrame to a professionally formatted Excel file returned as BytesIO."""
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+    # Sanitize values that openpyxl / pandas cannot serialize to Excel
+    clean = df.copy()
+    for col in clean.columns:
+        if pd.api.types.is_datetime64_any_dtype(clean[col]):
+            clean[col] = clean[col].where(clean[col].notna(), other=None)
+        elif pd.api.types.is_float_dtype(clean[col]) or pd.api.types.is_integer_dtype(clean[col]):
+            clean[col] = clean[col].where(clean[col].notna() & np.isfinite(clean[col].astype(float)), other=0)
+        else:
+            clean[col] = clean[col].fillna("")
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=2)
+        clean.to_excel(writer, index=False, sheet_name=sheet_name, startrow=2)
         ws = writer.sheets[sheet_name]
 
         # Title row
