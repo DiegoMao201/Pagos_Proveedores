@@ -819,10 +819,21 @@ def build_master_dataframe(
     paid_df = paid_df.copy()
     email_df = email_df.copy()
 
+    # Ensure invoice_key exists on every frame (fix: reassign back, handle empty)
+    if not pending_df.empty and "invoice_key" not in pending_df.columns:
+        provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in pending_df.columns else "proveedor_correo"
+        pending_df = prepare_invoice_key(pending_df, provider_col)
+    if not paid_df.empty and "invoice_key" not in paid_df.columns:
+        provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in paid_df.columns else "proveedor_correo"
+        paid_df = prepare_invoice_key(paid_df, provider_col)
+    if not email_df.empty and "invoice_key" not in email_df.columns:
+        provider_col = "proveedor_correo" if "proveedor_correo" in email_df.columns else "nombre_proveedor_erp"
+        email_df = prepare_invoice_key(email_df, provider_col)
+
+    # Guarantee invoice_key column even on empty frames
     for frame in [pending_df, paid_df, email_df]:
-        if not frame.empty and "invoice_key" not in frame.columns:
-            provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in frame.columns else "proveedor_correo"
-            frame = prepare_invoice_key(frame, provider_col)
+        if "invoice_key" not in frame.columns:
+            frame["invoice_key"] = pd.Series(dtype=str)
 
     pending_df = pending_df.drop_duplicates(subset=["invoice_key"], keep="last")
     paid_df = paid_df.drop_duplicates(subset=["invoice_key"], keep="last")
@@ -831,7 +842,8 @@ def build_master_dataframe(
     combined = pd.merge(pending_df, paid_df, on="invoice_key", how="outer", suffixes=("_pend", "_paid"))
     combined = pd.merge(combined, email_df, on="invoice_key", how="outer")
 
-    provider_meta = provider_df[["proveedor_norm", "proveedor", "email_pago", "email_cc", "email_alertas", "contacto_pagos", "condiciones_comerciales", "activo"]].drop_duplicates(subset=["proveedor_norm"])
+    _provider_cols = [c for c in ["proveedor_norm", "proveedor", "email_pago", "email_cc", "email_alertas", "contacto_pagos", "condiciones_comerciales", "activo"] if c in provider_df.columns]
+    provider_meta = provider_df[_provider_cols].drop_duplicates(subset=["proveedor_norm"]) if "proveedor_norm" in provider_df.columns and not provider_df.empty else pd.DataFrame(columns=["proveedor_norm"])
     combined["proveedor_norm"] = coalesce(
         combined.get("proveedor_norm_pend", pd.Series(index=combined.index)),
         combined.get("proveedor_norm_paid", pd.Series(index=combined.index)),
