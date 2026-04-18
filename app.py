@@ -295,11 +295,16 @@ def display_sidebar(payload: dict) -> None:
                     ]
                 )
             )
+            st.caption(
+                f"Sincronizacion incremental desde {sync_stats.get('started_from', payload.get('sync_started_from', 'inicio del ano'))}. El sistema relee una ventana corta para evitar omisiones y consolida sin duplicar."
+            )
+        else:
+            st.caption("La primera sincronizacion del ano arma el historico base. Despues solo relee una ventana reciente y consolida contra lo ya guardado en Google Sheets.")
 
         st.divider()
         st.markdown("**Fuentes activas**")
         st.markdown('<span class="sidebar-chip">Dropbox · cartera pendiente</span>', unsafe_allow_html=True)
-        st.markdown('<span class="sidebar-chip">Repositorio · cartera saldada</span>', unsafe_allow_html=True)
+        st.markdown('<span class="sidebar-chip">Dropbox · cartera saldada</span>', unsafe_allow_html=True)
         st.markdown('<span class="sidebar-chip">Gmail · XML y ZIP</span>', unsafe_allow_html=True)
         st.markdown('<span class="sidebar-chip">Google Sheets · trazabilidad</span>', unsafe_allow_html=True)
         st.divider()

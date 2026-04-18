@@ -689,7 +689,7 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
     df["descuento_pct"] = 0.0
     df["valor_descuento"] = 0.0
     df["valor_a_pagar"] = df["valor_erp"].fillna(0.0)
-    df["fecha_limite_descuento"] = pd.NaT
+    df["fecha_limite_descuento"] = pd.Series([pd.NaT] * len(df), index=df.index, dtype="object")
     df["estado_descuento"] = "No aplica"
 
     today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
