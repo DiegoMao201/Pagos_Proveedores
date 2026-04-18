@@ -1,947 +1,568 @@
-# 1_📈_Dashboard_General.py
 # -*- coding: utf-8 -*-
-"""
-Plataforma de Gestión Inteligente de Facturas para FERREINOX.
+"""Centro principal de control para cartera, correo y pagos a proveedores."""
 
-Aplicación web construida con Streamlit para automatizar la conciliación de
-facturas de proveedores recibidas por correo electrónico contra los registros
-del sistema ERP (extraídos de Dropbox).
+from datetime import datetime
 
-Funcionalidades principales:
-- Autenticación segura por contraseña.
-- Sincronización de facturas de los últimos 20 días desde una cuenta de Gmail.
-- Carga de datos de cuentas por pagar desde un archivo CSV en Dropbox.
-- Proceso de conciliación robusto para cruzar datos del ERP y correos.
-- Dashboard interactivo con métricas, alertas de vencimiento y filtros.
-- Visualización de datos y reportes por proveedor.
-- Actualización de una base de datos y un reporte consolidado en Google Sheets.
-
-**NUEVAS FUNCIONALIDADES (Versión 2.0):**
-- Módulo de análisis de descuentos financieros por pronto pago.
-- Plan de pagos sugerido para maximizar ahorros.
-- Panel visual dedicado a la gestión de oportunidades de descuento.
-
-**MODIFICACIÓN CLAVE (Versión 3.0 - Preservación de Estado):**
-- El script ahora lee el reporte existente antes de sincronizar.
-- Fusiona los datos nuevos con los estados de pago existentes ('id_lote_pago', 'estado_factura').
-- Esto evita que la sincronización borre el trabajo realizado en los módulos de Gerencia y Tesorería.
-
-**Dependencias (guardar como requirements.txt):**
-altair==5.3.0
-dropbox==11.36.2
-gspread==6.0.2
-numpy==1.26.4
-pandas==2.2.2
-pytz==2024.1
-streamlit==1.35.0
-google-oauth2-tool==1.1.0
-gspread-pandas==3.3.0
-openpyxl==3.1.2
-"""
-
-# ======================================================================================
-# --- 0. IMPORTACIÓN DE LIBRERÍAS ---
-# ======================================================================================
-# Librerías estándar de Python
-import email
-import imaplib
-import io
-import re
-import xml.etree.ElementTree as ET
-import zipfile
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-
-# Librerías de terceros (instaladas)
-import altair as alt
-import dropbox
-import gspread
-import numpy as np
 import pandas as pd
-import pytz
 import streamlit as st
-from google.oauth2.service_account import Credentials
-from gspread import Client, Worksheet
-from openpyxl.utils import get_column_letter # Se importa para obtener la letra de una columna
 
-# ======================================================================================
-# --- 1. CONFIGURACIÓN INICIAL Y CONSTANTES GLOBALES ---
-# ======================================================================================
-
-# --- Configuración de la página de Streamlit ---
-st.set_page_config(
-    page_title="Gestión Inteligente de Facturas | FERREINOX",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+from common.treasury_core import (
+    COLOMBIA_TZ,
+    build_risk_alerts,
+    connect_to_google_sheets,
+    ensure_authenticated,
+    format_currency,
+    get_secret_value,
+    load_operational_payload,
+    sync_treasury_data,
 )
 
-# --- Constantes Globales ---
-COLOMBIA_TZ = pytz.timezone('America/Bogota')
 
-# Credenciales y rutas (extraídas de st.secrets para mayor seguridad)
-IMAP_SERVER = "imap.gmail.com"
-EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
-DROPBOX_FILE_PATH = "/data/Proveedores.csv"
-GSHEET_DB_NAME = "FacturasCorreo_DB"
-GSHEET_REPORT_NAME = "ReporteConsolidado_Activo"
-APP_PASSWORD = st.secrets.get("password", "DEFAULT_PASSWORD")
-
-# Parámetros de la aplicación
-SEARCH_DAYS_AGO = 20  # Búsqueda ampliada a los últimos 20 días.
-
-# Nombres de columnas estandarizados para evitar errores de tipeo
-COL_NUM_FACTURA = 'num_factura'
-COL_PROVEEDOR_ERP = 'nombre_proveedor_erp'
-COL_VALOR_ERP = 'valor_total_erp'
-COL_FECHA_EMISION_ERP = 'fecha_emision_erp'
-COL_FECHA_VENCIMIENTO_ERP = 'fecha_vencimiento_erp'
-COL_PROVEEDOR_CORREO = 'nombre_proveedor_correo'
-COL_VALOR_CORREO = 'valor_total_correo'
-COL_FECHA_EMISION_CORREO = 'fecha_emision_correo'
-COL_FECHA_VENCIMIENTO_CORREO = 'fecha_vencimiento_correo'
-
-# --- NUEVA CONSTANTE: Reglas de Descuentos por Proveedor ---
-DISCOUNT_PROVIDERS = {
-    "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
-    "ARMETALES S.A.": [{"days": 10, "rate": 0.02}],
-    "ASSA ABLOY COLOMBIA S.A.S": [{"days": 12, "rate": 0.025}],
-    "INDUMA S.C.A": [{"days": 15, "rate": 0.035}],
-    "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.03}],
-    "PINTUCO COLOMBIA S.A.S": [
-        {"days": 15, "rate": 0.03},
-        {"days": 30, "rate": 0.02}
-    ],
-    "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.03}]
-}
+APP_PASSWORD = get_secret_value("password", "DEFAULT_PASSWORD")
 
 
-# ======================================================================================
-# --- 2. ESTADO DE SESIÓN Y ESTILOS CSS ---
-# ======================================================================================
+st.set_page_config(
+    page_title="Ferreinox BI | Centro Ejecutivo de Proveedores",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-def initialize_session_state():
-    """Inicializa las variables en el estado de sesión si no existen."""
-    defaults = {
-        "password_correct": False,
-        "data_loaded": False,
-        "erp_df": pd.DataFrame(),
-        "email_df": pd.DataFrame(),
-        "master_df": pd.DataFrame(),
-        "filtered_df": pd.DataFrame(),
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-def load_css():
-    """Carga estilos CSS personalizados para mejorar la apariencia del dashboard."""
-    st.markdown("""
-        <style>
-            .main .block-container { padding-top: 2rem; }
-            .stMetric {
-                background-color: #FFFFFF;
-                border: 1px solid #E0E0E0;
-                border-radius: 12px;
-                padding: 20px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-            }
-            .stMetric [data-testid="stMetricLabel"] {
-                font-size: 1rem; color: #4F4F4F; font-weight: 600;
-            }
-            .stMetric [data-testid="stMetricValue"] {
-                font-size: 2.2rem; font-weight: 700;
-            }
-            .stButton>button { width: 100%; border-radius: 8px; }
-            .st-expander { border-radius: 12px !important; border: 1px solid #E0E0E0 !important; }
-        </style>
-    """, unsafe_allow_html=True)
-
-# ======================================================================================
-# --- 3. LÓGICA DE AUTENTICACIÓN Y SEGURIDAD ---
-# ======================================================================================
 
 def check_password() -> bool:
-    """Muestra un formulario de contraseña y verifica el acceso."""
-    if st.session_state.get("password_correct", False):
+    if st.session_state.get("password_correct"):
         return True
 
-    st.header("🔒 Acceso Restringido")
-    st.write("Por favor, ingresa la contraseña para acceder al panel de gestión.")
-
-    with st.form("password_form"):
-        password = st.text_input("Contraseña:", type="password", key="password_input")
-        submitted = st.form_submit_button("Ingresar")
-
-        if submitted:
-            if password == APP_PASSWORD:
-                st.session_state.password_correct = True
-                st.rerun()
-            else:
-                st.error("Contraseña incorrecta. Inténtalo de nuevo.")
-
+    st.markdown(
+        """
+        <div style="background:linear-gradient(135deg,#0d2340 0%,#1c4e80 55%,#f3b221 100%);padding:26px 28px;border-radius:24px;color:white;margin-bottom:1rem;box-shadow:0 22px 56px rgba(13,35,64,.18);">
+            <div style="font-size:.82rem;letter-spacing:.12em;text-transform:uppercase;opacity:.85;">Ferreinox BI</div>
+            <div style="font-size:2.2rem;font-weight:800;line-height:1.05;margin-top:.35rem;">Centro Ejecutivo de Proveedores</div>
+            <div style="margin-top:.8rem;max-width:720px;line-height:1.55;font-size:1rem;opacity:.95;">Tablero corporativo para tesoreria, conciliacion documental, priorizacion de descuentos y programacion profesional de pagos a proveedores.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    password = st.text_input("Contraseña", type="password")
+    if st.button("Ingresar", type="primary", use_container_width=True):
+        st.session_state["password_correct"] = password == APP_PASSWORD
+        if not st.session_state["password_correct"]:
+            st.error("Contraseña incorrecta.")
+        st.rerun()
     return False
 
-# ======================================================================================
-# --- 4. CONEXIONES A SERVICIOS EXTERNOS (GOOGLE, DROPBOX, EMAIL) ---
-# ======================================================================================
 
-@st.cache_resource(show_spinner="Conectando a Google Sheets...")
-def connect_to_google_sheets() -> Optional[Client]:
-    """Establece conexión con la API de Google Sheets."""
-    try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["google_credentials"], scopes=scopes)
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"❌ Error crítico al autenticar con Google Sheets: {e}")
-        return None
-
-def get_or_create_worksheet(client: Client, sheet_key: str, worksheet_name: str) -> Optional[Worksheet]:
-    """Obtiene una hoja de cálculo por su nombre, o la crea si no existe."""
-    try:
-        spreadsheet = client.open_by_key(sheet_key)
-        try:
-            return spreadsheet.worksheet(worksheet_name)
-        except gspread.WorksheetNotFound:
-            st.warning(f"Hoja '{worksheet_name}' no encontrada. Creando una nueva...")
-            return spreadsheet.add_worksheet(title=worksheet_name, rows="1000", cols="50")
-    except gspread.exceptions.APIError as e:
-        st.error(f"Error de API de Google al acceder a la hoja de cálculo: {e}")
-    except Exception as e:
-        st.error(f"Error inesperado accediendo a la hoja '{worksheet_name}': {e}")
-    return None
-
-def update_gsheet_from_df(worksheet: Worksheet, df: pd.DataFrame) -> bool:
-    """
-    Actualiza una hoja de Google Sheets con los datos de un DataFrame,
-    preservando las columnas existentes fuera del rango del DataFrame.
-    """
-    if not isinstance(worksheet, Worksheet):
-        st.error("Se intentó actualizar una hoja de cálculo inválida.")
-        return False
-
-    try:
-        # --- PREPARACIÓN DE DATOS ---
-        df_to_upload = df.copy()
-
-        # Bucle robusto para convertir todas las columnas de fecha a texto.
-        for col in df_to_upload.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_to_upload[col]):
-                # Se normaliza la fecha para asegurar que no haya componentes de tiempo inesperados
-                df_to_upload[col] = pd.to_datetime(df_to_upload[col]).dt.strftime('%Y-%m-%d')
-
-        # Convierte todo el DataFrame a string y reemplaza los nulos para una subida limpia.
-        df_to_upload = df_to_upload.astype(str).replace({
-            'nan': '', 'NaT': '', 'None': '', 'NaN': ''
-        })
-
-        # --- LÓGICA DE ACTUALIZACIÓN MODIFICADA PARA NO BORRAR COLUMNAS ADICIONALES ---
-        
-        # 1. Preparar los datos para la subida (encabezados + filas).
-        data_to_upload = [df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist()
-        num_rows_data = len(data_to_upload)
-        num_cols_data = len(df_to_upload.columns)
-        
-        # 2. Obtener la letra de la última columna que el script manejará.
-        last_col_letter = get_column_letter(num_cols_data)
-        
-        # 3. Primero, actualiza el contenido nuevo desde la celda A1.
-        worksheet.update(data_to_upload, 'A1')
-
-        # 4. Limpiar las filas sobrantes DEBAJO de los nuevos datos.
-        start_row_to_clear = num_rows_data + 1
-        total_sheet_rows = worksheet.row_count
-        
-        if start_row_to_clear <= total_sheet_rows:
-            range_to_clear = f'A{start_row_to_clear}:{last_col_letter}{total_sheet_rows}'
-            
-            rows_to_clear_count = total_sheet_rows - start_row_to_clear + 1
-            if rows_to_clear_count > 0:
-                empty_data = [[''] * num_cols_data for _ in range(rows_to_clear_count)]
-                worksheet.update(range_to_clear, empty_data, raw=False)
-
-        return True
-
-    except Exception as e:
-        st.error(f"❌ Error al actualizar la hoja '{worksheet.title}': {e}")
-        return False
-
-
-# ======================================================================================
-# --- 5. LECTURA Y PROCESAMIENTO DE DATOS (ERP & CORREO) ---
-# ======================================================================================
-
-def clean_and_convert_numeric(value: Any) -> float:
-    """Limpia una cadena de texto que representa un número y la convierte a float."""
-    if pd.isna(value) or value is None:
-        return np.nan
-    if isinstance(value, (int, float)):
-        return float(value)
-    
-    cleaned_str = str(value).strip().replace('$', '').replace('COP', '').strip()
-    try:
-        if '.' in cleaned_str and ',' in cleaned_str:
-            if cleaned_str.rfind('.') > cleaned_str.rfind(','):
-                cleaned_str = cleaned_str.replace(',', '')
-            else:
-                cleaned_str = cleaned_str.replace('.', '').replace(',', '.')
-        else:
-            cleaned_str = cleaned_str.replace(',', '.')
-        return float(cleaned_str)
-    except (ValueError, TypeError):
-        return np.nan
-
-def normalize_invoice_number(inv_num: Any) -> str:
-    """Limpia y estandariza el número de factura para un cruce más efectivo."""
-    if not isinstance(inv_num, str):
-        inv_num = str(inv_num)
-    return re.sub(r'[^A-Z0-9]', '', inv_num.upper()).strip()
-
-@st.cache_data(show_spinner="Descargando datos del ERP (Dropbox)...", ttl=600)
-def load_erp_data() -> pd.DataFrame:
-    """Carga los datos de facturas desde un archivo CSV en Dropbox y los limpia."""
-    try:
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets.dropbox["refresh_token"],
-            app_key=st.secrets.dropbox["app_key"],
-            app_secret=st.secrets.dropbox["app_secret"]
-        )
-        _, response = dbx.files_download(DROPBOX_FILE_PATH)
-
-        column_names = [
-            COL_PROVEEDOR_ERP, 'serie', 'num_entrada', COL_NUM_FACTURA,
-            'doc_erp', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP
-        ]
-        
-        try:
-            df = pd.read_csv(io.StringIO(response.content.decode('latin1')),
-                                         sep='{', header=None, names=column_names, engine='python')
-        except Exception as csv_error:
-            st.error(f"❌ Error al procesar el archivo CSV de Dropbox: {csv_error}")
-            return pd.DataFrame()
-
-        df[COL_VALOR_ERP] = df[COL_VALOR_ERP].apply(clean_and_convert_numeric)
-        df.dropna(subset=[COL_PROVEEDOR_ERP, COL_VALOR_ERP], inplace=True)
-        
-        # Lógica para manejar Notas Crédito: si el valor es negativo y no hay número de factura,
-        # se crea un identificador único para poder procesarla.
-        credit_note_mask = (df[COL_VALOR_ERP] < 0) & (df[COL_NUM_FACTURA].isna() | (df[COL_NUM_FACTURA].str.strip() == ''))
-        
-        if credit_note_mask.any():
-            df.loc[credit_note_mask, COL_NUM_FACTURA] = 'NC-' + \
-                df.loc[credit_note_mask, 'doc_erp'].astype(str) + '-' + \
-                df.loc[credit_note_mask, COL_VALOR_ERP].abs().astype(int).astype(str)
-
-        df.dropna(subset=[COL_NUM_FACTURA], inplace=True)
-
-        df[COL_NUM_FACTURA] = df[COL_NUM_FACTURA].apply(normalize_invoice_number)
-        
-        # Se normalizan las fechas del ERP para quitar la hora y luego se localiza la zona horaria.
-        df[COL_FECHA_EMISION_ERP] = pd.to_datetime(df[COL_FECHA_EMISION_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-        df[COL_FECHA_VENCIMIENTO_ERP] = pd.to_datetime(df[COL_FECHA_VENCIMIENTO_ERP], errors='coerce').dt.normalize().dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-        
-        st.success(f"✅ Datos del ERP cargados exitosamente ({len(df)} registros).")
-        return df
-
-    except dropbox.exceptions.ApiError as e:
-        st.error(f"❌ Error de API de Dropbox: No se pudo descargar el archivo. Verifica la ruta y permisos. {e}")
-    except Exception as e:
-        st.error(f"❌ Error crítico cargando datos del ERP: {e}")
-
-    return pd.DataFrame()
-
-
-def parse_invoice_xml(xml_content: str) -> Optional[Dict[str, Any]]:
-    """Parsea de forma robusta el contenido de un XML de factura electrónica DIAN."""
-    try:
-        xml_content = re.sub(r'^[^\<]+', '', xml_content.strip())
-        root = ET.fromstring(xml_content.encode('utf-8'))
-        
-        ns = {
-            'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
-            'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
-        }
-        
-        description_node = root.find('.//cac:Attachment/cac:ExternalReference/cbc:Description', ns)
-        if description_node is not None and description_node.text and '<Invoice' in description_node.text:
-            try:
-                inner_xml_text = re.sub(r'^[^\<]+', '', description_node.text.strip())
-                root = ET.fromstring(inner_xml_text.encode('utf-8'))
-            except ET.ParseError:
-                pass
-
-        def find_text_robust(element, paths: List[str]) -> Optional[str]:
-            for path in paths:
-                node = element.find(path, ns)
-                if node is not None and node.text:
-                    return node.text.strip()
-            return None
-
-        invoice_number = find_text_robust(root, ['./cbc:ID'])
-        supplier_name = find_text_robust(root, [
-            './cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name',
-            './cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName'
-        ])
-        issue_date = find_text_robust(root, ['./cbc:IssueDate'])
-        due_date = find_text_robust(root, ['./cbc:DueDate', './cac:PaymentMeans/cbc:PaymentDueDate'])
-        total_value = find_text_robust(root, ['./cac:LegalMonetaryTotal/cbc:PayableAmount'])
-
-        if not all([invoice_number, supplier_name, total_value]):
-            return None
-
-        return {
-            COL_NUM_FACTURA: normalize_invoice_number(invoice_number),
-            COL_PROVEEDOR_CORREO: supplier_name,
-            COL_FECHA_EMISION_CORREO: issue_date,
-            COL_FECHA_VENCIMIENTO_CORREO: due_date,
-            COL_VALOR_CORREO: total_value
-        }
-    except (ET.ParseError, Exception):
-        return None
-
-def fetch_new_invoices_from_email(start_date: datetime) -> pd.DataFrame:
-    """Busca, descarga y extrae datos de facturas desde archivos adjuntos en Gmail."""
-    invoices_data = []
-    try:
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-        mail.login(st.secrets.email["address"], st.secrets.email["password"])
-        mail.select(f'"{EMAIL_FOLDER}"')
-
-        search_query = f'(SINCE "{start_date.strftime("%d-%b-%Y")}")'
-        _, messages = mail.search(None, search_query)
-        message_ids = messages[0].split()
-
-        if not message_ids:
-            st.info(f"✅ No se encontraron correos nuevos desde {start_date.strftime('%Y-%m-%d')}.")
-            mail.logout()
-            return pd.DataFrame()
-
-        progress_text = f"Procesando {len(message_ids)} correos encontrados..."
-        progress_bar = st.progress(0, text=progress_text)
-
-        for i, num in enumerate(message_ids):
-            _, data = mail.fetch(num, "(RFC822)")
-            msg = email.message_from_bytes(data[0][1])
-
-            for part in msg.walk():
-                if part.get_content_maintype() == "multipart" or part.get("Content-Disposition") is None:
-                    continue
-
-                filename = part.get_filename()
-                if filename and filename.lower().endswith('.zip'):
-                    try:
-                        with zipfile.ZipFile(io.BytesIO(part.get_payload(decode=True))) as zf:
-                            for name in zf.namelist():
-                                if name.lower().endswith('.xml'):
-                                    xml_content = zf.read(name).decode('utf-8', 'ignore')
-                                    details = parse_invoice_xml(xml_content)
-                                    if details:
-                                        invoices_data.append(details)
-                    except (zipfile.BadZipFile, io.UnsupportedOperation):
-                        continue
-            progress_bar.progress((i + 1) / len(message_ids), text=f"Procesando {i+1}/{len(message_ids)} correos...")
-        
-        mail.logout()
-
-    except imaplib.IMAP4.error as e:
-        st.warning(f"⚠️ Error de conexión IMAP. Verifica credenciales o configuración: {e}")
-    except Exception as e:
-        st.warning(f"⚠️ Error inesperado procesando correos: {e}")
-
-    return pd.DataFrame(invoices_data)
-
-
-# ======================================================================================
-# --- 6. LÓGICA DE PROCESAMIENTO Y CONCILIACIÓN DE DATOS ---
-# ======================================================================================
-
-def calculate_financial_discounts(df: pd.DataFrame) -> pd.DataFrame:
-    """Calcula los descuentos por pronto pago disponibles para cada factura."""
-    df['descuento_pct'] = 0.0
-    df['valor_descuento'] = 0.0
-    df['valor_con_descuento'] = df[COL_VALOR_ERP]
-    df['fecha_limite_descuento'] = pd.Series(dtype='datetime64[ns, UTC]')
-    df['estado_descuento'] = 'No Aplica'
-
-    today = datetime.now(COLOMBIA_TZ)
-
-    df_copy = df.copy()
-
-    for provider, tiers in DISCOUNT_PROVIDERS.items():
-        provider_mask = (df_copy['nombre_proveedor'] == provider) & (df_copy[COL_FECHA_EMISION_ERP].notna()) & (df_copy['estado_pago'] != '🔴 Vencida')
-        
-        if provider_mask.any():
-            sorted_tiers = sorted(tiers, key=lambda x: x['days'])
-            
-            for tier in sorted_tiers:
-                days_limit = tier['days']
-                rate = tier['rate']
-                
-                fecha_limite = df_copy.loc[provider_mask, COL_FECHA_EMISION_ERP] + timedelta(days=days_limit)
-                
-                eligible_mask = (fecha_limite >= today) & (df_copy['estado_descuento'] == 'No Aplica') & provider_mask
-                
-                if eligible_mask.any():
-                    df_copy.loc[eligible_mask, 'descuento_pct'] = rate
-                    df_copy.loc[eligible_mask, 'valor_descuento'] = df_copy.loc[eligible_mask, COL_VALOR_ERP] * rate
-                    df_copy.loc[eligible_mask, 'valor_con_descuento'] = df_copy.loc[eligible_mask, COL_VALOR_ERP] - df_copy.loc[eligible_mask, 'valor_descuento']
-                    df_copy.loc[eligible_mask, 'fecha_limite_descuento'] = fecha_limite[eligible_mask]
-                    df_copy.loc[eligible_mask, 'estado_descuento'] = f'Disponible ({rate:.1%} en {days_limit} días)'
-    
-    return df_copy
-
-def process_and_reconcile(erp_df: pd.DataFrame, email_df: pd.DataFrame) -> pd.DataFrame:
-    """Cruza los datos del ERP y del correo para crear un DataFrame maestro conciliado."""
-    if erp_df.empty:
-        st.error("El análisis no puede continuar sin datos del ERP.")
-        return pd.DataFrame()
-
-    erp_df_proc = erp_df.copy()
-    erp_df_proc[COL_VALOR_ERP] = pd.to_numeric(erp_df_proc[COL_VALOR_ERP], errors='coerce')
-
-    if not email_df.empty:
-        email_df_proc = email_df.copy()
-        email_df_proc[COL_VALOR_CORREO] = email_df_proc[COL_VALOR_CORREO].apply(clean_and_convert_numeric)
-        
-        date_cols_correo = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO]
-        for col in date_cols_correo:
-            if col in email_df_proc.columns:
-                email_df_proc[col] = email_df_proc[col].astype(str)
-                date_series = pd.to_datetime(email_df_proc[col], errors='coerce')
-                
-                if pd.api.types.is_datetime64_any_dtype(date_series):
-                    date_series = date_series.dt.normalize()
-                    if date_series.dt.tz is None:
-                        email_df_proc[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-                    else:
-                        email_df_proc[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-                else:
-                    email_df_proc[col] = pd.NaT
-
-        email_df_proc = email_df_proc.drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
-    else:
-        email_df_proc = pd.DataFrame(columns=[COL_NUM_FACTURA, COL_PROVEEDOR_CORREO, COL_VALOR_CORREO, COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO])
-
-    master_df = pd.merge(erp_df_proc, email_df_proc, on=COL_NUM_FACTURA, how='outer', indicator=True)
-
-    master_df[COL_VALOR_ERP] = pd.to_numeric(master_df[COL_VALOR_ERP], errors='coerce')
-    master_df[COL_VALOR_CORREO] = pd.to_numeric(master_df[COL_VALOR_CORREO], errors='coerce')
-
-    is_credit_note_mask = (master_df[COL_VALOR_ERP] < 0)
-
-    erp_vals = master_df[COL_VALOR_ERP].fillna(0)
-    email_vals = master_df[COL_VALOR_CORREO].fillna(0)
-    conditions_conciliacion = [
-        (is_credit_note_mask),
-        (master_df['_merge'] == 'right_only'),
-        (master_df['_merge'] == 'left_only'),
-        (master_df[COL_VALOR_ERP].notna() & master_df[COL_VALOR_CORREO].notna() & ~np.isclose(erp_vals, email_vals, atol=1.0)),
-        (master_df['_merge'] == 'both')
-    ]
-    choices_conciliacion = ['📝 Nota Crédito ERP', '📧 Solo en Correo', '📬 Pendiente de Correo', '⚠️ Discrepancia de Valor', '✅ Conciliada']
-    master_df['estado_conciliacion'] = np.select(conditions_conciliacion, choices_conciliacion, default='-')
-
-    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-    master_df['dias_para_vencer'] = (master_df[COL_FECHA_VENCIMIENTO_ERP] - today).dt.days
-    
-    conditions_pago = [
-        (is_credit_note_mask),
-        master_df['dias_para_vencer'] < 0,
-        (master_df['dias_para_vencer'] >= 0) & (master_df['dias_para_vencer'] <= 7)
-    ]
-    choices_pago = ["N/A (Nota Crédito)", "🔴 Vencida", "🟠 Por Vencer (7 días)"]
-    master_df['estado_pago'] = np.select(conditions_pago, choices_pago, default="🟢 Vigente")
-    master_df['estado_pago'] = np.where(master_df[COL_FECHA_VENCIMIENTO_ERP].isna() & ~is_credit_note_mask, 'Sin Fecha ERP', master_df['estado_pago'])
-
-    master_df['nombre_proveedor'] = master_df[COL_PROVEEDOR_ERP].fillna(master_df[COL_PROVEEDOR_CORREO])
-    master_df.drop(columns=['_merge'], inplace=True)
-
-    if not master_df.empty:
-        master_df = calculate_financial_discounts(master_df)
-
-    # --- NUEVO ---: Generación del ID único para cada factura.
-    # Esta clave es crucial para poder fusionar los datos sin perder los estados de pago.
-    # Se usa la misma lógica que en el script de Gerencia para garantizar la consistencia.
-    master_df['id_factura_unico'] = master_df.apply(
-        lambda row: f"{row.get('nombre_proveedor', '')}-{row.get('num_factura', '')}-{row.get('valor_total_erp', 0)}",
-        axis=1
-    ).str.replace(r'[\s/]+', '-', regex=True)
-
-    return master_df
-
-
-# ======================================================================================
-# --- 7. ORQUESTACIÓN DE SINCRONIZACIÓN ---
-# ======================================================================================
-
-def run_full_sync():
-    """Orquesta el proceso completo de sincronización de datos."""
-    with st.spinner('Iniciando sincronización completa...'):
-        st.info("Paso 1/6: Conectando a servicios de Google...")
-        gs_client = connect_to_google_sheets()
-        if not gs_client:
-            st.error("Sincronización cancelada. No se pudo conectar a Google.")
-            st.stop()
-        
-        # --- NUEVO ---: Paso 2/6: Leer el reporte consolidado existente para preservar estados.
-        st.info("Paso 2/6: Leyendo datos existentes para preservar estados de pago...")
-        existing_report_df = pd.DataFrame()
-        try:
-            report_sheet_existing = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
-            if report_sheet_existing:
-                records = report_sheet_existing.get_all_records()
-                if records:
-                    existing_report_df = pd.DataFrame(records)
-                    # Aseguramos que las columnas a preservar existan
-                    cols_to_preserve = ['id_factura_unico', 'id_lote_pago', 'estado_factura']
-                    for col in cols_to_preserve:
-                        if col not in existing_report_df.columns:
-                            existing_report_df[col] = '' if col != 'estado_factura' else 'Pendiente'
-                    
-                    # Seleccionamos solo las columnas que queremos mantener
-                    existing_report_df = existing_report_df[cols_to_preserve]
-        except Exception as e:
-            st.warning(f"No se pudo leer el reporte existente. Se creará desde cero. Error: {e}")
-
-
-        search_start_date = datetime.now(COLOMBIA_TZ) - timedelta(days=SEARCH_DAYS_AGO)
-        st.info(f"Paso 3/6: Buscando nuevos correos desde {search_start_date.strftime('%Y-%m-%d')}...")
-        email_df = fetch_new_invoices_from_email(search_start_date)
-
-        db_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_DB_NAME)
-        historical_df = pd.DataFrame()
-        if db_sheet:
-            try:
-                historical_df = pd.DataFrame(db_sheet.get_all_records())
-                if not historical_df.empty:
-                    date_cols_to_convert = [COL_FECHA_EMISION_CORREO, COL_FECHA_VENCIMIENTO_CORREO, 'fecha_lectura']
-                    for col in date_cols_to_convert:
-                        if col in historical_df.columns:
-                            historical_df[col] = historical_df[col].astype(str)
-                            date_series = pd.to_datetime(historical_df[col], errors='coerce')
-                            
-                            if pd.api.types.is_datetime64_any_dtype(date_series):
-                                date_series = date_series.dt.normalize()
-                                if date_series.dt.tz is None:
-                                    historical_df[col] = date_series.dt.tz_localize(COLOMBIA_TZ, ambiguous='infer')
-                                else:
-                                    historical_df[col] = date_series.dt.tz_convert(COLOMBIA_TZ)
-                            else:
-                                historical_df[col] = pd.NaT
-
-            except gspread.exceptions.GSpreadException as e:
-                st.warning(f"No se pudo leer la base de datos histórica de correos: {e}")
-
-        if not email_df.empty:
-            st.success(f"¡Se encontraron y procesaron {len(email_df)} facturas nuevas en el correo!")
-            email_df['fecha_lectura'] = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-            st.info(f"Paso 4/6: Actualizando base de datos de correos '{GSHEET_DB_NAME}'...")
-            
-            combined_df = pd.concat([historical_df, email_df]).drop_duplicates(subset=[COL_NUM_FACTURA], keep='last')
-            if db_sheet:
-                if not update_gsheet_from_df(db_sheet, combined_df):
-                    st.error("Fallo al actualizar la base de datos de correos en Google Sheets.")
-            st.session_state.email_df = combined_df
-        else:
-            st.info("No se encontraron facturas nuevas para añadir a la base de datos.")
-            st.session_state.email_df = historical_df
-
-        st.info("Paso 5/6: Cargando datos del ERP y conciliando...")
-        st.session_state.erp_df = load_erp_data()
-        final_df = process_and_reconcile(st.session_state.erp_df, st.session_state.email_df)
-        
-        # --- NUEVO ---: Fusión de datos nuevos con estados existentes.
-        if not final_df.empty and not existing_report_df.empty:
-            st.info("... fusionando con estados de pago existentes.")
-            # Hacemos un 'left merge' para mantener todas las facturas nuevas y añadirles el estado antiguo si existe.
-            merged_df = pd.merge(final_df, existing_report_df, on='id_factura_unico', how='left')
-            
-            # Para las facturas que no tenían un estado previo (nuevas), se les asigna 'Pendiente'.
-            merged_df['estado_factura'] = merged_df['estado_factura'].fillna('Pendiente')
-            # Llenamos los IDs de lote vacíos con un string vacío para evitar 'NaN'.
-            merged_df['id_lote_pago'] = merged_df['id_lote_pago'].fillna('')
-        elif not final_df.empty:
-            # Si no había reporte antiguo, se crean las columnas desde cero.
-            st.info("... no se encontró reporte previo, creando columnas de estado.")
-            merged_df = final_df.copy()
-            merged_df['id_lote_pago'] = ''
-            merged_df['estado_factura'] = 'Pendiente'
-        else:
-            merged_df = pd.DataFrame() # No hay datos que procesar
-
-        st.session_state.master_df = merged_df
-
-        st.info(f"Paso 6/6: Actualizando reporte '{GSHEET_REPORT_NAME}' en Google Sheets...")
-        report_sheet = get_or_create_worksheet(gs_client, st.secrets["google_sheet_id"], GSHEET_REPORT_NAME)
-        if report_sheet and not merged_df.empty:
-            # --- MODIFICADO ---: Ahora se sube el DataFrame fusionado (merged_df)
-            if update_gsheet_from_df(report_sheet, merged_df):
-                st.success(f"✅ ¡Reporte '{GSHEET_REPORT_NAME}' actualizado en Google Sheets!")
-        else:
-            st.warning("No se actualizó el reporte en Google Sheets (sin datos finales o sin acceso a la hoja).")
-
-        st.session_state['last_sync_time'] = datetime.now(COLOMBIA_TZ).strftime('%Y-%m-%d %H:%M:%S')
-        st.session_state.data_loaded = True
-        st.balloons()
-
-# ======================================================================================
-# --- 8. COMPONENTES DE LA INTERFAZ DE USUARIO (STREAMLIT) ---
-# ======================================================================================
-
-def display_sidebar(master_df: pd.DataFrame):
-    """Renderiza la barra lateral con el logo, botón de sincronización y filtros."""
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            :root {
+                --fx-navy: #0d2340;
+                --fx-blue: #1c4e80;
+                --fx-red: #ef3737;
+                --fx-gold: #f3b221;
+                --fx-ink: #223548;
+                --fx-soft: #eef3f8;
+            }
+            .main .block-container {
+                padding-top: 1.2rem;
+                padding-bottom: 2.8rem;
+            }
+            [data-testid="stSidebar"] {
+                background: linear-gradient(180deg, #0a1a2f 0%, #102848 58%, #15365e 100%);
+                border-right: 1px solid rgba(255,255,255,0.08);
+            }
+            [data-testid="stSidebar"] * {
+                color: #f5f8fb;
+            }
+            [data-testid="stSidebar"] .stButton > button {
+                background: linear-gradient(135deg, var(--fx-red) 0%, #ff6a3d 100%);
+                color: white;
+                border: 0;
+                font-weight: 800;
+                border-radius: 14px;
+                box-shadow: 0 12px 28px rgba(239,55,55,.28);
+            }
+            [data-testid="stSidebar"] .stButton > button:hover {
+                background: linear-gradient(135deg, #d82424 0%, #f08a16 100%);
+                color: white;
+            }
+            .sidebar-shell {
+                background: linear-gradient(180deg, rgba(255,255,255,.08) 0%, rgba(255,255,255,.03) 100%);
+                border: 1px solid rgba(255,255,255,.09);
+                border-radius: 22px;
+                padding: 18px 16px;
+                margin-bottom: 1rem;
+                box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+            }
+            .sidebar-kicker {
+                font-size: .72rem;
+                letter-spacing: .14em;
+                text-transform: uppercase;
+                opacity: .72;
+            }
+            .sidebar-title {
+                font-size: 1.35rem;
+                font-weight: 800;
+                line-height: 1.05;
+                margin-top: .35rem;
+            }
+            .sidebar-copy {
+                margin-top: .65rem;
+                font-size: .92rem;
+                line-height: 1.5;
+                color: rgba(245,248,251,.82);
+            }
+            .sidebar-chip {
+                display: inline-block;
+                margin: 0 8px 8px 0;
+                padding: 7px 10px;
+                border-radius: 999px;
+                font-size: .75rem;
+                background: rgba(243,178,33,.16);
+                border: 1px solid rgba(243,178,33,.22);
+            }
+            .hero-shell {
+                background:
+                    radial-gradient(circle at top right, rgba(243,178,33,.28), transparent 24%),
+                    linear-gradient(135deg, #0d2340 0%, #1c4e80 50%, #ef3737 100%);
+                border-radius: 32px;
+                color: #ffffff;
+                padding: 30px 34px;
+                box-shadow: 0 28px 70px rgba(13, 35, 64, 0.22);
+                margin-bottom: 1.2rem;
+                position: relative;
+                overflow: hidden;
+            }
+            .hero-kicker {
+                text-transform: uppercase;
+                letter-spacing: 0.12em;
+                font-size: 0.82rem;
+                font-weight: 700;
+                opacity: 0.78;
+            }
+            .hero-title {
+                font-size: 2.7rem;
+                font-weight: 800;
+                line-height: 1.02;
+                margin: 0.35rem 0 0 0;
+                max-width: 780px;
+            }
+            .hero-copy {
+                font-size: 1.02rem;
+                max-width: 880px;
+                line-height: 1.55;
+                margin-top: 0.9rem;
+                opacity: 0.93;
+            }
+            .hero-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                gap: 0.8rem;
+                margin-top: 1.1rem;
+            }
+            .hero-pill {
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 20px;
+                padding: 1rem 1.05rem;
+                backdrop-filter: blur(10px);
+            }
+            .hero-pill-label {
+                font-size: 0.78rem;
+                text-transform: uppercase;
+                opacity: 0.74;
+                margin-bottom: 0.22rem;
+            }
+            .hero-pill-value {
+                font-size: 1.42rem;
+                font-weight: 800;
+            }
+            .section-card {
+                background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+                border: 1px solid rgba(12, 45, 87, 0.08);
+                border-radius: 24px;
+                padding: 1.2rem 1.3rem;
+                box-shadow: 0 14px 34px rgba(12, 45, 87, 0.06);
+                margin-bottom: 1rem;
+            }
+            .section-title {
+                color: var(--fx-navy);
+                font-size: 1.08rem;
+                font-weight: 800;
+                margin-bottom: 0.25rem;
+            }
+            .section-copy {
+                color: #5d7081;
+                font-size: 0.93rem;
+                margin-bottom: 0.9rem;
+            }
+            div[data-testid="metric-container"] {
+                background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+                border: 1px solid rgba(12,45,87,.08);
+                border-radius: 20px;
+                padding: .9rem 1rem;
+                box-shadow: 0 10px 24px rgba(12,45,87,.05);
+            }
+            .overview-banner {
+                background: linear-gradient(90deg, rgba(239,55,55,.09) 0%, rgba(243,178,33,.12) 100%);
+                border: 1px solid rgba(239,55,55,.08);
+                border-radius: 18px;
+                padding: 14px 16px;
+                margin-bottom: 1rem;
+                color: var(--fx-ink);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def payload_or_empty() -> dict:
+    payload = load_operational_payload()
+    payload.setdefault("master_df", pd.DataFrame())
+    payload.setdefault("payment_plan_df", pd.DataFrame())
+    payload.setdefault("risk_alerts_df", pd.DataFrame())
+    payload.setdefault("provider_df", pd.DataFrame())
+    payload.setdefault("email_history_df", pd.DataFrame())
+    payload.setdefault("email_log_df", pd.DataFrame())
+    payload.setdefault("lot_history_df", pd.DataFrame())
+    payload.setdefault("pending_df", pd.DataFrame())
+    payload.setdefault("paid_df", pd.DataFrame())
+    payload.setdefault("sync_stats", {})
+    return payload
+
+
+def summarize_operational_health(payload: dict) -> dict:
+    master_df = payload["master_df"]
+    provider_df = payload["provider_df"]
+    plan_df = payload["payment_plan_df"]
+    email_log_df = payload["email_log_df"]
+    lot_history_df = payload["lot_history_df"]
+
+    pending_rows = len(payload["pending_df"]) if not payload["pending_df"].empty else int((master_df.get("estado_erp", pd.Series(dtype=object)) == "Pendiente").sum())
+    paid_rows = len(payload["paid_df"]) if not payload["paid_df"].empty else int((master_df.get("estado_erp", pd.Series(dtype=object)) == "Saldada").sum())
+    providers_total = len(provider_df)
+    active_providers = int(provider_df["activo"].fillna(True).sum()) if not provider_df.empty and "activo" in provider_df.columns else providers_total
+    providers_with_payment_email = int(provider_df["email_pago"].fillna("").astype(str).str.strip().ne("").sum()) if not provider_df.empty and "email_pago" in provider_df.columns else 0
+    providers_with_alert_email = int(provider_df["email_alertas"].fillna("").astype(str).str.strip().ne("").sum()) if not provider_df.empty and "email_alertas" in provider_df.columns else 0
+    lots_registered = len(lot_history_df)
+    emails_sent = int((email_log_df["estado_envio"].astype(str) == "Enviado").sum()) if not email_log_df.empty and "estado_envio" in email_log_df.columns else 0
+    discount_amount = plan_df["valor_descuento"].sum() if not plan_df.empty else 0
+
+    return {
+        "pending_rows": pending_rows,
+        "paid_rows": paid_rows,
+        "providers_total": providers_total,
+        "active_providers": active_providers,
+        "providers_with_payment_email": providers_with_payment_email,
+        "providers_with_alert_email": providers_with_alert_email,
+        "lots_registered": lots_registered,
+        "emails_sent": emails_sent,
+        "discount_amount": discount_amount,
+    }
+
+
+def display_sidebar(payload: dict) -> None:
     with st.sidebar:
         st.image("LOGO FERREINOX SAS BIC 2024.png")
-        st.title("Panel de Control")
-
-        if st.button("🔄 Sincronizar Todo", type="primary", help=f"Busca correos de los últimos {SEARCH_DAYS_AGO} días, recarga el ERP y actualiza reportes."):
-            run_full_sync()
+        st.markdown(
+            """
+            <div class="sidebar-shell">
+                <div class="sidebar-kicker">Ferreinox BI</div>
+                <div class="sidebar-title">Panel Ejecutivo de Proveedores</div>
+                <div class="sidebar-copy">Conciliacion documental, descuentos de pronto pago, alertas de mora y lotes de comunicacion profesional en un solo centro operativo.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("🔄 Sincronizar fuentes", type="primary", use_container_width=True):
+            sync_treasury_data()
             st.rerun()
 
-        if 'master_df' in st.session_state and not st.session_state.master_df.empty:
-            st.divider()
-            st.header("Filtros Globales 🔎")
+        if st.session_state.get("last_treasury_sync"):
+            st.success(f"Última sincronización: {st.session_state['last_treasury_sync']}")
 
-            proveedores_lista = sorted(master_df['nombre_proveedor'].dropna().unique().tolist())
-            selected_suppliers = st.multiselect("Proveedor:", proveedores_lista, default=proveedores_lista)
-            
-            min_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().min()
-            max_date_val = master_df[COL_FECHA_EMISION_ERP].dropna().max()
-            
-            today = datetime.now().date()
-            min_date = min_date_val.date() if pd.notna(min_date_val) else today - timedelta(days=365)
-            max_date = max_date_val.date() if pd.notna(max_date_val) else today
-            
-            date_range = (min_date, max_date)
-            if min_date <= max_date:
-                date_range = st.date_input(
-                    "Fecha de Emisión (ERP):",
-                    value=(min_date, max_date),
-                    min_value=min_date, max_value=max_date
+        sync_stats = payload.get("sync_stats", {})
+        if sync_stats:
+            st.caption(
+                " | ".join(
+                    [
+                        f"Correos: {sync_stats.get('emails_found', 0)}",
+                        f"Adjuntos: {sync_stats.get('attachments_scanned', 0)}",
+                        f"XML: {sync_stats.get('xml_files_scanned', 0)}",
+                        f"Facturas detectadas: {sync_stats.get('invoice_rows_detected', 0)}",
+                    ]
                 )
-            
-            filtered_df = master_df[master_df['nombre_proveedor'].isin(selected_suppliers)]
-            if len(date_range) == 2:
-                start_date = pd.to_datetime(date_range[0]).tz_localize(COLOMBIA_TZ)
-                end_date = pd.to_datetime(date_range[1]).tz_localize(COLOMBIA_TZ) + timedelta(days=1)
-                erp_dates_mask = filtered_df[COL_FECHA_EMISION_ERP].notna()
-                filtered_df = filtered_df[erp_dates_mask & (filtered_df[COL_FECHA_EMISION_ERP] >= start_date) & (filtered_df[COL_FECHA_EMISION_ERP] < end_date)]
+            )
 
-            st.session_state.filtered_df = filtered_df
+        st.divider()
+        st.markdown("**Fuentes activas**")
+        st.markdown('<span class="sidebar-chip">Dropbox · cartera pendiente</span>', unsafe_allow_html=True)
+        st.markdown('<span class="sidebar-chip">Repositorio · cartera saldada</span>', unsafe_allow_html=True)
+        st.markdown('<span class="sidebar-chip">Gmail · XML y ZIP</span>', unsafe_allow_html=True)
+        st.markdown('<span class="sidebar-chip">Google Sheets · trazabilidad</span>', unsafe_allow_html=True)
+        st.divider()
+        st.markdown("**Criterio ejecutivo**")
+        st.write("Prioriza descuentos altos sin perder vencimientos.")
+        st.write("Escala riesgo de mora dentro de 48 horas.")
+        st.write("Registra cada lote y cada correo enviado.")
 
-def display_dashboard(df: pd.DataFrame):
-    """Renderiza el contenido principal del dashboard."""
-    st.header("📊 Resumen Financiero y de Gestión")
+
+def hero_section(payload: dict) -> None:
+    master_df = payload["master_df"]
+    plan_df = payload["payment_plan_df"]
+    alerts_df = payload["risk_alerts_df"]
+
+    pending_amount = master_df.loc[master_df["estado_erp"] == "Pendiente", "valor_erp"].sum() if not master_df.empty else 0
+    paid_amount = master_df.loc[master_df["estado_erp"] == "Saldada", "valor_erp"].sum() if not master_df.empty else 0
+    potential_savings = plan_df["valor_descuento"].sum() if not plan_df.empty else 0
+    providers_count = master_df["proveedor"].nunique() if not master_df.empty else 0
+
+    st.markdown(
+        f"""
+        <div class="hero-shell">
+            <div class="hero-kicker">Ferreinox BI · sociedades BIC · 2026</div>
+            <h1 class="hero-title">Centro Ejecutivo de Pagos, Conciliación y Descuentos a Proveedores</h1>
+            <div class="hero-copy">La plataforma integra cartera pendiente, cartera saldada, XML recibidos por correo y reglas comerciales para decidir con claridad qué pagar primero, qué ahorro capturar, qué discrepancias resolver y qué comunicaciones emitir con trazabilidad total.</div>
+            <div class="hero-grid">
+                <div class="hero-pill"><div class="hero-pill-label">Pendiente actual</div><div class="hero-pill-value">{format_currency(pending_amount)}</div></div>
+                <div class="hero-pill"><div class="hero-pill-label">Saldado identificado</div><div class="hero-pill-value">{format_currency(paid_amount)}</div></div>
+                <div class="hero-pill"><div class="hero-pill-label">Ahorro capturable</div><div class="hero-pill-value">{format_currency(potential_savings)}</div></div>
+                <div class="hero-pill"><div class="hero-pill-label">Proveedores monitoreados</div><div class="hero-pill-value">{providers_count:,}</div></div>
+                <div class="hero-pill"><div class="hero-pill-label">Alertas 48h</div><div class="hero-pill-value">{len(alerts_df):,}</div></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def kpi_row(payload: dict) -> None:
+    master_df = payload["master_df"]
+    plan_df = payload["payment_plan_df"]
+    alerts_df = payload["risk_alerts_df"]
+    email_df = payload["email_history_df"]
+
+    only_email = (master_df["estado_conciliacion"] == "Solo correo").sum() if not master_df.empty else 0
+    pending_without_email = (master_df["estado_conciliacion"] == "Pendiente sin correo").sum() if not master_df.empty else 0
+    programmed = master_df["registrada_para_pago"].sum() if not master_df.empty and "registrada_para_pago" in master_df.columns else 0
+    discountable = (plan_df["descuento_pct"] > 0).sum() if not plan_df.empty else 0
+
     c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Facturas solo en correo", f"{only_email:,}")
+    c2.metric("Pendientes sin soporte", f"{pending_without_email:,}")
+    c3.metric("Facturas programadas", f"{int(programmed):,}")
+    c4.metric("Facturas con descuento", f"{int(discountable):,}")
 
-    total_deuda = df.loc[df['estado_conciliacion'] != '📧 Solo en Correo', COL_VALOR_ERP].sum()
-    monto_vencido = df.loc[df['estado_pago'] == '🔴 Vencida', COL_VALOR_ERP].sum()
-    por_vencer_monto = df.loc[df['estado_pago'] == '🟠 Por Vencer (7 días)', COL_VALOR_ERP].sum()
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Histórico correo", f"{len(email_df):,}")
+    c6.metric("Plan de pagos sugerido", f"{len(plan_df):,}")
+    c7.metric("Riesgo mora 48h", f"{len(alerts_df):,}")
+    if not plan_df.empty:
+        c8.metric("Ahorro promedio sugerido", format_currency(plan_df["valor_descuento"].mean()))
+    else:
+        c8.metric("Ahorro promedio sugerido", format_currency(0))
 
-    c1.metric("Deuda Total (en ERP)", f"{int(total_deuda):,}")
-    c2.metric("Monto Vencido", f"{int(monto_vencido):,}")
-    c3.metric("Monto por Vencer (7 días)", f"{int(por_vencer_monto):,}")
-    c4.metric("Total Documentos Gestionados", f"{len(df)}")
 
-    st.divider()
-    
-    vencidas_df = df[df['estado_pago'] == '🔴 Vencida'].sort_values('dias_para_vencer')
-    por_vencer_df = df[df['estado_pago'] == '🟠 Por Vencer (7 días)'].sort_values('dias_para_vencer')
+def display_source_health(payload: dict) -> None:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Salud de fuentes</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-copy">Validación cruzada entre cartera pendiente, cartera saldada y correo procesado.</div>', unsafe_allow_html=True)
+    master_df = payload["master_df"]
+    summary = summarize_operational_health(payload)
 
-    with st.expander(f"🚨 Centro de Alertas: {len(vencidas_df)} Vencidas y {len(por_vencer_df)} por Vencer", expanded=True):
-        st.subheader("🔴 Facturas Vencidas (Acción Inmediata)")
-        if not vencidas_df.empty:
-            st.dataframe(vencidas_df[['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'dias_para_vencer']], use_container_width=True)
+    source_summary = pd.DataFrame(
+        [
+            {"Fuente": "Cartera pendiente Dropbox", "Registros": summary["pending_rows"], "Observacion": "Base de facturas por pagar del año o pendientes ya consolidadas en maestro."},
+            {"Fuente": "Cartera saldada local", "Registros": summary["paid_rows"], "Observacion": "Facturas ya canceladas para evitar falsas alarmas y cruces errados."},
+            {"Fuente": "Histórico correo proveedores", "Registros": len(payload["email_history_df"]), "Observacion": "Facturas XML y ZIP detectadas en el buzón objetivo."},
+            {"Fuente": "Maestro facturas", "Registros": len(master_df), "Observacion": "Consolidado final para control y programación."},
+            {"Fuente": "Trazabilidad lotes/correos", "Registros": summary["lots_registered"] + len(payload["email_log_df"]), "Observacion": "Histórico de lotes programados y evidencia de comunicación enviada."},
+        ]
+    )
+    st.dataframe(source_summary, use_container_width=True, hide_index=True)
+
+    coverage_df = pd.DataFrame(
+        [
+            {"Control": "Proveedores activos", "Valor": f"{summary['active_providers']:,} / {summary['providers_total']:,}", "Lectura": "Cobertura de proveedores considerados en la operación."},
+            {"Control": "Con correo de pago", "Valor": f"{summary['providers_with_payment_email']:,}", "Lectura": "Permite emitir lotes al proveedor sin reprocesos manuales."},
+            {"Control": "Con correo de alertas", "Valor": f"{summary['providers_with_alert_email']:,}", "Lectura": "Facilita escalar excepciones internas cuando hay riesgo."},
+            {"Control": "Ahorro capturable", "Valor": format_currency(summary['discount_amount']), "Lectura": "Descuento estimado hoy según reglas vigentes de pronto pago."},
+        ]
+    )
+    st.dataframe(coverage_df, use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def display_operational_focus(payload: dict) -> None:
+    master_df = payload["master_df"]
+    plan_df = payload["payment_plan_df"]
+    alerts_df = payload["risk_alerts_df"]
+    email_log_df = payload["email_log_df"]
+    lot_history_df = payload["lot_history_df"]
+
+    if master_df.empty:
+        return
+
+    left_col, right_col = st.columns([1.2, 1])
+
+    with left_col:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Foco operativo inmediato</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-copy">Proveedores con mayor concentración de valor pendiente, riesgo o ahorro disponible.</div>', unsafe_allow_html=True)
+
+        focus_df = master_df.groupby("proveedor", dropna=False).agg(
+            Facturas_Pendientes=("estado_erp", lambda values: (pd.Series(values) == "Pendiente").sum()),
+            Valor_Pendiente=("valor_erp", lambda values: values[master_df.loc[values.index, "estado_erp"] == "Pendiente"].sum()),
+            Riesgo_48h=("riesgo_mora_48h", "sum"),
+            Sin_Soporte=("estado_conciliacion", lambda values: (pd.Series(values) == "Pendiente sin correo").sum()),
+        ).reset_index()
+
+        if not plan_df.empty:
+            savings_df = plan_df.groupby("proveedor", dropna=False)["valor_descuento"].sum().reset_index(name="Ahorro_Potencial")
+            focus_df = focus_df.merge(savings_df, on="proveedor", how="left")
         else:
-            st.success("¡Excelente! No hay facturas vencidas en la selección actual.")
-        
-        st.subheader("🟠 Facturas por Vencer (Próximos 7 días)")
-        if not por_vencer_df.empty:
-            st.dataframe(por_vencer_df[['nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'dias_para_vencer']], use_container_width=True)
+            focus_df["Ahorro_Potencial"] = 0.0
+
+        focus_df["Ahorro_Potencial"] = focus_df["Ahorro_Potencial"].fillna(0.0)
+        focus_df.sort_values(by=["Riesgo_48h", "Ahorro_Potencial", "Valor_Pendiente"], ascending=[False, False, False], inplace=True)
+        st.dataframe(
+            focus_df.head(12),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Valor_Pendiente": st.column_config.NumberColumn("Valor pendiente", format="$ %d"),
+                "Ahorro_Potencial": st.column_config.NumberColumn("Ahorro potencial", format="$ %d"),
+            },
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with right_col:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Trazabilidad reciente</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-copy">Última actividad de lotes, correos y alertas críticas que explican el estado actual.</div>', unsafe_allow_html=True)
+
+        if not lot_history_df.empty:
+            lot_preview = lot_history_df.copy().tail(8)
+            st.dataframe(
+                lot_preview[[col for col in ["lote_id", "proveedor", "num_factura", "fecha_programada_pago", "estado_lote"] if col in lot_preview.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
-            st.info("No hay facturas con vencimiento en los próximos 7 días.")
+            st.info("Todavía no hay lotes registrados en el histórico.")
 
-    st.divider()
+        if not email_log_df.empty:
+            email_preview = email_log_df.copy().tail(8)
+            st.dataframe(
+                email_preview[[col for col in ["fecha_envio", "proveedor", "email_destino", "estado_envio", "detalle_envio"] if col in email_preview.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("Aún no hay registros de correos enviados desde el planificador.")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📑 Explorador de Datos", 
-        "🏢 Análisis de Proveedores", 
-        "⚙️ Estado de Conciliación",
-        "💡 Descuentos y Pagos",
-        "📝 Notas Crédito Pendientes"
-    ])
+        if not alerts_df.empty:
+            st.caption(f"Alertas activas hoy: {len(alerts_df):,}. El equipo debería revisar primero las facturas vencidas y las que caen dentro de 48 horas.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+def display_master_overview(payload: dict) -> None:
+    master_df = payload["master_df"]
+    if master_df.empty:
+        st.info("Aún no hay datos sincronizados para mostrar.")
+        return
+
+    st.markdown(
+        """
+        <div class="overview-banner">
+            <strong>Vista de decisión diaria.</strong> Aquí se consolida el estado real por factura: si existe en ERP, si ya fue saldada, si llegó soporte por correo, si hay descuento disponible y si el vencimiento exige acción inmediata.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab1, tab2, tab3 = st.tabs(["📌 Conciliación", "💰 Pagos sugeridos", "🚨 Riesgo de mora"])
 
     with tab1:
-        st.subheader("Explorador de Datos Consolidados")
-        # --- MODIFICADO ---: Se añade la columna 'estado_factura' a la vista
-        display_cols = ['nombre_proveedor', COL_NUM_FACTURA, 'estado_factura', COL_FECHA_EMISION_ERP, COL_FECHA_VENCIMIENTO_ERP, COL_VALOR_ERP, 'estado_pago', 'dias_para_vencer', 'estado_conciliacion', COL_VALOR_CORREO]
-        st.dataframe(df[display_cols], use_container_width=True, hide_index=True,
-          column_config={
-              COL_VALOR_ERP: st.column_config.NumberColumn("Valor ERP", format="%d"),
-              COL_VALOR_CORREO: st.column_config.NumberColumn("Valor Correo", format="%d"),
-              COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-              COL_FECHA_VENCIMIENTO_ERP: st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
-              "dias_para_vencer": st.column_config.ProgressColumn("Días para Vencer", format="%d días", min_value=-90, max_value=90),
-          })
-    
-    with tab2:
-        st.subheader("Análisis por Proveedor")
-        provider_summary = df.groupby('nombre_proveedor').agg(
-            total_facturado=(COL_VALOR_ERP, 'sum'),
-            numero_documentos=(COL_NUM_FACTURA, 'count'),
-            monto_vencido=(COL_VALOR_ERP, lambda x: x[df.loc[x.index, 'estado_pago'] == '🔴 Vencida'].sum())
-        ).reset_index().sort_values('total_facturado', ascending=False)
-        st.dataframe(provider_summary, use_container_width=True, hide_index=True,
-            column_config={
-                "total_facturado": st.column_config.NumberColumn("Saldo Neto (Facturas - NC)", format="%d"),
-                "monto_vencido": st.column_config.NumberColumn("Monto Vencido", format="%d")
-            })
-        
-        st.markdown("##### Top 15 Proveedores por Saldo Neto")
-        chart = alt.Chart(provider_summary.head(15)).mark_bar().encode(
-            x=alt.X('total_facturado:Q', title='Saldo Neto'),
-            y=alt.Y('nombre_proveedor:N', sort='-x', title='Proveedor'),
-            tooltip=[alt.Tooltip('nombre_proveedor', title='Proveedor'), alt.Tooltip('total_facturado:Q', title='Saldo', format=',.0f'), 'numero_documentos']
-        ).properties(height=400)
-        st.altair_chart(chart, use_container_width=True)
-
-    with tab3:
-        st.subheader("Resumen del Estado de Conciliación")
-        conc_summary = df.groupby('estado_conciliacion').agg(
-            numero_documentos=(COL_NUM_FACTURA, 'count'),
-            valor_total=(COL_VALOR_ERP, 'sum')
+        status_summary = master_df.groupby(["estado_erp", "estado_conciliacion"], dropna=False).agg(
+            Facturas=("invoice_key", "count"),
+            Valor=("valor_erp", "sum"),
         ).reset_index()
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.dataframe(conc_summary, use_container_width=True, hide_index=True,
-                column_config={"valor_total": st.column_config.NumberColumn("Valor Total", format="%d")})
-        with c2:
-            pie_chart = alt.Chart(conc_summary).mark_arc(innerRadius=50).encode(
-                theta=alt.Theta(field="numero_documentos", type="quantitative"),
-                color=alt.Color(field="estado_conciliacion", type="nominal", title="Estado"),
-                tooltip=['estado_conciliacion', 'numero_documentos', alt.Tooltip('valor_total:Q', title='Valor', format=',.0f')]
-            ).properties(title="Distribución de Documentos por Estado")
-            st.altair_chart(pie_chart, use_container_width=True)
-            
-    with tab4:
-        st.subheader("💰 Oportunidades de Descuento por Pronto Pago")
-        
-        descuentos_df = df[df['estado_descuento'] != 'No Aplica'].copy()
-        
-        descuentos_df['fecha_limite_descuento'] = pd.to_datetime(
-            descuentos_df['fecha_limite_descuento'], errors='coerce'
+        st.dataframe(
+            status_summary,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"Valor": st.column_config.NumberColumn("Valor ERP", format="$ %d")},
         )
-        
-        if descuentos_df.empty or descuentos_df['fecha_limite_descuento'].isna().all():
-            st.info("Actualmente no hay facturas con oportunidades de descuento por pronto pago en la selección.")
+        st.dataframe(
+            master_df[[
+                "proveedor",
+                "num_factura",
+                "estado_erp",
+                "estado_conciliacion",
+                "estado_vencimiento",
+                "valor_erp",
+                "valor_total_correo",
+                "diferencia_valor",
+            ]].sort_values(by=["proveedor", "num_factura"]),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
+                "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
+                "diferencia_valor": st.column_config.NumberColumn("Diferencia", format="$ %d"),
+            },
+        )
+
+    with tab2:
+        plan_df = payload["payment_plan_df"]
+        if plan_df.empty:
+            st.info("No hay facturas pendientes para programar pagos.")
         else:
-            total_ahorro_potencial = descuentos_df['valor_descuento'].sum()
-            st.metric("Ahorro Potencial Total", f"{int(total_ahorro_potencial):,}", help="Suma de todos los descuentos disponibles en la selección actual.")
-
-            st.markdown("---")
-            st.markdown("### 🧠 Plan de Pagos Sugerido (Próximos 15 días)")
-            
-            today_date = datetime.now(COLOMBIA_TZ).date()
-            limite_sugerencia = today_date + timedelta(days=15)
-            
-            plan_pagos_df = descuentos_df[
-                (descuentos_df['fecha_limite_descuento'].notna()) &
-                (descuentos_df['fecha_limite_descuento'].dt.date <= limite_sugerencia)
-            ].sort_values('fecha_limite_descuento', ascending=True)
-
-            if plan_pagos_df.empty:
-                st.success("¡Todo en orden! No hay pagos con descuento que venzan en los próximos 15 días.")
-            else:
-                st.warning("¡Atención! Estas son las facturas que deberías pagar pronto para maximizar tu ahorro.")
-                display_cols_plan = [
-                    'nombre_proveedor', COL_NUM_FACTURA, COL_VALOR_ERP, 
-                    'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
-                ]
-                st.dataframe(plan_pagos_df[display_cols_plan], use_container_width=True, hide_index=True,
-                    column_config={
-                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="%d"),
-                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="%d"),
-                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="%d"),
-                        'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
-                    }
-                )
-
-            st.markdown("---")
-            st.markdown("### 📋 Todas las Oportunidades de Descuento Activas")
-            
-            with st.expander("Ver todas las facturas con descuentos disponibles"):
-                display_cols_all = [
-                    'nombre_proveedor', COL_NUM_FACTURA, COL_FECHA_EMISION_ERP, COL_VALOR_ERP, 
-                    'estado_descuento', 'valor_descuento', 'valor_con_descuento', 'fecha_limite_descuento'
-                ]
-                st.dataframe(descuentos_df[descuentos_df['fecha_limite_descuento'].notna()].sort_values('fecha_limite_descuento'), use_container_width=True, hide_index=True,
-                    column_config={
-                        COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Emitida", format="YYYY-MM-DD"),
-                        COL_VALOR_ERP: st.column_config.NumberColumn("Valor Original", format="%d"),
-                        'valor_descuento': st.column_config.NumberColumn("Ahorro", format="%d"),
-                        'valor_con_descuento': st.column_config.NumberColumn("Valor a Pagar", format="%d"),
-                        'fecha_limite_descuento': st.column_config.DateColumn("Pagar Antes de", format="YYYY-MM-DD"),
-                    }
-                )
-
-    with tab5:
-        st.subheader("Notas Crédito Pendientes de Aplicar")
-        st.info("Aquí se listan todas las notas crédito registradas en el ERP que están pendientes por cruzar. Estos valores ya se descuentan de la 'Deuda Total'.")
-        
-        credit_notes_df = df[df['estado_conciliacion'] == '📝 Nota Crédito ERP'].copy()
-        
-        if credit_notes_df.empty:
-            st.success("No hay notas crédito pendientes en la selección de datos actual.")
-        else:
-            display_cols_nc = [
-                'nombre_proveedor',
-                COL_FECHA_EMISION_ERP,
-                'doc_erp',
-                COL_VALOR_ERP,
-                'serie'
-            ]
             st.dataframe(
-                credit_notes_df[display_cols_nc].sort_values(COL_FECHA_EMISION_ERP, ascending=False),
+                plan_df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    COL_VALOR_ERP: st.column_config.NumberColumn("Valor Nota Crédito", format="%d"),
-                    COL_FECHA_EMISION_ERP: st.column_config.DateColumn("Fecha Emisión", format="YYYY-MM-DD"),
-                    "doc_erp": "Documento ERP",
-                    "serie": "Serie"
-                }
+                    "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %d"),
+                    "valor_descuento": st.column_config.NumberColumn("Descuento", format="$ %d"),
+                    "valor_a_pagar": st.column_config.NumberColumn("Valor a pagar", format="$ %d"),
+                    "descuento_pct": st.column_config.NumberColumn("Descuento %", format="%.2f"),
+                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+                    "fecha_limite_descuento": st.column_config.DateColumn("Limite descuento", format="YYYY-MM-DD"),
+                },
             )
 
-# ======================================================================================
-# --- 9. APLICACIÓN PRINCIPAL (PUNTO DE ENTRADA) ---
-# ======================================================================================
+    with tab3:
+        alerts_df = payload["risk_alerts_df"]
+        if alerts_df.empty:
+            st.success("No hay facturas en riesgo de mora en la ventana de 48 horas.")
+        else:
+            st.dataframe(
+                alerts_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %d"),
+                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+                },
+            )
 
-def main_app():
-    """Función principal que construye y renderiza la interfaz de la aplicación."""
-    load_css()
-    master_df = st.session_state.get("master_df", pd.DataFrame())
-    display_sidebar(master_df)
 
-    st.title("Plataforma de Gestión Inteligente de Facturas")
-    st.markdown("Bienvenido al centro de control de cuentas por pagar. **Esta es la página principal para actualizar los datos desde el correo y Dropbox.**")
-
-    if 'last_sync_time' in st.session_state:
-        st.success(f"Última sincronización completada a las: {st.session_state.last_sync_time}")
-
-    if not st.session_state.data_loaded:
-        st.info("👋 Presiona 'Sincronizar Todo' en la barra lateral para cargar y procesar los datos más recientes.")
-        st.stop()
-
-    filtered_df = st.session_state.get('filtered_df')
-    if filtered_df is None or filtered_df.empty:
-        st.warning("No hay datos que coincidan con los filtros seleccionados o no hay datos cargados.")
-        st.stop()
-
-    display_dashboard(filtered_df)
+def main_app() -> None:
+    inject_styles()
+    ensure_authenticated()
+    payload = payload_or_empty()
+    display_sidebar(payload)
+    hero_section(payload)
+    kpi_row(payload)
+    display_source_health(payload)
+    display_operational_focus(payload)
+    display_master_overview(payload)
 
 
 if __name__ == "__main__":
-    initialize_session_state()
     if check_password():
         main_app()

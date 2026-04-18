@@ -1,0 +1,1174 @@
+# -*- coding: utf-8 -*-
+"""Core operativo para conciliacion, tesoreria y programacion de pagos."""
+
+import email
+import imaplib
+import io
+import os
+import re
+import uuid
+import xml.etree.ElementTree as ET
+import zipfile
+from datetime import date, datetime, timedelta
+from email.header import decode_header
+from email.utils import parsedate_to_datetime
+from typing import Any, Optional
+
+import dropbox
+import gspread
+import pandas as pd
+import pytz
+import requests
+import streamlit as st
+from google.oauth2.service_account import Credentials
+from openpyxl.utils import get_column_letter
+from streamlit.errors import StreamlitSecretNotFoundError
+
+
+COLOMBIA_TZ = pytz.timezone("America/Bogota")
+IMAP_SERVER = "imap.gmail.com"
+EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
+DROPBOX_PENDING_PATH = "/data/Proveedores.csv"
+LOCAL_PAID_PATH = "cartera_saldada.csv"
+PROVIDER_CATALOG_PATH = "PROVEDORES_CORREO.xlsx"
+
+SHEET_PROVIDER_MASTER = "Maestro_Proveedores"
+SHEET_EMAIL_HISTORY = "Historial_Correo_Proveedores"
+SHEET_MASTER_INVOICES = "Maestro_Facturas"
+SHEET_PAYMENT_PLAN = "Propuesta_Pagos"
+SHEET_PAYMENT_LOTS = "Lotes_Pago"
+SHEET_EMAIL_LOG = "Historial_Correos"
+
+PENDING_COLUMNS = [
+    "nombre_proveedor_erp",
+    "serie",
+    "num_entrada",
+    "num_factura",
+    "doc_erp",
+    "fecha_emision_erp",
+    "fecha_vencimiento_erp",
+    "valor_total_erp",
+]
+
+PAID_COLUMNS = [
+    "nombre_proveedor_erp",
+    "serie",
+    "num_entrada",
+    "num_factura",
+    "estado_documento",
+    "fecha_emision_erp",
+    "fecha_vencimiento_erp",
+    "valor_total_erp",
+]
+
+EMAIL_COLUMNS = [
+    "invoice_key",
+    "num_factura",
+    "proveedor_correo",
+    "proveedor_norm",
+    "fecha_emision_correo",
+    "fecha_vencimiento_correo",
+    "valor_total_correo",
+    "fecha_recepcion_correo",
+    "remitente_correo",
+    "asunto_correo",
+    "nombre_adjunto",
+    "message_id",
+]
+
+PROVIDER_MASTER_COLUMNS = [
+    "codigo_proveedor",
+    "nif",
+    "proveedor",
+    "proveedor_norm",
+    "activo",
+    "email_pago",
+    "email_cc",
+    "email_alertas",
+    "contacto_pagos",
+    "contacto_tesoreria",
+    "telefono",
+    "condiciones_comerciales",
+    "observaciones",
+]
+
+PAYMENT_LOT_COLUMNS = [
+    "lote_id",
+    "fecha_registro",
+    "fecha_programada_pago",
+    "responsable",
+    "invoice_key",
+    "proveedor",
+    "num_factura",
+    "valor_factura",
+    "valor_descuento",
+    "valor_a_pagar",
+    "estado_lote",
+    "motivo_pago",
+    "email_destino",
+]
+
+EMAIL_LOG_COLUMNS = [
+    "envio_id",
+    "fecha_envio",
+    "lote_id",
+    "proveedor",
+    "email_destino",
+    "email_cc",
+    "asunto",
+    "facturas",
+    "ahorro_total",
+    "estado_envio",
+    "detalle_envio",
+]
+
+DISCOUNT_PROVIDERS = {
+    "ABRASIVOS DE COLOMBIA S.A": [{"days": 10, "rate": 0.05}],
+    "ARMETALES S.A.": [{"days": 10, "rate": 0.02}],
+    "ASSA ABLOY COLOMBIA S.A.S": [{"days": 12, "rate": 0.025}],
+    "INDUMA S.C.A": [{"days": 15, "rate": 0.035}],
+    "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.03}],
+    "PINTUCO COLOMBIA S.A.S": [{"days": 15, "rate": 0.03}, {"days": 30, "rate": 0.02}],
+    "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.03}],
+}
+DISCOUNT_RULES_NORMALIZED = {
+    re.sub(r"[^A-Z0-9]", "", provider.upper()): rules for provider, rules in DISCOUNT_PROVIDERS.items()
+}
+
+
+def get_secrets_dict() -> dict[str, Any]:
+    try:
+        return st.secrets.to_dict()
+    except StreamlitSecretNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def get_secret_value(key: str, default: Any = None) -> Any:
+    return get_secrets_dict().get(key, default)
+
+
+def get_secret_section(key: str) -> dict[str, Any]:
+    section = get_secret_value(key, {})
+    if isinstance(section, dict):
+        return section
+    try:
+        return dict(section)
+    except Exception:
+        return {}
+
+
+def ensure_authenticated() -> None:
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+    if not st.session_state["password_correct"]:
+        st.error("Debes iniciar sesion desde Dashboard General para acceder a esta pagina.")
+        st.stop()
+
+
+def format_currency(value: Any) -> str:
+    return f"${float(value or 0):,.0f}"
+
+
+def normalize_text(value: Any) -> str:
+    if pd.isna(value) or value is None:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper()).strip()
+
+
+def normalize_invoice_number(value: Any) -> str:
+    return normalize_text(value)
+
+
+def clean_numeric(value: Any) -> float:
+    if pd.isna(value) or value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    cleaned = str(value).strip().replace("$", "").replace("COP", "").replace(" ", "")
+    if "." in cleaned and "," in cleaned:
+        if cleaned.rfind(".") > cleaned.rfind(","):
+            cleaned = cleaned.replace(",", "")
+        else:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+    else:
+        cleaned = cleaned.replace(",", "")
+
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def coerce_datetime(series: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(series, errors="coerce")
+    if not pd.api.types.is_datetime64_any_dtype(parsed):
+        return pd.Series(pd.NaT, index=series.index)
+    try:
+        if getattr(parsed.dt, "tz", None) is None:
+            return parsed.dt.tz_localize(COLOMBIA_TZ, ambiguous="infer")
+        return parsed.dt.tz_convert(COLOMBIA_TZ)
+    except (TypeError, ValueError, AttributeError):
+        return pd.Series(pd.NaT, index=series.index)
+
+
+def coalesce(*series_list: pd.Series) -> pd.Series:
+    if not series_list:
+        return pd.Series(dtype=object)
+    result = series_list[0].copy()
+    for series in series_list[1:]:
+        result = result.where(result.notna() & (result.astype(str) != ""), series)
+    return result
+
+
+def prepare_invoice_key(df: pd.DataFrame, provider_col: str, invoice_col: str = "num_factura") -> pd.DataFrame:
+    prepared = df.copy()
+    prepared[provider_col] = prepared[provider_col].fillna("").astype(str)
+    prepared["proveedor_norm"] = prepared[provider_col].apply(normalize_text)
+    prepared[invoice_col] = prepared[invoice_col].apply(normalize_invoice_number)
+    prepared["invoice_key"] = prepared["proveedor_norm"] + "|" + prepared[invoice_col]
+    return prepared
+
+
+@st.cache_resource(show_spinner="Conectando a Google Sheets...")
+def connect_to_google_sheets() -> Optional[gspread.Client]:
+    try:
+        google_credentials = get_secret_value("google_credentials")
+        if not google_credentials:
+            return None
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(google_credentials, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception as exc:
+        st.error(f"❌ Error al autenticar con Google Sheets: {exc}")
+        return None
+
+
+def get_or_create_worksheet(client: gspread.Client, worksheet_name: str) -> gspread.Worksheet:
+    sheet_id = get_secret_value("google_sheet_id")
+    if not sheet_id:
+        raise ValueError("No existe google_sheet_id en los secretos configurados.")
+    spreadsheet = client.open_by_key(sheet_id)
+    try:
+        return spreadsheet.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        return spreadsheet.add_worksheet(title=worksheet_name, rows="4000", cols="80")
+
+
+def load_sheet_df(client: gspread.Client, worksheet_name: str) -> pd.DataFrame:
+    try:
+        worksheet = get_or_create_worksheet(client, worksheet_name)
+        records = worksheet.get_all_records()
+        return pd.DataFrame(records) if records else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def update_worksheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame) -> bool:
+    try:
+        df_to_upload = df.copy()
+        for column in df_to_upload.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_to_upload[column]):
+                df_to_upload[column] = pd.to_datetime(df_to_upload[column], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        df_to_upload = df_to_upload.astype(str).replace({"nan": "", "NaT": "", "None": ""})
+        data = [df_to_upload.columns.tolist()] + df_to_upload.values.tolist() if not df_to_upload.empty else [df_to_upload.columns.tolist()]
+        worksheet.update(data, "A1")
+
+        total_rows = worksheet.row_count
+        used_rows = len(data)
+        if used_rows < total_rows and df_to_upload.columns.tolist():
+            last_col = get_column_letter(len(df_to_upload.columns))
+            empty_rows = [[""] * len(df_to_upload.columns) for _ in range(total_rows - used_rows)]
+            worksheet.update(f"A{used_rows + 1}:{last_col}{total_rows}", empty_rows, raw=False)
+        return True
+    except Exception as exc:
+        st.error(f"❌ Error actualizando la hoja {worksheet.title}: {exc}")
+        return False
+
+
+def save_df_to_sheet(client: gspread.Client, worksheet_name: str, df: pd.DataFrame) -> bool:
+    worksheet = get_or_create_worksheet(client, worksheet_name)
+    return update_worksheet_from_df(worksheet, df)
+
+
+def append_df_to_sheet(client: gspread.Client, worksheet_name: str, new_rows_df: pd.DataFrame, ordered_columns: list[str]) -> bool:
+    existing = load_sheet_df(client, worksheet_name)
+    combined = pd.concat([existing, new_rows_df], ignore_index=True) if not existing.empty else new_rows_df.copy()
+    for column in ordered_columns:
+        if column not in combined.columns:
+            combined[column] = ""
+    combined = combined.reindex(columns=ordered_columns)
+    return save_df_to_sheet(client, worksheet_name, combined)
+
+
+def decode_mime_text(value: Any) -> str:
+    if not value:
+        return ""
+    decoded = []
+    for part, encoding in decode_header(value):
+        if isinstance(part, bytes):
+            decoded.append(part.decode(encoding or "utf-8", errors="ignore"))
+        else:
+            decoded.append(part)
+    return "".join(decoded).strip()
+
+
+def parse_email_datetime(value: str) -> pd.Timestamp:
+    if not value:
+        return pd.NaT
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = COLOMBIA_TZ.localize(dt)
+        else:
+            dt = dt.astimezone(COLOMBIA_TZ)
+        return pd.Timestamp(dt)
+    except Exception:
+        return pd.NaT
+
+
+def load_provider_master_base() -> pd.DataFrame:
+    if not os.path.exists(PROVIDER_CATALOG_PATH):
+        st.error(f"No se encontro el archivo {PROVIDER_CATALOG_PATH} en la raiz del proyecto.")
+        return pd.DataFrame(columns=PROVIDER_MASTER_COLUMNS)
+
+    base_df = pd.read_excel(PROVIDER_CATALOG_PATH)
+    provider_col = next((col for col in base_df.columns if "proveedor" in str(col).lower()), None)
+    code_col = next((col for col in base_df.columns if "código" in str(col).lower() or "codigo" in str(col).lower()), None)
+    nif_col = next((col for col in base_df.columns if "nif" in str(col).lower() or "nit" in str(col).lower()), None)
+    if provider_col is None:
+        st.error("PROVEDORES_CORREO.xlsx debe contener una columna de proveedor.")
+        return pd.DataFrame(columns=PROVIDER_MASTER_COLUMNS)
+
+    provider_df = pd.DataFrame(
+        {
+            "codigo_proveedor": base_df[code_col] if code_col else "",
+            "nif": base_df[nif_col] if nif_col else "",
+            "proveedor": base_df[provider_col].fillna("").astype(str).str.strip(),
+        }
+    )
+    provider_df["proveedor_norm"] = provider_df["proveedor"].apply(normalize_text)
+    provider_df["activo"] = True
+    provider_df["email_pago"] = ""
+    provider_df["email_cc"] = ""
+    provider_df["email_alertas"] = ""
+    provider_df["contacto_pagos"] = ""
+    provider_df["contacto_tesoreria"] = ""
+    provider_df["telefono"] = ""
+    provider_df["condiciones_comerciales"] = ""
+    provider_df["observaciones"] = ""
+    return provider_df[PROVIDER_MASTER_COLUMNS].drop_duplicates(subset=["proveedor_norm"], keep="first")
+
+
+def load_provider_master(client: gspread.Client) -> pd.DataFrame:
+    base_df = load_provider_master_base()
+    sheet_df = load_sheet_df(client, SHEET_PROVIDER_MASTER)
+
+    if sheet_df.empty:
+        return base_df
+
+    for column in PROVIDER_MASTER_COLUMNS:
+        if column not in sheet_df.columns:
+            sheet_df[column] = "" if column != "activo" else True
+
+    base_df = base_df.set_index("proveedor_norm")
+    sheet_df = sheet_df.set_index("proveedor_norm")
+    editable_cols = [
+        "activo",
+        "email_pago",
+        "email_cc",
+        "email_alertas",
+        "contacto_pagos",
+        "contacto_tesoreria",
+        "telefono",
+        "condiciones_comerciales",
+        "observaciones",
+    ]
+
+    merged = base_df.combine_first(sheet_df)
+    for column in editable_cols:
+        if column in sheet_df.columns:
+            merged[column] = sheet_df[column].where(sheet_df[column].astype(str) != "", merged[column])
+
+    merged.reset_index(inplace=True)
+    merged["activo"] = merged["activo"].astype(str).str.lower().map({"false": False, "0": False}).fillna(True)
+    return merged[PROVIDER_MASTER_COLUMNS].drop_duplicates(subset=["proveedor_norm"], keep="first")
+
+
+def save_provider_master(client: gspread.Client, provider_df: pd.DataFrame) -> bool:
+    prepared = provider_df.copy()
+    for column in PROVIDER_MASTER_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = "" if column != "activo" else True
+    return save_df_to_sheet(client, SHEET_PROVIDER_MASTER, prepared[PROVIDER_MASTER_COLUMNS])
+
+
+@st.cache_data(ttl=600, show_spinner="Descargando cartera pendiente desde Dropbox...")
+def load_pending_invoices_from_dropbox() -> pd.DataFrame:
+    try:
+        dropbox_secrets = get_secret_section("dropbox")
+        if not dropbox_secrets:
+            return pd.DataFrame(columns=PENDING_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
+        dbx = dropbox.Dropbox(
+            oauth2_refresh_token=dropbox_secrets.get("refresh_token"),
+            app_key=dropbox_secrets.get("app_key"),
+            app_secret=dropbox_secrets.get("app_secret"),
+        )
+        _, response = dbx.files_download(DROPBOX_PENDING_PATH)
+        df = pd.read_csv(
+            io.StringIO(response.content.decode("latin1")),
+            sep="{",
+            header=None,
+            engine="python",
+            names=PENDING_COLUMNS,
+        )
+        df["valor_total_erp"] = df["valor_total_erp"].apply(clean_numeric)
+        df["fecha_emision_erp"] = coerce_datetime(df["fecha_emision_erp"])
+        df["fecha_vencimiento_erp"] = coerce_datetime(df["fecha_vencimiento_erp"])
+        df.dropna(subset=["nombre_proveedor_erp"], inplace=True)
+
+        credit_mask = (df["valor_total_erp"] < 0) & (
+            df["num_factura"].isna() | (df["num_factura"].astype(str).str.strip() == "")
+        )
+        if credit_mask.any():
+            df.loc[credit_mask, "num_factura"] = (
+                "NC-"
+                + df.loc[credit_mask, "doc_erp"].astype(str).str.strip()
+                + "-"
+                + df.loc[credit_mask, "valor_total_erp"].abs().astype(int).astype(str)
+            )
+
+        df = prepare_invoice_key(df, "nombre_proveedor_erp")
+        df["estado_erp_fuente"] = "Pendiente"
+        return df
+    except Exception as exc:
+        st.error(f"❌ Error cargando cartera pendiente desde Dropbox: {exc}")
+        return pd.DataFrame(columns=PENDING_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
+
+
+@st.cache_data(ttl=600, show_spinner="Cargando cartera saldada local...")
+def load_paid_invoices_from_csv() -> pd.DataFrame:
+    if not os.path.exists(LOCAL_PAID_PATH):
+        return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
+
+    try:
+        df = pd.read_csv(LOCAL_PAID_PATH, sep="|", encoding="latin1", header=None, names=PAID_COLUMNS, engine="python")
+        df["valor_total_erp"] = df["valor_total_erp"].apply(clean_numeric)
+        df["fecha_emision_erp"] = coerce_datetime(df["fecha_emision_erp"])
+        df["fecha_vencimiento_erp"] = coerce_datetime(df["fecha_vencimiento_erp"])
+        df = prepare_invoice_key(df, "nombre_proveedor_erp")
+        df["doc_erp"] = ""
+        df["estado_erp_fuente"] = "Saldada"
+        return df
+    except Exception as exc:
+        st.error(f"❌ Error cargando cartera saldada local: {exc}")
+        return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
+
+
+def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[dict]:
+    try:
+        namespaces = {
+            "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+            "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+        }
+        xml_content = re.sub(r"^[^<]+", "", xml_content.strip())
+        root = ET.fromstring(xml_content.encode("utf-8"))
+
+        description_node = root.find(".//cac:Attachment/cac:ExternalReference/cbc:Description", namespaces)
+        if description_node is not None and description_node.text and "<Invoice" in description_node.text:
+            nested_xml = re.sub(r"^[^<]+", "", description_node.text.strip())
+            root = ET.fromstring(nested_xml.encode("utf-8"))
+
+        def find_text(paths: list[str]) -> Optional[str]:
+            for path in paths:
+                node = root.find(path, namespaces)
+                if node is not None and node.text:
+                    return node.text.strip()
+            return None
+
+        supplier_name = find_text([
+            ".//cac:AccountingSupplierParty/cac:Party/cac:PartyName/cbc:Name",
+            ".//cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName",
+        ])
+        invoice_number = find_text(["./cbc:ID"])
+        issue_date = find_text(["./cbc:IssueDate"])
+        due_date = find_text(["./cbc:DueDate", ".//cac:PaymentMeans/cbc:PaymentDueDate"])
+        total_value = find_text([".//cac:LegalMonetaryTotal/cbc:PayableAmount", ".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount"])
+
+        if not supplier_name or not invoice_number or not total_value:
+            return None
+
+        supplier_norm = normalize_text(supplier_name)
+        if target_suppliers and supplier_norm not in target_suppliers:
+            return None
+
+        return {
+            "proveedor_correo": supplier_name,
+            "proveedor_norm": supplier_norm,
+            "num_factura": normalize_invoice_number(invoice_number),
+            "fecha_emision_correo": issue_date,
+            "fecha_vencimiento_correo": due_date,
+            "valor_total_correo": clean_numeric(total_value),
+        }
+    except Exception:
+        return None
+
+
+def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]) -> tuple[list[dict], dict]:
+    records = []
+    stats = {"attachments_scanned": 0, "xml_files_scanned": 0, "invoice_rows_detected": 0}
+
+    email_subject = decode_mime_text(message_obj.get("Subject", ""))
+    email_sender = decode_mime_text(message_obj.get("From", ""))
+    email_message_id = decode_mime_text(message_obj.get("Message-ID", ""))
+    email_received_at = parse_email_datetime(message_obj.get("Date", ""))
+
+    for part in message_obj.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+
+        filename = decode_mime_text(part.get_filename() or "")
+        content_type = (part.get_content_type() or "").lower()
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+
+        is_zip = filename.lower().endswith(".zip") or content_type in {"application/zip", "application/x-zip-compressed"}
+        is_xml = filename.lower().endswith(".xml") or content_type in {"application/xml", "text/xml"}
+        if not is_zip and not is_xml:
+            continue
+
+        stats["attachments_scanned"] += 1
+        if is_zip:
+            try:
+                with zipfile.ZipFile(io.BytesIO(payload)) as zip_file:
+                    for internal_name in zip_file.namelist():
+                        if not internal_name.lower().endswith(".xml"):
+                            continue
+                        stats["xml_files_scanned"] += 1
+                        xml_content = zip_file.read(internal_name).decode("utf-8", "ignore")
+                        details = parse_invoice_xml(xml_content, target_suppliers)
+                        if details:
+                            details.update(
+                                {
+                                    "fecha_recepcion_correo": email_received_at,
+                                    "remitente_correo": email_sender,
+                                    "asunto_correo": email_subject,
+                                    "nombre_adjunto": internal_name,
+                                    "message_id": email_message_id,
+                                }
+                            )
+                            records.append(details)
+                            stats["invoice_rows_detected"] += 1
+            except Exception:
+                continue
+
+        if is_xml:
+            stats["xml_files_scanned"] += 1
+            xml_content = payload.decode("utf-8", "ignore")
+            details = parse_invoice_xml(xml_content, target_suppliers)
+            if details:
+                details.update(
+                    {
+                        "fecha_recepcion_correo": email_received_at,
+                        "remitente_correo": email_sender,
+                        "asunto_correo": email_subject,
+                        "nombre_adjunto": filename or "adjunto_xml",
+                        "message_id": email_message_id,
+                    }
+                )
+                records.append(details)
+                stats["invoice_rows_detected"] += 1
+
+    return records, stats
+
+
+def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[str]) -> tuple[pd.DataFrame, dict]:
+    invoices_data = []
+    stats = {
+        "emails_found": 0,
+        "emails_processed": 0,
+        "attachments_scanned": 0,
+        "xml_files_scanned": 0,
+        "invoice_rows_detected": 0,
+        "started_from": start_date.strftime("%Y-%m-%d"),
+    }
+
+    try:
+        email_secrets = get_secret_section("email")
+        if not email_secrets.get("address") or not email_secrets.get("password"):
+            return pd.DataFrame(columns=EMAIL_COLUMNS), stats
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+        mail.login(email_secrets["address"], email_secrets["password"])
+        mail.select(f'"{EMAIL_FOLDER}"')
+        _, messages = mail.search(None, f'(SINCE "{start_date.strftime("%d-%b-%Y")}")')
+        message_ids = messages[0].split()
+        stats["emails_found"] = len(message_ids)
+        if not message_ids:
+            mail.logout()
+            return pd.DataFrame(columns=EMAIL_COLUMNS), stats
+
+        progress_bar = st.progress(0, text=f"Procesando {len(message_ids)} correos de proveedores...")
+        for index, message_id in enumerate(message_ids, start=1):
+            _, data = mail.fetch(message_id, "(RFC822)")
+            message_obj = email.message_from_bytes(data[0][1])
+            records, email_stats = extract_invoice_records_from_message(message_obj, target_suppliers)
+            invoices_data.extend(records)
+
+            stats["emails_processed"] += 1
+            stats["attachments_scanned"] += email_stats["attachments_scanned"]
+            stats["xml_files_scanned"] += email_stats["xml_files_scanned"]
+            stats["invoice_rows_detected"] += email_stats["invoice_rows_detected"]
+            progress_bar.progress(index / len(message_ids), text=f"Procesando {index}/{len(message_ids)} correos...")
+
+        mail.logout()
+    except Exception as exc:
+        st.error(f"❌ Error procesando correos de proveedores: {exc}")
+
+    email_df = pd.DataFrame(invoices_data)
+    if email_df.empty:
+        return pd.DataFrame(columns=EMAIL_COLUMNS), stats
+
+    email_df = prepare_invoice_key(email_df, "proveedor_correo")
+    email_df["fecha_emision_correo"] = coerce_datetime(email_df["fecha_emision_correo"])
+    email_df["fecha_vencimiento_correo"] = coerce_datetime(email_df["fecha_vencimiento_correo"])
+    email_df["fecha_recepcion_correo"] = coerce_datetime(email_df["fecha_recepcion_correo"])
+    email_df["valor_total_correo"] = email_df["valor_total_correo"].apply(clean_numeric)
+
+    for column in EMAIL_COLUMNS:
+        if column not in email_df.columns:
+            email_df[column] = ""
+    email_df = email_df[EMAIL_COLUMNS].drop_duplicates(subset=["invoice_key", "message_id"], keep="last")
+    return email_df, stats
+
+
+def determine_sync_start(email_history_df: pd.DataFrame) -> date:
+    if email_history_df.empty or "fecha_recepcion_correo" not in email_history_df.columns:
+        return date(datetime.now(COLOMBIA_TZ).year, 1, 1)
+    history = email_history_df.copy()
+    history["fecha_recepcion_correo"] = coerce_datetime(history["fecha_recepcion_correo"])
+    last_date = history["fecha_recepcion_correo"].max()
+    if pd.isna(last_date):
+        return date(datetime.now(COLOMBIA_TZ).year, 1, 1)
+    return max(date(datetime.now(COLOMBIA_TZ).year, 1, 1), (last_date - timedelta(days=3)).date())
+
+
+def merge_email_history(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+    if existing_df.empty:
+        merged = new_df.copy()
+    else:
+        merged = pd.concat([existing_df, new_df], ignore_index=True)
+    for column in EMAIL_COLUMNS:
+        if column not in merged.columns:
+            merged[column] = ""
+    merged["fecha_recepcion_correo"] = coerce_datetime(merged["fecha_recepcion_correo"])
+    merged = merged[EMAIL_COLUMNS].drop_duplicates(subset=["invoice_key", "message_id"], keep="last")
+    return merged.sort_values(by=["fecha_recepcion_correo", "invoice_key"], ascending=False)
+
+
+def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
+    df = master_df.copy()
+    df["descuento_pct"] = 0.0
+    df["valor_descuento"] = 0.0
+    df["valor_a_pagar"] = df["valor_erp"].fillna(0.0)
+    df["fecha_limite_descuento"] = pd.NaT
+    df["estado_descuento"] = "No aplica"
+
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    for index, row in df.iterrows():
+        if row.get("estado_erp") != "Pendiente" or row.get("valor_erp", 0) <= 0 or pd.isna(row.get("fecha_emision_erp")):
+            continue
+        provider_rules = DISCOUNT_RULES_NORMALIZED.get(row.get("proveedor_norm", ""), [])
+        if not provider_rules:
+            continue
+
+        valid_rules = []
+        for rule in provider_rules:
+            deadline = row["fecha_emision_erp"] + timedelta(days=rule["days"])
+            if deadline.normalize() >= today:
+                valid_rules.append((rule["rate"], deadline))
+
+        if not valid_rules:
+            df.at[index, "estado_descuento"] = "Ventana vencida"
+            continue
+
+        valid_rules.sort(key=lambda item: (-item[0], item[1]))
+        rate, deadline = valid_rules[0]
+        discount_value = row["valor_erp"] * rate
+
+        df.at[index, "descuento_pct"] = rate
+        df.at[index, "valor_descuento"] = discount_value
+        df.at[index, "valor_a_pagar"] = row["valor_erp"] - discount_value
+        df.at[index, "fecha_limite_descuento"] = deadline
+        df.at[index, "estado_descuento"] = f"Disponible {rate:.1%}"
+
+    df["fecha_limite_descuento"] = coerce_datetime(df["fecha_limite_descuento"])
+    return df
+
+
+def build_master_dataframe(
+    pending_df: pd.DataFrame,
+    paid_df: pd.DataFrame,
+    email_df: pd.DataFrame,
+    provider_df: pd.DataFrame,
+    lot_history_df: pd.DataFrame,
+) -> pd.DataFrame:
+    pending_df = pending_df.copy()
+    paid_df = paid_df.copy()
+    email_df = email_df.copy()
+
+    for frame in [pending_df, paid_df, email_df]:
+        if not frame.empty and "invoice_key" not in frame.columns:
+            provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in frame.columns else "proveedor_correo"
+            frame = prepare_invoice_key(frame, provider_col)
+
+    pending_df = pending_df.drop_duplicates(subset=["invoice_key"], keep="last")
+    paid_df = paid_df.drop_duplicates(subset=["invoice_key"], keep="last")
+    email_df = email_df.drop_duplicates(subset=["invoice_key"], keep="last")
+
+    combined = pd.merge(pending_df, paid_df, on="invoice_key", how="outer", suffixes=("_pend", "_paid"))
+    combined = pd.merge(combined, email_df, on="invoice_key", how="outer")
+
+    provider_meta = provider_df[["proveedor_norm", "proveedor", "email_pago", "email_cc", "email_alertas", "contacto_pagos", "condiciones_comerciales", "activo"]].drop_duplicates(subset=["proveedor_norm"])
+    combined["proveedor_norm"] = coalesce(
+        combined.get("proveedor_norm_pend", pd.Series(index=combined.index)),
+        combined.get("proveedor_norm_paid", pd.Series(index=combined.index)),
+        combined.get("proveedor_norm", pd.Series(index=combined.index)),
+    )
+    combined = combined.merge(provider_meta, on="proveedor_norm", how="left")
+
+    lot_latest = pd.DataFrame(columns=["invoice_key", "lote_id", "estado_lote", "fecha_programada_pago"])
+    if not lot_history_df.empty:
+        lot_latest = lot_history_df.copy()
+        if "fecha_registro" in lot_latest.columns:
+            lot_latest["fecha_registro"] = coerce_datetime(lot_latest["fecha_registro"])
+            lot_latest.sort_values(by="fecha_registro", inplace=True)
+        lot_latest = lot_latest.drop_duplicates(subset=["invoice_key"], keep="last")
+
+    combined = combined.merge(lot_latest[[col for col in ["invoice_key", "lote_id", "estado_lote", "fecha_programada_pago"] if col in lot_latest.columns]], on="invoice_key", how="left")
+
+    combined["num_factura"] = coalesce(
+        combined.get("num_factura_pend", pd.Series(index=combined.index)),
+        combined.get("num_factura_paid", pd.Series(index=combined.index)),
+        combined.get("num_factura", pd.Series(index=combined.index)),
+    )
+    combined["proveedor_erp"] = coalesce(
+        combined.get("nombre_proveedor_erp_pend", pd.Series(index=combined.index)),
+        combined.get("nombre_proveedor_erp_paid", pd.Series(index=combined.index)),
+    )
+    combined["proveedor_correo"] = combined.get("proveedor_correo", pd.Series(index=combined.index)).fillna("")
+    combined["proveedor"] = coalesce(combined.get("proveedor", pd.Series(index=combined.index)), combined["proveedor_erp"], combined["proveedor_correo"])
+
+    combined["fecha_emision_erp"] = coalesce(
+        combined.get("fecha_emision_erp_pend", pd.Series(index=combined.index)),
+        combined.get("fecha_emision_erp_paid", pd.Series(index=combined.index)),
+    )
+    combined["fecha_vencimiento_erp"] = coalesce(
+        combined.get("fecha_vencimiento_erp_pend", pd.Series(index=combined.index)),
+        combined.get("fecha_vencimiento_erp_paid", pd.Series(index=combined.index)),
+    )
+    combined["valor_erp"] = coalesce(
+        combined.get("valor_total_erp_pend", pd.Series(index=combined.index)),
+        combined.get("valor_total_erp_paid", pd.Series(index=combined.index)),
+    ).apply(clean_numeric)
+    combined["valor_total_correo"] = combined.get("valor_total_correo", pd.Series(index=combined.index)).apply(clean_numeric)
+
+    combined["fecha_emision_erp"] = coerce_datetime(combined["fecha_emision_erp"])
+    combined["fecha_vencimiento_erp"] = coerce_datetime(combined["fecha_vencimiento_erp"])
+    combined["fecha_emision_correo"] = coerce_datetime(combined.get("fecha_emision_correo", pd.Series(index=combined.index)))
+    combined["fecha_vencimiento_correo"] = coerce_datetime(combined.get("fecha_vencimiento_correo", pd.Series(index=combined.index)))
+    combined["fecha_recepcion_correo"] = coerce_datetime(combined.get("fecha_recepcion_correo", pd.Series(index=combined.index)))
+    combined["fecha_programada_pago"] = coerce_datetime(combined.get("fecha_programada_pago", pd.Series(index=combined.index)))
+
+    combined["en_pendiente"] = combined["num_factura_pend"].notna() if "num_factura_pend" in combined.columns else False
+    combined["en_saldada"] = combined["num_factura_paid"].notna() if "num_factura_paid" in combined.columns else False
+    combined["en_correo"] = combined["num_factura"].notna() & combined["proveedor_correo"].astype(str).ne("")
+
+    conditions = [
+        combined["en_pendiente"] & combined["en_saldada"],
+        combined["en_pendiente"],
+        combined["en_saldada"],
+    ]
+    choices = ["Inconsistente ERP", "Pendiente", "Saldada"]
+    combined["estado_erp"] = pd.Series(pd.NA, index=combined.index, dtype="object")
+    combined.loc[conditions[0], "estado_erp"] = choices[0]
+    combined.loc[conditions[1] & combined["estado_erp"].isna(), "estado_erp"] = choices[1]
+    combined.loc[conditions[2] & combined["estado_erp"].isna(), "estado_erp"] = choices[2]
+    combined["estado_erp"] = combined["estado_erp"].fillna("No ERP")
+
+    combined["diferencia_valor"] = (combined["valor_erp"].fillna(0) - combined["valor_total_correo"].fillna(0)).abs()
+    combined["tiene_discrepancia_valor"] = combined["en_correo"] & combined["estado_erp"].isin(["Pendiente", "Saldada"]) & (combined["diferencia_valor"] > 1)
+
+    def classify_status(row: pd.Series) -> str:
+        if row["estado_erp"] == "Inconsistente ERP":
+            return "Inconsistencia entre pendiente y saldada"
+        if row["tiene_discrepancia_valor"] and row["estado_erp"] == "Pendiente":
+            return "Pendiente con valor por revisar"
+        if row["tiene_discrepancia_valor"] and row["estado_erp"] == "Saldada":
+            return "Saldada con valor por revisar"
+        if row["estado_erp"] == "Pendiente" and row["en_correo"]:
+            return "Pendiente conciliada"
+        if row["estado_erp"] == "Pendiente" and not row["en_correo"]:
+            return "Pendiente sin correo"
+        if row["estado_erp"] == "Saldada" and row["en_correo"]:
+            return "Saldada conciliada"
+        if row["estado_erp"] == "Saldada" and not row["en_correo"]:
+            return "Saldada sin correo"
+        if row["estado_erp"] == "No ERP" and row["en_correo"]:
+            return "Solo correo"
+        return "Sin clasificar"
+
+    combined["estado_conciliacion"] = combined.apply(classify_status, axis=1)
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    combined["dias_para_vencer"] = (combined["fecha_vencimiento_erp"].dt.normalize() - today).dt.days
+
+    def classify_due(row: pd.Series) -> str:
+        if row["estado_erp"] != "Pendiente":
+            return "No aplica"
+        if pd.isna(row["fecha_vencimiento_erp"]):
+            return "Sin fecha ERP"
+        if row["dias_para_vencer"] < 0:
+            return "🔴 Vencida"
+        if row["dias_para_vencer"] <= 2:
+            return "🟠 Riesgo 48h"
+        if row["dias_para_vencer"] <= 7:
+            return "🟡 Proxima a vencer"
+        return "🟢 Vigente"
+
+    combined["estado_vencimiento"] = combined.apply(classify_due, axis=1)
+    combined["riesgo_mora_48h"] = combined["estado_vencimiento"].eq("🟠 Riesgo 48h")
+    combined["registrada_para_pago"] = combined.get("lote_id", pd.Series(index=combined.index)).fillna("").astype(str).ne("")
+    combined["motivo_base"] = combined.apply(
+        lambda row: "Pendiente con soporte de correo" if row["estado_conciliacion"] == "Pendiente conciliada"
+        else "Pendiente sin soporte recibido" if row["estado_conciliacion"] == "Pendiente sin correo"
+        else "Correo sin cartera pendiente" if row["estado_conciliacion"] == "Solo correo"
+        else "Factura ya saldada" if row["estado_erp"] == "Saldada"
+        else "Revisar caso manualmente",
+        axis=1,
+    )
+
+    combined = apply_discount_rules(combined)
+    combined["prioridad_descuento"] = combined["descuento_pct"].fillna(0)
+
+    selected_columns = [
+        "invoice_key",
+        "num_factura",
+        "proveedor",
+        "proveedor_norm",
+        "proveedor_erp",
+        "proveedor_correo",
+        "valor_erp",
+        "valor_total_correo",
+        "diferencia_valor",
+        "fecha_emision_erp",
+        "fecha_vencimiento_erp",
+        "fecha_emision_correo",
+        "fecha_vencimiento_correo",
+        "fecha_recepcion_correo",
+        "remitente_correo",
+        "asunto_correo",
+        "nombre_adjunto",
+        "message_id",
+        "estado_erp",
+        "estado_conciliacion",
+        "estado_vencimiento",
+        "dias_para_vencer",
+        "riesgo_mora_48h",
+        "descuento_pct",
+        "valor_descuento",
+        "valor_a_pagar",
+        "fecha_limite_descuento",
+        "estado_descuento",
+        "motivo_base",
+        "lote_id",
+        "estado_lote",
+        "fecha_programada_pago",
+        "registrada_para_pago",
+        "email_pago",
+        "email_cc",
+        "email_alertas",
+        "contacto_pagos",
+        "condiciones_comerciales",
+        "activo",
+    ]
+    for column in selected_columns:
+        if column not in combined.columns:
+            combined[column] = ""
+
+    combined = combined[selected_columns].drop_duplicates(subset=["invoice_key"], keep="first")
+    combined.sort_values(by=["proveedor", "fecha_vencimiento_erp", "num_factura"], inplace=True)
+    return combined
+
+
+def build_payment_plan(master_df: pd.DataFrame) -> pd.DataFrame:
+    if master_df.empty:
+        return pd.DataFrame()
+
+    plan_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["valor_erp"] > 0)].copy()
+    if plan_df.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    plan_df["fecha_objetivo"] = plan_df["fecha_limite_descuento"].fillna(plan_df["fecha_vencimiento_erp"])
+    plan_df["dias_para_objetivo"] = (plan_df["fecha_objetivo"].dt.normalize() - today).dt.days
+
+    def assign_reason(row: pd.Series) -> str:
+        if row["descuento_pct"] > 0 and pd.notna(row["fecha_limite_descuento"]):
+            if row["dias_para_objetivo"] <= 2:
+                return "Asegurar pronto pago antes de perder descuento"
+            return "Capturar descuento financiero disponible"
+        if row["riesgo_mora_48h"]:
+            return "Evitar mora en las proximas 48 horas"
+        if row["estado_vencimiento"] == "🔴 Vencida":
+            return "Regularizar factura vencida"
+        return "Programar dentro de ventana normal"
+
+    plan_df["motivo_pago"] = plan_df.apply(assign_reason, axis=1)
+    plan_df["ranking_descuento"] = -plan_df["descuento_pct"].fillna(0)
+    plan_df["ranking_vencimiento"] = plan_df["dias_para_objetivo"].fillna(9999)
+    plan_df["ranking_valor"] = -plan_df["valor_descuento"].fillna(0)
+    plan_df.sort_values(by=["ranking_vencimiento", "ranking_descuento", "ranking_valor", "proveedor"], inplace=True)
+    plan_df["prioridad_pago"] = range(1, len(plan_df) + 1)
+
+    display_columns = [
+        "prioridad_pago",
+        "invoice_key",
+        "proveedor",
+        "num_factura",
+        "valor_erp",
+        "descuento_pct",
+        "valor_descuento",
+        "valor_a_pagar",
+        "fecha_vencimiento_erp",
+        "fecha_limite_descuento",
+        "dias_para_vencer",
+        "dias_para_objetivo",
+        "estado_vencimiento",
+        "estado_conciliacion",
+        "motivo_pago",
+        "lote_id",
+        "estado_lote",
+        "email_pago",
+        "email_cc",
+    ]
+    return plan_df[display_columns]
+
+
+def build_risk_alerts(master_df: pd.DataFrame) -> pd.DataFrame:
+    if master_df.empty:
+        return pd.DataFrame()
+    alerts_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🟠 Riesgo 48h", "🔴 Vencida"]))].copy()
+    if alerts_df.empty:
+        return pd.DataFrame()
+    alerts_df["tipo_alerta"] = alerts_df["estado_vencimiento"].map({"🟠 Riesgo 48h": "Riesgo de mora 48h", "🔴 Vencida": "Factura vencida"})
+    return alerts_df[["invoice_key", "proveedor", "num_factura", "valor_erp", "fecha_vencimiento_erp", "dias_para_vencer", "tipo_alerta", "email_alertas"]].sort_values(by=["dias_para_vencer", "proveedor"])
+
+
+def sync_treasury_data() -> dict:
+    gs_client = connect_to_google_sheets()
+    if not gs_client:
+        return {}
+
+    provider_df = load_provider_master(gs_client)
+    target_suppliers = set(provider_df[provider_df["activo"].fillna(True)]["proveedor_norm"].tolist())
+    email_history_df = load_sheet_df(gs_client, SHEET_EMAIL_HISTORY)
+    lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
+    email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
+    start_date = determine_sync_start(email_history_df)
+
+    new_email_df, sync_stats = fetch_supplier_invoices_from_email(start_date, target_suppliers)
+    merged_email_df = merge_email_history(email_history_df, new_email_df)
+
+    pending_df = load_pending_invoices_from_dropbox()
+    paid_df = load_paid_invoices_from_csv()
+    if target_suppliers:
+        pending_df = pending_df[pending_df["proveedor_norm"].isin(target_suppliers)].copy()
+        paid_df = paid_df[paid_df["proveedor_norm"].isin(target_suppliers)].copy()
+
+    master_df = build_master_dataframe(pending_df, paid_df, merged_email_df, provider_df, lot_history_df)
+    payment_plan_df = build_payment_plan(master_df)
+    risk_alerts_df = build_risk_alerts(master_df)
+
+    save_provider_master(gs_client, provider_df)
+    save_df_to_sheet(gs_client, SHEET_EMAIL_HISTORY, merged_email_df)
+    save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
+    save_df_to_sheet(gs_client, SHEET_PAYMENT_PLAN, payment_plan_df)
+
+    payload = {
+        "provider_df": provider_df,
+        "email_history_df": merged_email_df,
+        "pending_df": pending_df,
+        "paid_df": paid_df,
+        "master_df": master_df,
+        "payment_plan_df": payment_plan_df,
+        "risk_alerts_df": risk_alerts_df,
+        "lot_history_df": lot_history_df,
+        "email_log_df": email_log_df,
+        "sync_stats": sync_stats,
+        "sync_started_from": start_date.strftime("%Y-%m-%d"),
+    }
+
+    st.session_state["treasury_payload"] = payload
+    st.session_state["last_treasury_sync"] = datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return payload
+
+
+def load_operational_payload() -> dict:
+    payload = st.session_state.get("treasury_payload")
+    if payload:
+        return payload
+
+    gs_client = connect_to_google_sheets()
+    if not gs_client:
+        return {}
+
+    provider_df = load_provider_master(gs_client)
+    payload = {
+        "provider_df": provider_df,
+        "email_history_df": load_sheet_df(gs_client, SHEET_EMAIL_HISTORY),
+        "master_df": load_sheet_df(gs_client, SHEET_MASTER_INVOICES),
+        "payment_plan_df": load_sheet_df(gs_client, SHEET_PAYMENT_PLAN),
+        "risk_alerts_df": build_risk_alerts(load_sheet_df(gs_client, SHEET_MASTER_INVOICES)),
+        "lot_history_df": load_sheet_df(gs_client, SHEET_PAYMENT_LOTS),
+        "email_log_df": load_sheet_df(gs_client, SHEET_EMAIL_LOG),
+    }
+    st.session_state["treasury_payload"] = payload
+    return payload
+
+
+def build_payment_email_html(provider_name: str, lot_df: pd.DataFrame, payment_date: date, notes: str = "") -> str:
+    savings = lot_df["valor_descuento"].sum()
+    total_to_pay = lot_df["valor_a_pagar"].sum()
+    rows_html = "".join(
+        [
+            f"""
+            <tr>
+                <td style='padding:10px 12px;border-bottom:1px solid #e5edf5;'>{row['num_factura']}</td>
+                <td style='padding:10px 12px;border-bottom:1px solid #e5edf5;text-align:right;'>{format_currency(row['valor_erp'])}</td>
+                <td style='padding:10px 12px;border-bottom:1px solid #e5edf5;text-align:right;'>{format_currency(row['valor_descuento'])}</td>
+                <td style='padding:10px 12px;border-bottom:1px solid #e5edf5;text-align:right;'>{format_currency(row['valor_a_pagar'])}</td>
+            </tr>
+            """
+            for _, row in lot_df.iterrows()
+        ]
+    )
+
+    notes_block = f"<p style='margin-top:18px;color:#506070;font-size:14px;'>{notes}</p>" if notes else ""
+    return f"""
+    <div style="font-family:Helvetica,Arial,sans-serif;background:#f4f7fb;padding:24px;">
+        <div style="max-width:860px;margin:0 auto;background:#ffffff;border-radius:24px;overflow:hidden;border:1px solid #dbe5f0;box-shadow:0 18px 44px rgba(12,45,87,.08);">
+            <div style="background:linear-gradient(120deg,#0c2d57 0%,#195b97 60%,#f0a202 100%);padding:28px 32px;color:#ffffff;">
+                <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.9;">Ferreinox S.A.S. BIC</div>
+                <h1 style="margin:8px 0 0 0;font-size:30px;line-height:1.1;">Programacion de pago propuesta</h1>
+                <p style="margin:10px 0 0 0;font-size:15px;opacity:.94;">Proveedor: <strong>{provider_name}</strong></p>
+            </div>
+            <div style="padding:28px 32px;">
+                <p style="font-size:15px;color:#334155;line-height:1.6;">Compartimos el lote de facturas programadas para pago con fecha objetivo <strong>{payment_date.strftime('%Y-%m-%d')}</strong>. Esta propuesta prioriza la conservacion de descuentos financieros y la prevencion de mora.</p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin:18px 0 22px 0;">
+                    <div style="background:#f8fbff;border:1px solid #dce8f5;border-radius:16px;padding:14px 16px;min-width:180px;">
+                        <div style="font-size:12px;color:#6b7c8f;text-transform:uppercase;">Facturas</div>
+                        <div style="font-size:26px;font-weight:800;color:#0c2d57;">{len(lot_df)}</div>
+                    </div>
+                    <div style="background:#f8fbff;border:1px solid #dce8f5;border-radius:16px;padding:14px 16px;min-width:180px;">
+                        <div style="font-size:12px;color:#6b7c8f;text-transform:uppercase;">Descuento ganado</div>
+                        <div style="font-size:26px;font-weight:800;color:#116149;">{format_currency(savings)}</div>
+                    </div>
+                    <div style="background:#f8fbff;border:1px solid #dce8f5;border-radius:16px;padding:14px 16px;min-width:180px;">
+                        <div style="font-size:12px;color:#6b7c8f;text-transform:uppercase;">Valor a pagar</div>
+                        <div style="font-size:26px;font-weight:800;color:#0c2d57;">{format_currency(total_to_pay)}</div>
+                    </div>
+                </div>
+                <table style="width:100%;border-collapse:collapse;border:1px solid #e5edf5;border-radius:14px;overflow:hidden;">
+                    <thead>
+                        <tr style="background:#f5f9fd;color:#0c2d57;text-align:left;">
+                            <th style='padding:12px;'>Factura</th>
+                            <th style='padding:12px;text-align:right;'>Valor original</th>
+                            <th style='padding:12px;text-align:right;'>Descuento</th>
+                            <th style='padding:12px;text-align:right;'>Valor a pagar</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                {notes_block}
+                <p style="margin-top:22px;font-size:14px;color:#516173;line-height:1.6;">Agradecemos confirmar cualquier novedad documental o financiera sobre este lote. Este correo fue generado desde el centro de tesoreria de Ferreinox para mantener trazabilidad operativa.</p>
+            </div>
+        </div>
+    </div>
+    """
+
+
+def send_email_via_sendgrid(to_email: str, cc_emails: list[str], subject: str, html_content: str) -> tuple[bool, str]:
+    sendgrid_secrets = get_secret_section("sendgrid")
+    api_key = sendgrid_secrets.get("api_key")
+    from_email = sendgrid_secrets.get("from_email")
+    from_name = sendgrid_secrets.get("from_name", "Ferreinox S.A.S. BIC")
+    if not api_key or not from_email:
+        return False, "Credenciales SendGrid incompletas en st.secrets"
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}], "cc": [{"email": email} for email in cc_emails if email]}],
+        "from": {"email": from_email, "name": from_name},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": html_content}],
+    }
+    response = requests.post("https://api.sendgrid.com/v3/mail/send", headers=headers, json=payload, timeout=30)
+    if 200 <= response.status_code < 300:
+        return True, f"SendGrid {response.status_code}"
+    return False, f"SendGrid {response.status_code}: {response.text[:400]}"
+
+
+def create_payment_lot(selected_df: pd.DataFrame, payment_date: date, responsible: str, email_destino: str) -> pd.DataFrame:
+    lote_id = f"LTP-{datetime.now(COLOMBIA_TZ).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    lot_df = selected_df.copy()
+    lot_df["lote_id"] = lote_id
+    lot_df["fecha_registro"] = pd.Timestamp.now(tz=COLOMBIA_TZ)
+    lot_df["fecha_programada_pago"] = pd.Timestamp(payment_date).tz_localize(COLOMBIA_TZ)
+    lot_df["responsable"] = responsible
+    lot_df["estado_lote"] = "Programado"
+    lot_df["email_destino"] = email_destino
+    lot_df.rename(columns={"valor_erp": "valor_factura", "motivo_pago": "motivo_pago"}, inplace=True)
+    lot_df = lot_df[[
+        "lote_id",
+        "fecha_registro",
+        "fecha_programada_pago",
+        "responsable",
+        "invoice_key",
+        "proveedor",
+        "num_factura",
+        "valor_factura",
+        "valor_descuento",
+        "valor_a_pagar",
+        "estado_lote",
+        "motivo_pago",
+        "email_destino",
+    ]]
+    return lot_df
+
+
+def register_payment_lot(client: gspread.Client, lot_df: pd.DataFrame) -> bool:
+    return append_df_to_sheet(client, SHEET_PAYMENT_LOTS, lot_df, PAYMENT_LOT_COLUMNS)
+
+
+def register_email_log(client: gspread.Client, log_row: dict) -> bool:
+    log_df = pd.DataFrame([log_row])
+    return append_df_to_sheet(client, SHEET_EMAIL_LOG, log_df, EMAIL_LOG_COLUMNS)
+
+
+def build_email_log_row(lote_id: str, provider_name: str, to_email: str, cc_email: str, subject: str, lot_df: pd.DataFrame, status: str, detail: str) -> dict:
+    return {
+        "envio_id": f"ENV-{uuid.uuid4().hex[:10].upper()}",
+        "fecha_envio": pd.Timestamp.now(tz=COLOMBIA_TZ),
+        "lote_id": lote_id,
+        "proveedor": provider_name,
+        "email_destino": to_email,
+        "email_cc": cc_email,
+        "asunto": subject,
+        "facturas": ", ".join(lot_df["num_factura"].astype(str).tolist()),
+        "ahorro_total": lot_df["valor_descuento"].sum(),
+        "estado_envio": status,
+        "detalle_envio": detail,
+    }
