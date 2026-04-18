@@ -2,6 +2,7 @@
 """Core operativo para conciliacion, tesoreria y programacion de pagos."""
 
 import email
+import html
 import imaplib
 import io
 import os
@@ -75,6 +76,9 @@ EMAIL_COLUMNS = [
     "asunto_correo",
     "nombre_adjunto",
     "message_id",
+    "referencias_correo",
+    "valor_detectado_correo",
+    "origen_soporte",
 ]
 
 PROVIDER_MASTER_COLUMNS = [
@@ -268,6 +272,10 @@ def clean_numeric(value: Any) -> float:
         else:
             cleaned = cleaned.replace(".", "").replace(",", ".")
     else:
+        if cleaned.count(".") > 1:
+            cleaned = cleaned.replace(".", "")
+        elif cleaned.count(",") > 1:
+            cleaned = cleaned.replace(",", "")
         cleaned = cleaned.replace(",", "")
 
     try:
@@ -306,6 +314,143 @@ def prepare_invoice_key(df: pd.DataFrame, provider_col: str, invoice_col: str = 
     return prepared
 
 
+def choose_best_document_number(*values: Any) -> str:
+    candidates = []
+    for raw_value in values:
+        normalized = normalize_invoice_number(raw_value)
+        if not normalized:
+            continue
+        contains_letters = bool(re.search(r"[A-Z]", normalized))
+        score = (
+            3 if contains_letters else 0,
+            1 if 4 <= len(normalized) <= 25 else 0,
+            len(normalized),
+        )
+        candidates.append((score, normalized))
+
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def build_document_candidates(*values: Any) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = normalize_invoice_number(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(normalized)
+    return candidates
+
+
+def prepare_document_matching_columns(
+    df: pd.DataFrame,
+    provider_col: str,
+    invoice_col: str = "num_factura",
+    alternate_col: Optional[str] = None,
+) -> pd.DataFrame:
+    prepared = df.copy()
+    prepared[provider_col] = prepared.get(provider_col, pd.Series(index=prepared.index, dtype=object)).fillna("").astype(str)
+    prepared["proveedor_norm"] = prepared[provider_col].apply(normalize_supplier_key)
+    prepared[invoice_col] = prepared.get(invoice_col, pd.Series(index=prepared.index, dtype=object)).apply(normalize_invoice_number)
+    alternate_series = prepared.get(alternate_col, pd.Series(index=prepared.index, dtype=object)) if alternate_col else pd.Series(index=prepared.index, dtype=object)
+    if alternate_col:
+        prepared[alternate_col] = alternate_series.apply(normalize_invoice_number)
+        alternate_series = prepared[alternate_col]
+    prepared["documento_cruce"] = [
+        choose_best_document_number(primary, alternate)
+        for primary, alternate in zip(prepared[invoice_col], alternate_series)
+    ]
+    prepared["document_candidates"] = [
+        build_document_candidates(primary, alternate)
+        for primary, alternate in zip(prepared[invoice_col], alternate_series)
+    ]
+    prepared["invoice_key"] = prepared["proveedor_norm"] + "|" + prepared["documento_cruce"]
+    return prepared
+
+
+def is_export_artifact(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and "filas afectadas" in text
+
+
+def sanitize_erp_export(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    prepared = df.copy()
+    if "nombre_proveedor_erp" in prepared.columns:
+        prepared = prepared[~prepared["nombre_proveedor_erp"].apply(is_export_artifact)]
+    if "num_factura" in prepared.columns:
+        prepared = prepared[~prepared["num_factura"].apply(is_export_artifact)]
+    if "num_entrada" in prepared.columns:
+        prepared = prepared[~prepared["num_entrada"].apply(is_export_artifact)]
+    if "documento_cruce" in prepared.columns:
+        prepared = prepared[prepared["documento_cruce"].astype(str).str.strip().ne("")]
+    return prepared.reset_index(drop=True)
+
+
+def html_to_plain_text(content: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", content, flags=re.IGNORECASE)
+    text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return html.unescape(re.sub(r"\s+", " ", text)).strip()
+
+
+def extract_references_from_text(content: str) -> list[str]:
+    if not content:
+        return []
+
+    references: list[str] = []
+    seen: set[str] = set()
+    patterns = [
+        r"(?:factura|fact|documento|doc|referencia|ref|albaran|alb|entrada|remision|pedido)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{3,24})",
+        r"\b([A-Z]{1,6}-?\d{3,})\b",
+    ]
+    upper_content = content.upper()
+    for pattern in patterns:
+        for match in re.findall(pattern, upper_content, flags=re.IGNORECASE):
+            normalized = normalize_invoice_number(match)
+            if not normalized or len(normalized) < 4 or normalized in seen:
+                continue
+            seen.add(normalized)
+            references.append(normalized)
+    return references[:10]
+
+
+def extract_amount_candidates_from_text(content: str) -> list[float]:
+    if not content:
+        return []
+
+    amounts: list[float] = []
+    seen: set[float] = set()
+    for raw_match in re.findall(r"(?:\$\s*)?\d{1,3}(?:[.,\s]\d{3})+(?:,\d{2})?", content):
+        amount = clean_numeric(raw_match)
+        if amount < 1000 or amount in seen:
+            continue
+        seen.add(amount)
+        amounts.append(amount)
+    for raw_match in re.findall(r"\b\d{5,}\b", content):
+        amount = clean_numeric(raw_match)
+        if amount < 1000 or amount in seen:
+            continue
+        seen.add(amount)
+        amounts.append(amount)
+    return sorted(amounts, reverse=True)
+
+
+def extract_email_body_signals(content: str) -> dict[str, Any]:
+    references = extract_references_from_text(content)
+    amounts = extract_amount_candidates_from_text(content)
+    return {
+        "referencias_correo": "|".join(references),
+        "valor_detectado_correo": amounts[0] if amounts else 0.0,
+    }
+
+
 def first_non_empty_value(series: pd.Series) -> Any:
     valid = series.dropna().astype(str).str.strip()
     valid = valid[valid.ne("") & valid.ne("nan") & valid.ne("None")]
@@ -322,13 +467,15 @@ def aggregate_erp_invoice_rows(df: pd.DataFrame, source_label: str) -> pd.DataFr
     prepared = df.copy()
     if "invoice_key" not in prepared.columns:
         provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in prepared.columns else "proveedor_correo"
-        prepared = prepare_invoice_key(prepared, provider_col)
+        alternate_col = "num_entrada" if "num_entrada" in prepared.columns else None
+        prepared = prepare_document_matching_columns(prepared, provider_col, alternate_col=alternate_col)
 
     agg_map: dict[str, Any] = {
         "nombre_proveedor_erp": first_non_empty_value,
         "serie": first_non_empty_value,
         "num_entrada": first_non_empty_value,
         "num_factura": first_non_empty_value,
+        "documento_cruce": first_non_empty_value,
         "fecha_emision_erp": "min",
         "fecha_vencimiento_erp": "max",
         "valor_total_erp": "sum",
@@ -360,6 +507,7 @@ def build_provider_matching_maps(provider_df: pd.DataFrame) -> dict[str, dict[st
 
     prepared["supplier_fingerprint"] = prepared.get("proveedor", pd.Series(index=prepared.index, dtype=object)).apply(normalize_supplier_fingerprint)
     prepared["nif_norm"] = prepared.get("nif", pd.Series(index=prepared.index, dtype=object)).apply(normalize_text)
+    prepared["provider_name_norm"] = prepared.get("proveedor", pd.Series(index=prepared.index, dtype=object)).apply(normalize_text)
 
     nif_to_norm: dict[str, str] = {}
     for _, row in prepared.iterrows():
@@ -376,9 +524,22 @@ def build_provider_matching_maps(provider_df: pd.DataFrame) -> dict[str, dict[st
         if fingerprint and proveedor_norm and fingerprint_counts.get(fingerprint) == 1:
             fingerprint_to_norm[fingerprint] = proveedor_norm
 
+    name_to_norm: dict[str, str] = {}
+    norm_to_name: dict[str, str] = {}
+    for _, row in prepared.iterrows():
+        name_norm = str(row.get("provider_name_norm", "") or "")
+        proveedor_norm = str(row.get("proveedor_norm", "") or "")
+        proveedor = str(row.get("proveedor", "") or "")
+        if name_norm and proveedor_norm and name_norm not in name_to_norm:
+            name_to_norm[name_norm] = proveedor_norm
+        if proveedor_norm and proveedor and proveedor_norm not in norm_to_name:
+            norm_to_name[proveedor_norm] = proveedor
+
     return {
         "nif_to_norm": nif_to_norm,
         "fingerprint_to_norm": fingerprint_to_norm,
+        "name_to_norm": name_to_norm,
+        "norm_to_name": norm_to_name,
     }
 
 
@@ -397,10 +558,15 @@ def align_email_records_to_erp(
         provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in frame.columns else "proveedor_correo"
         prepared = frame.copy()
         if "invoice_key" not in prepared.columns:
-            prepared = prepare_invoice_key(prepared, provider_col)
+            alternate_col = "num_entrada" if "num_entrada" in prepared.columns else None
+            prepared = prepare_document_matching_columns(prepared, provider_col, alternate_col=alternate_col)
         prepared["num_factura"] = prepared["num_factura"].apply(normalize_invoice_number)
+        prepared["num_entrada"] = prepared.get("num_entrada", pd.Series(index=prepared.index, dtype=object)).apply(normalize_invoice_number)
+        prepared["document_candidates"] = prepared.get("document_candidates", pd.Series(index=prepared.index, dtype=object)).apply(
+            lambda value: value if isinstance(value, list) else build_document_candidates(value)
+        )
         prepared["supplier_fingerprint"] = prepared.get(provider_col, pd.Series(index=prepared.index, dtype=object)).apply(normalize_supplier_fingerprint)
-        erp_frames.append(prepared[["invoice_key", "num_factura", "proveedor_norm", "supplier_fingerprint"]])
+        erp_frames.append(prepared[["invoice_key", "num_factura", "num_entrada", "documento_cruce", "document_candidates", "proveedor_norm", "supplier_fingerprint", "valor_total_erp"]])
 
     if not erp_frames:
         return email_df
@@ -413,13 +579,32 @@ def align_email_records_to_erp(
 
     for idx, row in aligned.iterrows():
         current_key = str(row.get("invoice_key", "") or "")
-        invoice_number = normalize_invoice_number(row.get("num_factura", ""))
-        if not invoice_number or current_key in erp_keys:
+        references = build_document_candidates(
+            row.get("num_factura", ""),
+            *(str(row.get("referencias_correo", "") or "").split("|"))
+        )
+        if current_key in erp_keys:
             continue
 
-        candidates = erp_df[erp_df["num_factura"] == invoice_number].copy()
+        candidates = pd.DataFrame()
+        for reference in references:
+            matched = erp_df[erp_df["document_candidates"].apply(lambda values: reference in values if isinstance(values, list) else False)]
+            if not matched.empty:
+                candidates = pd.concat([candidates, matched], ignore_index=True)
+        candidates = candidates.drop_duplicates(subset=["invoice_key"]) if not candidates.empty else candidates
         if candidates.empty:
-            continue
+            provider_norm = str(row.get("proveedor_norm", "") or "")
+            email_value = clean_numeric(row.get("valor_total_correo")) or clean_numeric(row.get("valor_detectado_correo"))
+            if provider_norm and email_value > 0:
+                tolerance = max(100.0, email_value * 0.003)
+                matched = erp_df[
+                    (erp_df["proveedor_norm"] == provider_norm)
+                    & ((erp_df["valor_total_erp"].apply(clean_numeric) - email_value).abs() <= tolerance)
+                ]
+                if len(matched) == 1:
+                    candidates = matched.copy()
+            if candidates.empty:
+                continue
 
         provider_norm = str(row.get("proveedor_norm", "") or "")
         if provider_norm:
@@ -651,7 +836,8 @@ def load_pending_invoices_from_dropbox() -> pd.DataFrame:
                 + df.loc[credit_mask, "valor_total_erp"].abs().astype(int).astype(str)
             )
 
-        df = prepare_invoice_key(df, "nombre_proveedor_erp")
+        df = prepare_document_matching_columns(df, "nombre_proveedor_erp", alternate_col="num_entrada")
+        df = sanitize_erp_export(df)
         return aggregate_erp_invoice_rows(df, "Pendiente")
     except Exception as exc:
         st.error(f"❌ Error cargando cartera pendiente desde Dropbox: {exc}")
@@ -683,8 +869,9 @@ def load_paid_invoices_from_dropbox() -> pd.DataFrame:
         df["valor_total_erp"] = df["valor_total_erp"].apply(clean_numeric)
         df["fecha_emision_erp"] = coerce_datetime(df["fecha_emision_erp"])
         df["fecha_vencimiento_erp"] = coerce_datetime(df["fecha_vencimiento_erp"])
-        df = prepare_invoice_key(df, "nombre_proveedor_erp")
+        df = prepare_document_matching_columns(df, "nombre_proveedor_erp", alternate_col="num_entrada")
         df["doc_erp"] = ""
+        df = sanitize_erp_export(df)
         return aggregate_erp_invoice_rows(df, "Saldada")
     except Exception as exc:
         st.error(f"❌ Error cargando cartera saldada desde Dropbox: {exc}")
@@ -761,6 +948,7 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
     email_sender = decode_mime_text(message_obj.get("From", ""))
     email_message_id = decode_mime_text(message_obj.get("Message-ID", ""))
     email_received_at = parse_email_datetime(message_obj.get("Date", ""))
+    body_fragments: list[str] = []
 
     for part in message_obj.walk():
         if part.get_content_maintype() == "multipart":
@@ -771,6 +959,11 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
         payload = part.get_payload(decode=True)
         if payload is None:
             continue
+
+        if content_type in {"text/plain", "text/html"}:
+            charset = part.get_content_charset() or "utf-8"
+            decoded_body = payload.decode(charset, errors="ignore")
+            body_fragments.append(html_to_plain_text(decoded_body) if content_type == "text/html" else decoded_body)
 
         is_zip = filename.lower().endswith(".zip") or content_type in {"application/zip", "application/x-zip-compressed"}
         is_xml = filename.lower().endswith(".xml") or content_type in {"application/xml", "text/xml"}
@@ -795,6 +988,7 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
                                     "asunto_correo": email_subject,
                                     "nombre_adjunto": internal_name,
                                     "message_id": email_message_id,
+                                    "origen_soporte": "XML",
                                 }
                             )
                             records.append(details)
@@ -814,10 +1008,50 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
                         "asunto_correo": email_subject,
                         "nombre_adjunto": filename or "adjunto_xml",
                         "message_id": email_message_id,
+                        "origen_soporte": "XML",
                     }
                 )
                 records.append(details)
                 stats["invoice_rows_detected"] += 1
+
+    body_text = "\n".join(fragment.strip() for fragment in body_fragments if fragment and fragment.strip())
+    body_signals = extract_email_body_signals(f"{email_subject}\n{body_text}")
+    for record in records:
+        record["referencias_correo"] = body_signals["referencias_correo"]
+        record["valor_detectado_correo"] = body_signals["valor_detectado_correo"]
+
+    if not records and provider_maps:
+        normalized_message = normalize_text(f"{email_subject} {email_sender} {body_text}")
+        provider_hits = {
+            provider_norm
+            for provider_name, provider_norm in provider_maps.get("name_to_norm", {}).items()
+            if provider_name and len(provider_name) >= 8 and provider_name in normalized_message
+        }
+        references = str(body_signals.get("referencias_correo", "") or "").split("|") if body_signals.get("referencias_correo") else []
+        best_reference = choose_best_document_number(*references)
+        detected_value = clean_numeric(body_signals.get("valor_detectado_correo", 0.0))
+        if len(provider_hits) == 1 and best_reference and detected_value > 0:
+            provider_norm = next(iter(provider_hits))
+            records.append(
+                {
+                    "proveedor_correo": provider_maps.get("norm_to_name", {}).get(provider_norm, provider_norm),
+                    "proveedor_norm": provider_norm,
+                    "supplier_nif": "",
+                    "num_factura": best_reference,
+                    "fecha_emision_correo": pd.NaT,
+                    "fecha_vencimiento_correo": pd.NaT,
+                    "valor_total_correo": detected_value,
+                    "fecha_recepcion_correo": email_received_at,
+                    "remitente_correo": email_sender,
+                    "asunto_correo": email_subject,
+                    "nombre_adjunto": "cuerpo_correo",
+                    "message_id": email_message_id,
+                    "referencias_correo": body_signals["referencias_correo"],
+                    "valor_detectado_correo": detected_value,
+                    "origen_soporte": "CUERPO",
+                }
+            )
+            stats["invoice_rows_detected"] += 1
 
     return records, stats
 
@@ -869,11 +1103,12 @@ def fetch_supplier_invoices_from_email(start_date: date, target_suppliers: set[s
     if email_df.empty:
         return pd.DataFrame(columns=EMAIL_COLUMNS), stats
 
-    email_df = prepare_invoice_key(email_df, "proveedor_correo")
+    email_df = prepare_document_matching_columns(email_df, "proveedor_correo")
     email_df["fecha_emision_correo"] = coerce_datetime(email_df["fecha_emision_correo"])
     email_df["fecha_vencimiento_correo"] = coerce_datetime(email_df["fecha_vencimiento_correo"])
     email_df["fecha_recepcion_correo"] = coerce_datetime(email_df["fecha_recepcion_correo"])
     email_df["valor_total_correo"] = email_df["valor_total_correo"].apply(clean_numeric)
+    email_df["valor_detectado_correo"] = email_df.get("valor_detectado_correo", pd.Series(index=email_df.index)).apply(clean_numeric)
 
     for column in EMAIL_COLUMNS:
         if column not in email_df.columns:
@@ -981,13 +1216,15 @@ def build_master_dataframe(
     # Ensure invoice_key exists on every frame (fix: reassign back, handle empty)
     if not pending_df.empty and "invoice_key" not in pending_df.columns:
         provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in pending_df.columns else "proveedor_correo"
-        pending_df = prepare_invoice_key(pending_df, provider_col)
+        alternate_col = "num_entrada" if "num_entrada" in pending_df.columns else None
+        pending_df = prepare_document_matching_columns(pending_df, provider_col, alternate_col=alternate_col)
     if not paid_df.empty and "invoice_key" not in paid_df.columns:
         provider_col = "nombre_proveedor_erp" if "nombre_proveedor_erp" in paid_df.columns else "proveedor_correo"
-        paid_df = prepare_invoice_key(paid_df, provider_col)
+        alternate_col = "num_entrada" if "num_entrada" in paid_df.columns else None
+        paid_df = prepare_document_matching_columns(paid_df, provider_col, alternate_col=alternate_col)
     if not email_df.empty and "invoice_key" not in email_df.columns:
         provider_col = "proveedor_correo" if "proveedor_correo" in email_df.columns else "nombre_proveedor_erp"
-        email_df = prepare_invoice_key(email_df, provider_col)
+        email_df = prepare_document_matching_columns(email_df, provider_col)
 
     # Guarantee invoice_key column even on empty frames
     for frame in [pending_df, paid_df, email_df]:
@@ -1025,6 +1262,9 @@ def build_master_dataframe(
     combined = combined.merge(lot_latest[[col for col in ["invoice_key", "lote_id", "estado_lote", "fecha_programada_pago"] if col in lot_latest.columns]], on="invoice_key", how="left")
 
     combined["num_factura"] = coalesce(
+        combined.get("documento_cruce", pd.Series(index=combined.index)),
+        combined.get("documento_cruce_pend", pd.Series(index=combined.index)),
+        combined.get("documento_cruce_paid", pd.Series(index=combined.index)),
         combined.get("num_factura_pend", pd.Series(index=combined.index)),
         combined.get("num_factura_paid", pd.Series(index=combined.index)),
         combined.get("num_factura", pd.Series(index=combined.index)),
