@@ -129,7 +129,7 @@ def main() -> None:
 
     st.title("Portal Ejecutivo de Tesoreria")
     if master_df.empty:
-        st.info("Aun no hay informacion consolidada. Ejecuta la sincronizacion desde la pagina principal.")
+        st.info("No hay una foto guardada de tesorería para esta vista. Cuando exista la primera actualización, este portal abrirá sobre esa base sin necesitar una sincronización completa en cada ingreso.")
         st.stop()
 
     display_hero(master_df, plan_df, alerts_df)

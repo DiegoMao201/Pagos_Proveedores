@@ -1102,6 +1102,39 @@ def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
     return prepared
 
 
+def infer_payload_snapshot_metadata(payload: dict) -> dict[str, Any]:
+    timestamp_candidates = []
+    candidate_columns = [
+        (payload.get("master_df", pd.DataFrame()), ["fecha_recepcion_correo", "fecha_programada_pago", "fecha_vencimiento_erp"]),
+        (payload.get("email_history_df", pd.DataFrame()), ["fecha_recepcion_correo"]),
+        (payload.get("lot_history_df", pd.DataFrame()), ["fecha_registro", "fecha_programada_pago"]),
+        (payload.get("email_log_df", pd.DataFrame()), ["fecha_envio"]),
+    ]
+
+    for frame, columns in candidate_columns:
+        if frame is None or frame.empty:
+            continue
+        for column in columns:
+            if column in frame.columns:
+                parsed = coerce_datetime(frame[column])
+                latest = parsed.max()
+                if pd.notna(latest):
+                    timestamp_candidates.append(latest)
+
+    snapshot_at = max(timestamp_candidates) if timestamp_candidates else pd.NaT
+    has_snapshot = any(
+        not payload.get(key, pd.DataFrame()).empty
+        for key in ["master_df", "payment_plan_df", "risk_alerts_df", "email_history_df"]
+    )
+    snapshot_rows = len(payload.get("master_df", pd.DataFrame())) if not payload.get("master_df", pd.DataFrame()).empty else len(payload.get("email_history_df", pd.DataFrame()))
+
+    return {
+        "has_snapshot": has_snapshot,
+        "snapshot_rows": snapshot_rows,
+        "snapshot_at": snapshot_at,
+    }
+
+
 def sync_treasury_data() -> dict:
     gs_client = connect_to_google_sheets()
     if not gs_client:
@@ -1144,7 +1177,10 @@ def sync_treasury_data() -> dict:
         "email_log_df": email_log_df,
         "sync_stats": sync_stats,
         "sync_started_from": start_date.strftime("%Y-%m-%d"),
+        "snapshot_source": "live_sync",
     }
+
+    payload.update(infer_payload_snapshot_metadata(payload))
 
     st.session_state["treasury_payload"] = payload
     st.session_state["last_treasury_sync"] = datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -1170,7 +1206,9 @@ def load_operational_payload() -> dict:
         "risk_alerts_df": build_risk_alerts(master_df),
         "lot_history_df": load_sheet_df(gs_client, SHEET_PAYMENT_LOTS),
         "email_log_df": load_sheet_df(gs_client, SHEET_EMAIL_LOG),
+        "snapshot_source": "sheets_cache",
     }
+    payload.update(infer_payload_snapshot_metadata(payload))
     st.session_state["treasury_payload"] = payload
     return payload
 

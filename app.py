@@ -230,6 +230,10 @@ def payload_or_empty() -> dict:
     payload.setdefault("pending_df", pd.DataFrame())
     payload.setdefault("paid_df", pd.DataFrame())
     payload.setdefault("sync_stats", {})
+    payload.setdefault("has_snapshot", False)
+    payload.setdefault("snapshot_rows", 0)
+    payload.setdefault("snapshot_at", pd.NaT)
+    payload.setdefault("snapshot_source", "sheets_cache")
     return payload
 
 
@@ -276,9 +280,17 @@ def display_sidebar(payload: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
-        if st.button("🔄 Sincronizar fuentes", type="primary", use_container_width=True):
+        if st.button("🔄 Actualizar ahora", type="primary", use_container_width=True):
             sync_treasury_data()
             st.rerun()
+
+        snapshot_at = payload.get("snapshot_at")
+        if payload.get("has_snapshot"):
+            snapshot_label = snapshot_at.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(snapshot_at) else "fecha no disponible"
+            st.success(f"Mostrando última foto guardada: {snapshot_label}")
+            st.caption(
+                f"Consulta inmediata sobre {payload.get('snapshot_rows', 0):,} registros guardados. Actualizar ahora solo trae novedades desde correo y Dropbox."
+            )
 
         if st.session_state.get("last_treasury_sync"):
             st.success(f"Última sincronización: {st.session_state['last_treasury_sync']}")
@@ -299,7 +311,10 @@ def display_sidebar(payload: dict) -> None:
                 f"Sincronizacion incremental desde {sync_stats.get('started_from', payload.get('sync_started_from', 'inicio del ano'))}. El sistema relee una ventana corta para evitar omisiones y consolida sin duplicar."
             )
         else:
-            st.caption("La primera sincronizacion del ano arma el historico base. Despues solo relee una ventana reciente y consolida contra lo ya guardado en Google Sheets.")
+            if payload.get("has_snapshot"):
+                st.caption("La app abre con la última foto guardada en Google Sheets. No necesitas sincronizar para consultar; usa actualizar solo cuando quieras traer novedades.")
+            else:
+                st.caption("Todavía no existe una foto guardada en Google Sheets. La primera actualización crea esa base; después la consulta ya será inmediata.")
 
         st.divider()
         st.markdown("**Fuentes activas**")
@@ -470,7 +485,7 @@ def display_operational_focus(payload: dict) -> None:
 def display_master_overview(payload: dict) -> None:
     master_df = payload["master_df"]
     if master_df.empty:
-        st.info("Aún no hay datos sincronizados para mostrar.")
+        st.info("Todavía no hay una foto guardada de cartera para mostrar. Cuando se ejecute la primera actualización, la consulta posterior ya abrirá con esa base sin reprocesar todos los correos.")
         return
 
     st.markdown(

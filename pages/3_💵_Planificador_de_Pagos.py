@@ -86,7 +86,10 @@ def main() -> None:
     email_log_df = payload.get("email_log_df", pd.DataFrame())
     if plan_df.empty:
         st.title("Planificador de Pagos")
-        st.info("No hay facturas pendientes para programar. Sincroniza las fuentes desde la pagina principal.")
+        if payload.get("has_snapshot"):
+            st.info("No hay facturas pendientes para programar en la última foto guardada. Solo actualiza si quieres traer novedades de correo o cartera.")
+        else:
+            st.info("Todavía no existe una foto guardada para construir el planificador. La primera actualización crea esa base y luego esta consulta será inmediata.")
         st.stop()
 
     st.markdown(
