@@ -128,11 +128,21 @@ DISCOUNT_PROVIDERS = {
     "ASSA ABLOY COLOMBIA S.A.S": [{"days": 12, "rate": 0.025}],
     "INDUMA S.C.A": [{"days": 15, "rate": 0.035}],
     "INDUSTRIAS GOYAINCOL LTDA": [{"days": 30, "rate": 0.03}],
+    "INDUSTRIAS GOYAINCOL SAS": [{"days": 30, "rate": 0.03}],
     "PINTUCO COLOMBIA S.A.S": [{"days": 15, "rate": 0.03}, {"days": 30, "rate": 0.02}],
     "SAINT - GOBAIN COLOMBIA S.A.S.": [{"days": 10, "rate": 0.03}],
 }
 DISCOUNT_RULES_NORMALIZED = {
     re.sub(r"[^A-Z0-9]", "", provider.upper()): rules for provider, rules in DISCOUNT_PROVIDERS.items()
+}
+SUPPLIER_ALIASES = {
+    "COMPANIAGLOBALDEPINTURASSAS": "PINTUCOCOLOMBIASAS",
+    "COMPANIAGLOBALDEPINTURASSASS": "PINTUCOCOLOMBIASAS",
+    "PINTUCOSAC": "PINTUCOCOLOMBIASAS",
+    "INDUSTRIASGOYAINCOLLTDA": "INDUSTRIASGOYAINCOLSAS",
+}
+VALUE_MATCH_RULES = {
+    "INDUSTRIASGOYAINCOLSAS": {"retention_pct": 0.025},
 }
 
 
@@ -175,6 +185,11 @@ def normalize_text(value: Any) -> str:
     if pd.isna(value) or value is None:
         return ""
     return re.sub(r"[^A-Z0-9]", "", str(value).upper()).strip()
+
+
+def normalize_supplier_key(value: Any) -> str:
+    normalized = normalize_text(value)
+    return SUPPLIER_ALIASES.get(normalized, normalized)
 
 
 def normalize_invoice_number(value: Any) -> str:
@@ -226,7 +241,7 @@ def coalesce(*series_list: pd.Series) -> pd.Series:
 def prepare_invoice_key(df: pd.DataFrame, provider_col: str, invoice_col: str = "num_factura") -> pd.DataFrame:
     prepared = df.copy()
     prepared[provider_col] = prepared[provider_col].fillna("").astype(str)
-    prepared["proveedor_norm"] = prepared[provider_col].apply(normalize_text)
+    prepared["proveedor_norm"] = prepared[provider_col].apply(normalize_supplier_key)
     prepared[invoice_col] = prepared[invoice_col].apply(normalize_invoice_number)
     prepared["invoice_key"] = prepared["proveedor_norm"] + "|" + prepared[invoice_col]
     return prepared
@@ -350,7 +365,7 @@ def load_provider_master_base() -> pd.DataFrame:
             "proveedor": base_df[provider_col].fillna("").astype(str).str.strip(),
         }
     )
-    provider_df["proveedor_norm"] = provider_df["proveedor"].apply(normalize_text)
+    provider_df["proveedor_norm"] = provider_df["proveedor"].apply(normalize_supplier_key)
     provider_df["activo"] = True
     provider_df["email_pago"] = ""
     provider_df["email_cc"] = ""
@@ -516,7 +531,7 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str]) -> Optional[
         if not supplier_name or not invoice_number or not total_value:
             return None
 
-        supplier_norm = normalize_text(supplier_name)
+        supplier_norm = normalize_supplier_key(supplier_name)
         if target_suppliers and supplier_norm not in target_suppliers:
             return None
 
@@ -724,6 +739,27 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def evaluate_value_status(row: pd.Series) -> tuple[bool, str]:
+    if not row.get("en_correo") or row.get("estado_erp") not in {"Pendiente", "Saldada"}:
+        return False, ""
+
+    value_erp = clean_numeric(row.get("valor_erp"))
+    value_email = clean_numeric(row.get("valor_total_correo"))
+    difference = abs(value_erp - value_email)
+    if difference <= 1:
+        return False, ""
+
+    provider_rule = VALUE_MATCH_RULES.get(str(row.get("proveedor_norm", "")), {})
+    retention_pct = provider_rule.get("retention_pct")
+    if retention_pct and value_email > 0:
+        expected_erp_value = value_email * (1 - retention_pct)
+        tolerance = max(100.0, value_email * 0.003)
+        if abs(value_erp - expected_erp_value) <= tolerance:
+            return False, f"Diferencia compatible con retencion {retention_pct:.1%}"
+
+    return True, "Diferencia de valor por revisar"
+
+
 def build_master_dataframe(
     pending_df: pd.DataFrame,
     paid_df: pd.DataFrame,
@@ -753,6 +789,8 @@ def build_master_dataframe(
         combined.get("proveedor_norm_paid", pd.Series(index=combined.index)),
         combined.get("proveedor_norm", pd.Series(index=combined.index)),
     )
+    combined["proveedor_norm"] = combined["proveedor_norm"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    provider_meta["proveedor_norm"] = provider_meta["proveedor_norm"].fillna("").astype(str)
     combined = combined.merge(provider_meta, on="proveedor_norm", how="left")
 
     lot_latest = pd.DataFrame(columns=["invoice_key", "lote_id", "estado_lote", "fecha_programada_pago"])
@@ -815,7 +853,9 @@ def build_master_dataframe(
     combined["estado_erp"] = combined["estado_erp"].fillna("No ERP")
 
     combined["diferencia_valor"] = (combined["valor_erp"].fillna(0) - combined["valor_total_correo"].fillna(0)).abs()
-    combined["tiene_discrepancia_valor"] = combined["en_correo"] & combined["estado_erp"].isin(["Pendiente", "Saldada"]) & (combined["diferencia_valor"] > 1)
+    value_status = combined.apply(evaluate_value_status, axis=1)
+    combined["tiene_discrepancia_valor"] = value_status.apply(lambda item: item[0])
+    combined["detalle_valor"] = value_status.apply(lambda item: item[1])
 
     def classify_status(row: pd.Series) -> str:
         if row["estado_erp"] == "Inconsistente ERP":
@@ -836,7 +876,29 @@ def build_master_dataframe(
             return "Solo correo"
         return "Sin clasificar"
 
+    def build_reconciliation_detail(row: pd.Series) -> str:
+        if row["estado_erp"] == "Inconsistente ERP":
+            return "La factura aparece al mismo tiempo en cartera pendiente y cartera saldada."
+        if row["estado_conciliacion"] == "Pendiente conciliada":
+            if row.get("detalle_valor"):
+                return f"Existe en cartera pendiente y tiene soporte de correo. {row['detalle_valor']}."
+            return "Existe en cartera pendiente y tiene soporte de correo conciliado."
+        if row["estado_conciliacion"] == "Saldada conciliada":
+            if row.get("detalle_valor"):
+                return f"Existe en cartera saldada y tiene soporte de correo. {row['detalle_valor']}."
+            return "Existe en cartera saldada y tiene soporte de correo conciliado."
+        if row["estado_conciliacion"] == "Pendiente sin correo":
+            return "Está en cartera pendiente pero no se encontró XML o ZIP asociado en el buzón leído."
+        if row["estado_conciliacion"] == "Saldada sin correo":
+            return "Está en cartera saldada pero no se encontró XML o ZIP asociado en el buzón leído."
+        if row["estado_conciliacion"] == "Solo correo":
+            return "Tiene correo y XML, pero no aparece ni en cartera pendiente ni en cartera saldada."
+        if row["estado_conciliacion"] in {"Pendiente con valor por revisar", "Saldada con valor por revisar"}:
+            return row.get("detalle_valor") or "Existe soporte de correo, pero el valor no coincide con ERP."
+        return "Revisar manualmente este caso."
+
     combined["estado_conciliacion"] = combined.apply(classify_status, axis=1)
+    combined["detalle_conciliacion"] = combined.apply(build_reconciliation_detail, axis=1)
     today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
     combined["dias_para_vencer"] = (combined["fecha_vencimiento_erp"].dt.normalize() - today).dt.days
 
@@ -878,6 +940,7 @@ def build_master_dataframe(
         "valor_erp",
         "valor_total_correo",
         "diferencia_valor",
+        "detalle_valor",
         "fecha_emision_erp",
         "fecha_vencimiento_erp",
         "fecha_emision_correo",
@@ -889,6 +952,7 @@ def build_master_dataframe(
         "message_id",
         "estado_erp",
         "estado_conciliacion",
+        "detalle_conciliacion",
         "estado_vencimiento",
         "dias_para_vencer",
         "riesgo_mora_48h",

@@ -347,27 +347,21 @@ def kpi_row(payload: dict) -> None:
     master_df = payload["master_df"]
     plan_df = payload["payment_plan_df"]
     alerts_df = payload["risk_alerts_df"]
-    email_df = payload["email_history_df"]
-
-    only_email = (master_df["estado_conciliacion"] == "Solo correo").sum() if not master_df.empty else 0
-    pending_without_email = (master_df["estado_conciliacion"] == "Pendiente sin correo").sum() if not master_df.empty else 0
-    programmed = master_df["registrada_para_pago"].sum() if not master_df.empty and "registrada_para_pago" in master_df.columns else 0
-    discountable = (plan_df["descuento_pct"] > 0).sum() if not plan_df.empty else 0
+    due_now = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h"]))] if not master_df.empty else pd.DataFrame()
+    only_email = master_df[master_df["estado_conciliacion"] == "Solo correo"] if not master_df.empty else pd.DataFrame()
+    pending_without_email = master_df[master_df["estado_conciliacion"] == "Pendiente sin correo"] if not master_df.empty else pd.DataFrame()
+    conciliated = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"])] if not master_df.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Facturas solo en correo", f"{only_email:,}")
-    c2.metric("Pendientes sin soporte", f"{pending_without_email:,}")
-    c3.metric("Facturas programadas", f"{int(programmed):,}")
-    c4.metric("Facturas con descuento", f"{int(discountable):,}")
+    c1.metric("Que debo pagar ya", format_currency(due_now["valor_erp"].sum() if not due_now.empty else 0), f"{len(due_now):,} facturas")
+    c2.metric("Solo en correo", f"{len(only_email):,}")
+    c3.metric("Pendiente sin correo", f"{len(pending_without_email):,}")
+    c4.metric("Cartera conciliada", f"{len(conciliated):,}")
 
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Histórico correo", f"{len(email_df):,}")
-    c6.metric("Plan de pagos sugerido", f"{len(plan_df):,}")
-    c7.metric("Riesgo mora 48h", f"{len(alerts_df):,}")
     if not plan_df.empty:
-        c8.metric("Ahorro promedio sugerido", format_currency(plan_df["valor_descuento"].mean()))
-    else:
-        c8.metric("Ahorro promedio sugerido", format_currency(0))
+        st.caption(
+            f"Pago sugerido actual: {format_currency(plan_df['valor_a_pagar'].sum())}. Ahorro capturable: {format_currency(plan_df['valor_descuento'].sum())}. Alertas 48h: {len(alerts_df):,}."
+        )
 
 
 def display_source_health(payload: dict) -> None:
@@ -380,7 +374,7 @@ def display_source_health(payload: dict) -> None:
     source_summary = pd.DataFrame(
         [
             {"Fuente": "Cartera pendiente Dropbox", "Registros": summary["pending_rows"], "Observacion": "Base de facturas por pagar del año o pendientes ya consolidadas en maestro."},
-            {"Fuente": "Cartera saldada local", "Registros": summary["paid_rows"], "Observacion": "Facturas ya canceladas para evitar falsas alarmas y cruces errados."},
+            {"Fuente": "Cartera saldada Dropbox", "Registros": summary["paid_rows"], "Observacion": "Facturas ya canceladas para evitar falsas alarmas y cruces errados."},
             {"Fuente": "Histórico correo proveedores", "Registros": len(payload["email_history_df"]), "Observacion": "Facturas XML y ZIP detectadas en el buzón objetivo."},
             {"Fuente": "Maestro facturas", "Registros": len(master_df), "Observacion": "Consolidado final para control y programación."},
             {"Fuente": "Trazabilidad lotes/correos", "Registros": summary["lots_registered"] + len(payload["email_log_df"]), "Observacion": "Histórico de lotes programados y evidencia de comunicación enviada."},
@@ -482,76 +476,109 @@ def display_master_overview(payload: dict) -> None:
     st.markdown(
         """
         <div class="overview-banner">
-            <strong>Vista de decisión diaria.</strong> Aquí se consolida el estado real por factura: si existe en ERP, si ya fue saldada, si llegó soporte por correo, si hay descuento disponible y si el vencimiento exige acción inmediata.
+            <strong>Vista de decisión diaria.</strong> La lectura se reduce a cuatro preguntas: qué pagar ya, qué llegó por correo y falta ingresar, qué sigue sin conciliar y qué cartera ya quedó bien cruzada.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(["📌 Conciliación", "💰 Pagos sugeridos", "🚨 Riesgo de mora"])
+    pay_now_df = master_df[(master_df["estado_erp"] == "Pendiente") & (master_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h", "🟡 Proxima a vencer"]))].copy()
+    only_email_df = master_df[master_df["estado_conciliacion"] == "Solo correo"].copy()
+    unresolved_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente sin correo", "Pendiente con valor por revisar", "Saldada con valor por revisar", "Inconsistencia entre pendiente y saldada"])].copy()
+    conciliated_df = master_df[master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada"])] .copy()
+
+    tab1, tab2, tab3, tab4 = st.tabs(["💸 Que Debo Pagar", "📨 Falta Ingresar", "⚠️ No Conciliado", "✅ Conciliado"])
 
     with tab1:
-        status_summary = master_df.groupby(["estado_erp", "estado_conciliacion"], dropna=False).agg(
-            Facturas=("invoice_key", "count"),
-            Valor=("valor_erp", "sum"),
-        ).reset_index()
-        st.dataframe(
-            status_summary,
-            use_container_width=True,
-            hide_index=True,
-            column_config={"Valor": st.column_config.NumberColumn("Valor ERP", format="$ %d")},
-        )
-        st.dataframe(
-            master_df[[
+        if pay_now_df.empty:
+            st.success("No hay cartera pendiente con vencimiento cercano en este momento.")
+        else:
+            st.dataframe(
+                pay_now_df[[
                 "proveedor",
                 "num_factura",
-                "estado_erp",
                 "estado_conciliacion",
                 "estado_vencimiento",
                 "valor_erp",
-                "valor_total_correo",
-                "diferencia_valor",
-            ]].sort_values(by=["proveedor", "num_factura"]),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
-                "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
-                "diferencia_valor": st.column_config.NumberColumn("Diferencia", format="$ %d"),
-            },
-        )
-
-    with tab2:
-        plan_df = payload["payment_plan_df"]
-        if plan_df.empty:
-            st.info("No hay facturas pendientes para programar pagos.")
-        else:
-            st.dataframe(
-                plan_df,
+                "valor_a_pagar",
+                "valor_descuento",
+                "detalle_conciliacion",
+            ]].sort_values(by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %d"),
-                    "valor_descuento": st.column_config.NumberColumn("Descuento", format="$ %d"),
+                    "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
                     "valor_a_pagar": st.column_config.NumberColumn("Valor a pagar", format="$ %d"),
-                    "descuento_pct": st.column_config.NumberColumn("Descuento %", format="%.2f"),
-                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
-                    "fecha_limite_descuento": st.column_config.DateColumn("Limite descuento", format="YYYY-MM-DD"),
+                    "valor_descuento": st.column_config.NumberColumn("Ahorro", format="$ %d"),
+                },
+            )
+
+    with tab2:
+        if only_email_df.empty:
+            st.success("No hay facturas que estén solo en correo sin aparecer en ERP.")
+        else:
+            st.dataframe(
+                only_email_df[[
+                    "proveedor_correo",
+                    "num_factura",
+                    "valor_total_correo",
+                    "fecha_emision_correo",
+                    "fecha_recepcion_correo",
+                    "remitente_correo",
+                    "detalle_conciliacion",
+                ]].sort_values(by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
+                    "fecha_emision_correo": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
+                    "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
                 },
             )
 
     with tab3:
-        alerts_df = payload["risk_alerts_df"]
-        if alerts_df.empty:
-            st.success("No hay facturas en riesgo de mora en la ventana de 48 horas.")
+        if unresolved_df.empty:
+            st.success("No hay facturas con cruce pendiente o diferencia por revisar.")
         else:
             st.dataframe(
-                alerts_df,
+                unresolved_df[[
+                    "proveedor",
+                    "num_factura",
+                    "estado_erp",
+                    "estado_conciliacion",
+                    "valor_erp",
+                    "valor_total_correo",
+                    "diferencia_valor",
+                    "detalle_conciliacion",
+                ]].sort_values(by=["proveedor", "num_factura"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %d"),
-                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+                    "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
+                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
+                    "diferencia_valor": st.column_config.NumberColumn("Diferencia", format="$ %d"),
+                },
+            )
+
+    with tab4:
+        if conciliated_df.empty:
+            st.info("Aún no hay cartera conciliada para mostrar.")
+        else:
+            st.dataframe(
+                conciliated_df[[
+                    "proveedor",
+                    "num_factura",
+                    "estado_erp",
+                    "estado_conciliacion",
+                    "valor_erp",
+                    "valor_total_correo",
+                    "detalle_conciliacion",
+                ]].sort_values(by=["proveedor", "num_factura"]),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
+                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
                 },
             )
 
