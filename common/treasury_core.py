@@ -29,7 +29,7 @@ COLOMBIA_TZ = pytz.timezone("America/Bogota")
 IMAP_SERVER = "imap.gmail.com"
 EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_PENDING_PATH = "/data/Proveedores.csv"
-LOCAL_PAID_PATH = "cartera_saldada.csv"
+DROPBOX_PAID_PATH = "/data/cartera_saldada.csv"
 PROVIDER_CATALOG_PATH = "PROVEDORES_CORREO.xlsx"
 
 SHEET_PROVIDER_MASTER = "Maestro_Proveedores"
@@ -449,13 +449,28 @@ def load_pending_invoices_from_dropbox() -> pd.DataFrame:
         return pd.DataFrame(columns=PENDING_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
 
 
-@st.cache_data(ttl=600, show_spinner="Cargando cartera saldada local...")
-def load_paid_invoices_from_csv() -> pd.DataFrame:
-    if not os.path.exists(LOCAL_PAID_PATH):
-        return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
-
+@st.cache_data(ttl=600, show_spinner="Descargando cartera saldada desde Dropbox...")
+def load_paid_invoices_from_dropbox() -> pd.DataFrame:
     try:
-        df = pd.read_csv(LOCAL_PAID_PATH, sep="|", encoding="latin1", header=None, names=PAID_COLUMNS, engine="python")
+        dropbox_secrets = get_secret_section("dropbox")
+        if not dropbox_secrets:
+            return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
+
+        paid_path = dropbox_secrets.get("paid_invoices_path") or dropbox_secrets.get("paid_path") or DROPBOX_PAID_PATH
+        dbx = dropbox.Dropbox(
+            oauth2_refresh_token=dropbox_secrets.get("refresh_token"),
+            app_key=dropbox_secrets.get("app_key"),
+            app_secret=dropbox_secrets.get("app_secret"),
+        )
+        _, response = dbx.files_download(paid_path)
+        df = pd.read_csv(
+            io.StringIO(response.content.decode("latin1")),
+            sep="|",
+            encoding="latin1",
+            header=None,
+            names=PAID_COLUMNS,
+            engine="python",
+        )
         df["valor_total_erp"] = df["valor_total_erp"].apply(clean_numeric)
         df["fecha_emision_erp"] = coerce_datetime(df["fecha_emision_erp"])
         df["fecha_vencimiento_erp"] = coerce_datetime(df["fecha_vencimiento_erp"])
@@ -464,7 +479,7 @@ def load_paid_invoices_from_csv() -> pd.DataFrame:
         df["estado_erp_fuente"] = "Saldada"
         return df
     except Exception as exc:
-        st.error(f"❌ Error cargando cartera saldada local: {exc}")
+        st.error(f"❌ Error cargando cartera saldada desde Dropbox: {exc}")
         return pd.DataFrame(columns=PAID_COLUMNS + ["proveedor_norm", "invoice_key", "estado_erp_fuente"])
 
 
@@ -983,7 +998,7 @@ def sync_treasury_data() -> dict:
     merged_email_df = merge_email_history(email_history_df, new_email_df)
 
     pending_df = load_pending_invoices_from_dropbox()
-    paid_df = load_paid_invoices_from_csv()
+    paid_df = load_paid_invoices_from_dropbox()
     if target_suppliers:
         pending_df = pending_df[pending_df["proveedor_norm"].isin(target_suppliers)].copy()
         paid_df = paid_df[paid_df["proveedor_norm"].isin(target_suppliers)].copy()
