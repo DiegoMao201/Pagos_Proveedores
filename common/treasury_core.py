@@ -562,9 +562,14 @@ def align_email_records_to_erp(
             prepared = prepare_document_matching_columns(prepared, provider_col, alternate_col=alternate_col)
         prepared["num_factura"] = prepared["num_factura"].apply(normalize_invoice_number)
         prepared["num_entrada"] = prepared.get("num_entrada", pd.Series(index=prepared.index, dtype=object)).apply(normalize_invoice_number)
-        prepared["document_candidates"] = prepared.get("document_candidates", pd.Series(index=prepared.index, dtype=object)).apply(
-            lambda value: value if isinstance(value, list) else build_document_candidates(value)
-        )
+        prepared["document_candidates"] = [
+            build_document_candidates(f, e, d)
+            for f, e, d in zip(
+                prepared["num_factura"].fillna(""),
+                prepared["num_entrada"].fillna(""),
+                prepared.get("documento_cruce", pd.Series("", index=prepared.index)).fillna(""),
+            )
+        ]
         prepared["supplier_fingerprint"] = prepared.get(provider_col, pd.Series(index=prepared.index, dtype=object)).apply(normalize_supplier_fingerprint)
         erp_frames.append(prepared[["invoice_key", "num_factura", "num_entrada", "documento_cruce", "document_candidates", "proveedor_norm", "supplier_fingerprint", "valor_total_erp"]])
 
@@ -593,31 +598,35 @@ def align_email_records_to_erp(
                 candidates = pd.concat([candidates, matched], ignore_index=True)
         candidates = candidates.drop_duplicates(subset=["invoice_key"]) if not candidates.empty else candidates
         if candidates.empty:
-            provider_norm = str(row.get("proveedor_norm", "") or "")
             email_value = clean_numeric(row.get("valor_total_correo")) or clean_numeric(row.get("valor_detectado_correo"))
-            if provider_norm and email_value > 0:
+            provider_norm = str(row.get("proveedor_norm", "") or "")
+            fingerprint = str(row.get("email_supplier_fingerprint", "") or "")
+            if email_value > 0 and (provider_norm or fingerprint):
                 tolerance = max(100.0, email_value * 0.003)
-                matched = erp_df[
-                    (erp_df["proveedor_norm"] == provider_norm)
-                    & ((erp_df["valor_total_erp"].apply(clean_numeric) - email_value).abs() <= tolerance)
-                ]
+                value_mask = (erp_df["valor_total_erp"].apply(clean_numeric) - email_value).abs() <= tolerance
+                supplier_mask = pd.Series(False, index=erp_df.index)
+                if provider_norm:
+                    supplier_mask = supplier_mask | (erp_df["proveedor_norm"] == provider_norm)
+                if fingerprint:
+                    supplier_mask = supplier_mask | (erp_df["supplier_fingerprint"] == fingerprint)
+                matched = erp_df[supplier_mask & value_mask]
                 if len(matched) == 1:
                     candidates = matched.copy()
             if candidates.empty:
                 continue
 
-        provider_norm = str(row.get("proveedor_norm", "") or "")
-        if provider_norm:
-            exact_candidates = candidates[candidates["proveedor_norm"] == provider_norm]
-            if not exact_candidates.empty:
-                candidates = exact_candidates
-
         if len(candidates) > 1:
+            provider_norm = str(row.get("proveedor_norm", "") or "")
             fingerprint = str(row.get("email_supplier_fingerprint", "") or "")
-            if fingerprint:
-                fingerprint_candidates = candidates[candidates["supplier_fingerprint"] == fingerprint]
-                if len(fingerprint_candidates) == 1:
-                    candidates = fingerprint_candidates
+            if provider_norm or fingerprint:
+                supplier_mask = pd.Series(False, index=candidates.index)
+                if provider_norm:
+                    supplier_mask = supplier_mask | (candidates["proveedor_norm"] == provider_norm)
+                if fingerprint:
+                    supplier_mask = supplier_mask | (candidates["supplier_fingerprint"] == fingerprint)
+                filtered = candidates[supplier_mask]
+                if not filtered.empty:
+                    candidates = filtered
 
         if len(candidates) == 1:
             aligned.at[idx, "proveedor_norm"] = candidates["proveedor_norm"].iloc[0]
