@@ -47,14 +47,23 @@ EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_FILE_PATH = "/data/Proveedores.csv"
 PINTUCO_WORKSHEET_NAME = "Rebate_Pintuco"
 
-CYCLE_TARGETS = {
-	"Meta acumulada del ciclo": {
-		"Escala 1": None,
-		"Rebate 1": None,
-		"Escala 2": None,
-		"Rebate 2": None,
-	}
-}
+MONTHLY_BUDGETS = [
+	{"Mes": "Abril", "Mes_Num": 4, "Trimestre": "Q2", "Escala 1": 1456867389.0, "Escala 2": 1544279432.0},
+	{"Mes": "Mayo", "Mes_Num": 5, "Trimestre": "Q2", "Escala 1": 2094162232.0, "Escala 2": 2219811966.0},
+	{"Mes": "Junio", "Mes_Num": 6, "Trimestre": "Q2", "Escala 1": 2237825409.0, "Escala 2": 2372094934.0},
+	{"Mes": "Julio", "Mes_Num": 7, "Trimestre": "Q3", "Escala 1": 2000572886.0, "Escala 2": 2120607260.0},
+	{"Mes": "Agosto", "Mes_Num": 8, "Trimestre": "Q3", "Escala 1": 2271787723.0, "Escala 2": 2408094987.0},
+	{"Mes": "Septiembre", "Mes_Num": 9, "Trimestre": "Q3", "Escala 1": 2232381407.0, "Escala 2": 2366324292.0},
+	{"Mes": "Octubre", "Mes_Num": 10, "Trimestre": "Q4", "Escala 1": 1605138135.0, "Escala 2": 1701446423.0},
+	{"Mes": "Noviembre", "Mes_Num": 11, "Trimestre": "Q4", "Escala 1": 1147826895.0, "Escala 2": 1216696508.0},
+	{"Mes": "Diciembre", "Mes_Num": 12, "Trimestre": "Q4", "Escala 1": 1555236709.0, "Escala 2": 1648550912.0},
+]
+
+MONTHLY_REBATE_RATES = {"Escala 1": 0.01, "Escala 2": 0.015, "Sin escala": 0.0}
+QUARTERLY_REBATE_RATES = {"Escala 1": 0.01, "Escala 2": 0.025, "Sin escala": 0.0}
+SEASONALITY_TARGET_FACTOR = 0.90
+SEASONALITY_RATE = 0.01
+CYCLE_RECOMPOSITION_FACTOR = 0.85
 
 INVOICE_COLUMNS = [
 	"Fecha_Factura",
@@ -69,33 +78,112 @@ INVOICE_COLUMNS = [
 	"Estado_Pago",
 ]
 
-
 st.markdown(
 	f"""
 	<style>
+		[data-testid="stSidebar"] {{
+			background: linear-gradient(180deg, #0d1c30 0%, #133251 55%, #1c4e80 100%);
+			border-right: 1px solid rgba(255,255,255,0.08);
+		}}
+		[data-testid="stSidebar"] * {{
+			color: #f3f7fb;
+		}}
+		.main .block-container {{
+			padding-top: 1rem;
+			padding-bottom: 2.4rem;
+		}}
 		.pintuco-banner {{
-			background: linear-gradient(120deg, #0b3c5d 0%, #145374 45%, #f3a712 100%);
-			border-radius: 18px;
-			padding: 24px 28px;
+			background: radial-gradient(circle at top right, rgba(255,255,255,0.18), transparent 30%), linear-gradient(135deg, #0b2440 0%, #145374 48%, #f0ad1f 100%);
+			border-radius: 24px;
+			padding: 28px 32px;
 			color: #ffffff;
 			margin-bottom: 18px;
-			box-shadow: 0 12px 32px rgba(11, 60, 93, 0.18);
+			box-shadow: 0 18px 42px rgba(11, 36, 64, 0.22);
 		}}
 		.pintuco-banner h1 {{
 			margin: 0;
-			font-size: 2rem;
+			font-size: 2.2rem;
 		}}
 		.pintuco-banner p {{
-			margin: 8px 0 0 0;
+			margin: 10px 0 0 0;
 			font-size: 1rem;
 			opacity: 0.95;
 		}}
 		.info-card {{
-			background: #f7fafc;
-			border: 1px solid #d9e2ec;
-			border-radius: 14px;
+			background: linear-gradient(180deg, #f9fbfd 0%, #eef3f8 100%);
+			border: 1px solid rgba(12, 45, 87, 0.10);
+			border-radius: 18px;
 			padding: 16px 18px;
 			margin-bottom: 16px;
+			box-shadow: 0 10px 24px rgba(12, 45, 87, 0.06);
+		}}
+		.note-card {{
+			background: #fff8e7;
+			border: 1px solid rgba(240, 173, 31, 0.28);
+			border-radius: 18px;
+			padding: 14px 16px;
+			margin-bottom: 16px;
+		}}
+		.kpi-grid {{
+			display: grid;
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+			gap: 12px;
+			margin: 12px 0 14px 0;
+		}}
+		.kpi-card {{
+			background: #ffffff;
+			border-radius: 20px;
+			padding: 16px 18px;
+			border: 1px solid rgba(12, 45, 87, 0.08);
+			box-shadow: 0 12px 26px rgba(12, 45, 87, 0.06);
+		}}
+		.kpi-card.navy {{ border-top: 4px solid #0c2d57; }}
+		.kpi-card.gold {{ border-top: 4px solid #f0ad1f; }}
+		.kpi-card.green {{ border-top: 4px solid #119c63; }}
+		.kpi-card.red {{ border-top: 4px solid #d94a4a; }}
+		.kpi-label {{
+			font-size: 0.72rem;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			color: #5d6c7d;
+			margin-bottom: 0.2rem;
+		}}
+		.kpi-value {{
+			font-size: 1.55rem;
+			font-weight: 800;
+			color: #0c2d57;
+			line-height: 1.05;
+		}}
+		.kpi-sub {{
+			font-size: 0.80rem;
+			color: #6a7b8f;
+			margin-top: 0.28rem;
+			line-height: 1.4;
+		}}
+		.section-card {{
+			background: #ffffff;
+			border-radius: 22px;
+			border: 1px solid rgba(12, 45, 87, 0.08);
+			padding: 18px 20px;
+			box-shadow: 0 12px 28px rgba(12, 45, 87, 0.06);
+			margin-bottom: 16px;
+		}}
+		.pill {{
+			display: inline-block;
+			padding: 4px 10px;
+			border-radius: 999px;
+			font-size: 0.78rem;
+			font-weight: 700;
+		}}
+		.pill.green {{ background: rgba(17, 156, 99, 0.14); color: #0a774a; }}
+		.pill.gold {{ background: rgba(240, 173, 31, 0.16); color: #8b6509; }}
+		.pill.red {{ background: rgba(217, 74, 74, 0.14); color: #a92f2f; }}
+		.pill.navy {{ background: rgba(12, 45, 87, 0.10); color: #0c2d57; }}
+		@media (max-width: 1100px) {{
+			.kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+		}}
+		@media (max-width: 680px) {{
+			.kpi-grid {{ grid-template-columns: 1fr; }}
 		}}
 	</style>
 	""",
@@ -105,6 +193,29 @@ st.markdown(
 
 def format_currency(value: float) -> str:
 	return f"${value:,.0f}"
+
+
+def format_percent(value: float, decimals: int = 1) -> str:
+	return f"{value * 100:.{decimals}f}%"
+
+
+def safe_divide(numerator: float, denominator: float) -> float:
+	if not denominator:
+		return 0.0
+	return float(numerator) / float(denominator)
+
+
+def kpi_card_html(label: str, value: str, subtext: str = "", tone: str = "navy") -> str:
+	sub_html = f'<div class="kpi-sub">{subtext}</div>' if subtext else ""
+	return f'<div class="kpi-card {tone}"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div>{sub_html}</div>'
+
+
+def render_kpi_grid(cards: list[str]) -> None:
+	st.markdown(f'<div class="kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+def pill_html(text: str, tone: str = "navy") -> str:
+	return f'<span class="pill {tone}">{text}</span>'
 
 
 def normalize_invoice_number(inv_num: Any) -> str:
@@ -189,43 +300,52 @@ def sort_invoice_dataframe(df: pd.DataFrame, by: list[str], ascending: bool | li
 	return sorted_df.sort_values(by=by, ascending=ascending, na_position="last")
 
 
-def get_target_defaults() -> dict:
-	configured_target = CYCLE_TARGETS["Meta acumulada del ciclo"]
-	return {
-		"Escala 1": float(configured_target["Escala 1"] or 0),
-		"Rebate 1": float(configured_target["Rebate 1"] or 0),
-		"Escala 2": float(configured_target["Escala 2"] or 0),
-		"Rebate 2": float(configured_target["Rebate 2"] or 0),
-	}
+def get_third_sunday(month_start: pd.Timestamp) -> date:
+	first_day = month_start.date().replace(day=1)
+	days_until_sunday = (6 - first_day.weekday()) % 7
+	first_sunday = first_day + timedelta(days=days_until_sunday)
+	return first_sunday + timedelta(days=14)
 
 
-def get_active_targets() -> dict | None:
-	defaults = get_target_defaults()
+def build_budget_frame() -> pd.DataFrame:
+	budget_df = pd.DataFrame(MONTHLY_BUDGETS).copy()
+	budget_df["Mes_Inicio"] = pd.to_datetime({"year": CURRENT_CYCLE_START.year, "month": budget_df["Mes_Num"], "day": 1})
+	budget_df["Mes_Clave"] = budget_df["Mes_Inicio"].dt.strftime("%Y-%m")
+	budget_df["Corte_Estacionalidad"] = budget_df["Mes_Inicio"].apply(lambda value: pd.Timestamp(get_third_sunday(value)))
+	return budget_df
+
+
+def get_rebate_configuration() -> dict:
+	budget_df = build_budget_frame()
 	with st.sidebar:
-		st.header("Configuración del ciclo")
-		st.caption("El módulo ya está alineado al ciclo iniciado el 2026-04-01. Las metas definitivas pueden cargarse cuando las recibas.")
-		use_manual_targets = st.checkbox(
-			"Configurar metas temporales en esta sesión",
-			value=any(defaults.values()),
-			help="Actívalo si quieres proyectar el avance antes de cargar las metas oficiales.",
-		)
+		st.header("Motor comercial")
+		st.caption("Ferreinox vs Pintuco. Todo el rebate y la estacionalidad se calculan sobre el 88% aplicable después del 12% excluido.")
+		monthly_rate_e1 = st.number_input("Rebate mensual Escala 1 (%)", min_value=0.0, max_value=100.0, value=MONTHLY_REBATE_RATES["Escala 1"] * 100, step=0.1, format="%.2f") / 100
+		monthly_rate_e2 = st.number_input("Rebate mensual Escala 2 (%)", min_value=0.0, max_value=100.0, value=MONTHLY_REBATE_RATES["Escala 2"] * 100, step=0.1, format="%.2f") / 100
+		quarterly_rate_e1 = st.number_input("Rebate trimestral Escala 1 (%)", min_value=0.0, max_value=100.0, value=QUARTERLY_REBATE_RATES["Escala 1"] * 100, step=0.1, format="%.2f") / 100
+		quarterly_rate_e2 = st.number_input("Rebate trimestral Escala 2 (%)", min_value=0.0, max_value=100.0, value=QUARTERLY_REBATE_RATES["Escala 2"] * 100, step=0.1, format="%.2f") / 100
+		seasonality_target = st.number_input("Meta estacionalidad (% de Escala 2)", min_value=0.0, max_value=100.0, value=SEASONALITY_TARGET_FACTOR * 100, step=1.0, format="%.0f") / 100
+		seasonality_rate = st.number_input("Bono estacionalidad (%)", min_value=0.0, max_value=100.0, value=SEASONALITY_RATE * 100, step=0.1, format="%.2f") / 100
+		recomposition_rate = st.number_input("Recuperación 9 meses (%)", min_value=0.0, max_value=100.0, value=CYCLE_RECOMPOSITION_FACTOR * 100, step=1.0, format="%.0f") / 100
 
-		if not use_manual_targets:
-			return None
-
-		meta_e1 = st.number_input("Meta ciclo Escala 1", min_value=0.0, value=defaults["Escala 1"], step=1000000.0, format="%.0f")
-		rebate_e1 = st.number_input("Rebate Escala 1 (%)", min_value=0.0, max_value=100.0, value=defaults["Rebate 1"] * 100, step=0.1, format="%.2f")
-		meta_e2 = st.number_input("Meta ciclo Escala 2", min_value=0.0, value=defaults["Escala 2"], step=1000000.0, format="%.0f")
-		rebate_e2 = st.number_input("Rebate Escala 2 (%)", min_value=0.0, max_value=100.0, value=defaults["Rebate 2"] * 100, step=0.1, format="%.2f")
-
-	if meta_e1 <= 0 and meta_e2 <= 0:
-		return None
+		st.markdown("---")
+		edit_budget = st.checkbox("Editar presupuesto mensual en esta sesión", value=False)
+		if edit_budget:
+			edited_budget = st.data_editor(
+				budget_df[["Mes", "Trimestre", "Escala 1", "Escala 2"]],
+				hide_index=True,
+				use_container_width=True,
+				disabled=["Mes", "Trimestre"],
+			)
+			budget_df[["Escala 1", "Escala 2"]] = edited_budget[["Escala 1", "Escala 2"]].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
 	return {
-		"Escala 1": meta_e1,
-		"Rebate 1": rebate_e1 / 100,
-		"Escala 2": meta_e2,
-		"Rebate 2": rebate_e2 / 100,
+		"budget_df": budget_df,
+		"monthly_rates": {"Escala 1": monthly_rate_e1, "Escala 2": monthly_rate_e2, "Sin escala": 0.0},
+		"quarterly_rates": {"Escala 1": quarterly_rate_e1, "Escala 2": quarterly_rate_e2, "Sin escala": 0.0},
+		"seasonality_target_factor": seasonality_target,
+		"seasonality_rate": seasonality_rate,
+		"cycle_recomposition_factor": recomposition_rate,
 	}
 
 
@@ -605,58 +725,219 @@ def build_cycle_summary(df: pd.DataFrame) -> pd.DataFrame:
 	if df.empty:
 		return pd.DataFrame()
 
-	summary = (
-		df.assign(Mes=df["Fecha_Factura"].dt.to_period("M").dt.to_timestamp())
-		.groupby("Mes", as_index=False)
-		.agg(
-			Facturas=("Numero_Factura", "nunique"),
-			Compra_Neta=("Valor_Neto", "sum"),
-			Exclusion_12=("Compra_Excluida_12", "sum"),
-			Compra_Aplicable=("Compra_Aplicable_Rebate", "sum"),
-			Pendientes=("Estado_Pago", lambda values: (pd.Series(values) == "Pendiente").sum()),
-		)
-	)
-	summary["Pagadas"] = summary["Facturas"] - summary["Pendientes"]
-	summary["Mes"] = summary["Mes"].dt.strftime("%Y-%m")
-	return summary
+	return df[
+		[
+			"Mes",
+			"Trimestre",
+			"Compra_Neta",
+			"Exclusion_12",
+			"Compra_Aplicable",
+			"Presupuesto_Escala_1",
+			"Presupuesto_Escala_2",
+			"Cumplimiento_E1",
+			"Cumplimiento_E2",
+			"Escala_Lograda",
+			"Rebate_Mensual_Ganado",
+			"Bono_Estacionalidad",
+			"Pendiente_Cartera",
+		]
+	].copy()
 
 
-def build_target_projection(total_applicable_purchase: float, active_targets: dict | None) -> pd.DataFrame:
-	if not active_targets:
-		return pd.DataFrame()
+def determine_scale(actual_purchase: float, scale_1_target: float, scale_2_target: float) -> str:
+	if scale_2_target > 0 and actual_purchase >= scale_2_target:
+		return "Escala 2"
+	if scale_1_target > 0 and actual_purchase >= scale_1_target:
+		return "Escala 1"
+	return "Sin escala"
+
+
+def get_scale_tone(scale_name: str) -> str:
+	if scale_name == "Escala 2":
+		return "green"
+	if scale_name == "Escala 1":
+		return "gold"
+	if any(token in scale_name for token in ["No", "Riesgo", "Bloqueada"]):
+		return "red"
+	return "navy"
+
+
+def build_monthly_rebate_table(df: pd.DataFrame, budget_df: pd.DataFrame, config: dict, snapshot_date: date) -> pd.DataFrame:
+	working_df = df.copy()
+	if not working_df.empty:
+		working_df["Mes_Inicio"] = working_df["Fecha_Factura"].dt.to_period("M").dt.to_timestamp()
 
 	rows = []
-	for scale_name, rebate_name in (("Escala 1", "Rebate 1"), ("Escala 2", "Rebate 2")):
-		meta_value = active_targets.get(scale_name, 0) or 0
-		rebate_value = active_targets.get(rebate_name, 0) or 0
-		if meta_value <= 0:
-			continue
+	for _, budget_row in budget_df.iterrows():
+		month_start = budget_row["Mes_Inicio"]
+		month_end = (month_start + pd.offsets.MonthEnd(0)).date()
+		cutoff = pd.Timestamp(budget_row["Corte_Estacionalidad"])
+		month_df = working_df[working_df["Mes_Inicio"] == month_start].copy() if not working_df.empty else pd.DataFrame(columns=df.columns)
 
-		fulfilled = total_applicable_purchase >= meta_value
+		purchase_net = float(month_df["Valor_Neto"].sum()) if not month_df.empty else 0.0
+		excluded_12 = float(month_df["Compra_Excluida_12"].sum()) if not month_df.empty else 0.0
+		purchase_applicable = float(month_df["Compra_Aplicable_Rebate"].sum()) if not month_df.empty else 0.0
+		pending_value = float(month_df.loc[month_df["Estado_Pago"] == "Pendiente", "Valor_Neto"].sum()) if not month_df.empty else 0.0
+		cutoff_purchase = float(month_df.loc[month_df["Fecha_Factura"] <= cutoff, "Compra_Aplicable_Rebate"].sum()) if not month_df.empty else 0.0
+		invoice_count = int(month_df["Numero_Factura"].nunique()) if not month_df.empty else 0
+		pending_count = int((month_df["Estado_Pago"] == "Pendiente").sum()) if not month_df.empty else 0
+		paid_count = int((month_df["Estado_Pago"] == "Pagada").sum()) if not month_df.empty else 0
+
+		scale_1_target = float(budget_row["Escala 1"])
+		scale_2_target = float(budget_row["Escala 2"])
+		monthly_scale = determine_scale(purchase_applicable, scale_1_target, scale_2_target)
+		monthly_rate = config["monthly_rates"].get(monthly_scale, 0.0)
+		monthly_rebate = purchase_applicable * monthly_rate
+
+		seasonality_target = scale_2_target * config["seasonality_target_factor"]
+		seasonality_progress = safe_divide(cutoff_purchase, seasonality_target)
+		seasonality_met = seasonality_target > 0 and cutoff_purchase >= seasonality_target
+		current_month = snapshot_date.year == month_start.year and snapshot_date.month == month_start.month
+		if snapshot_date < month_start.date():
+			month_status = "Futuro"
+			seasonality_status = "Futuro"
+		elif monthly_scale != "Sin escala":
+			month_status = "Cumplida"
+			seasonality_status = "Cumplida" if seasonality_met else ("En ventana" if current_month and snapshot_date <= cutoff.date() else "No cumplida")
+		elif snapshot_date <= month_end:
+			month_status = "Abierta"
+			seasonality_status = "En ventana" if snapshot_date <= cutoff.date() else "No cumplida"
+		else:
+			month_status = "No cumplida"
+			seasonality_status = "No cumplida"
+
 		rows.append(
 			{
-				"Meta": scale_name,
-				"Compra_Aplicable_Actual": total_applicable_purchase,
-				"Objetivo": meta_value,
-				"Faltante": max(meta_value - total_applicable_purchase, 0),
-				"Cumplimiento": min(total_applicable_purchase / meta_value, 1.0),
-				"Rebate_%": rebate_value,
-				"Rebate_Proyectado": meta_value * rebate_value if fulfilled else total_applicable_purchase * rebate_value,
-				"Estado": "Cumplida" if fulfilled else "Pendiente",
+				"Mes": budget_row["Mes"],
+				"Mes_Clave": budget_row["Mes_Clave"],
+				"Mes_Inicio": month_start,
+				"Trimestre": budget_row["Trimestre"],
+				"Facturas": invoice_count,
+				"Pagadas": paid_count,
+				"Pendientes": pending_count,
+				"Compra_Neta": purchase_net,
+				"Exclusion_12": excluded_12,
+				"Compra_Aplicable": purchase_applicable,
+				"Presupuesto_Escala_1": scale_1_target,
+				"Presupuesto_Escala_2": scale_2_target,
+				"Cumplimiento_E1": safe_divide(purchase_applicable, scale_1_target),
+				"Cumplimiento_E2": safe_divide(purchase_applicable, scale_2_target),
+				"Faltante_E1": max(scale_1_target - purchase_applicable, 0.0),
+				"Faltante_E2": max(scale_2_target - purchase_applicable, 0.0),
+				"Escala_Lograda": monthly_scale,
+				"Estado_Mes": month_status,
+				"Rebate_Mensual_Pct": monthly_rate,
+				"Rebate_Mensual_Ganado": monthly_rebate,
+				"Corte_Estacionalidad": cutoff,
+				"Compra_Hasta_Corte": cutoff_purchase,
+				"Meta_Estacionalidad": seasonality_target,
+				"Avance_Estacionalidad": seasonality_progress,
+				"Estado_Estacionalidad": seasonality_status,
+				"Bono_Estacionalidad": purchase_applicable * config["seasonality_rate"] if seasonality_met else 0.0,
+				"Pendiente_Cartera": pending_value,
+				"Cartera_Riesgo": pending_value > 0,
+				"Mes_Cerrado": snapshot_date > month_end,
 			}
 		)
 
 	return pd.DataFrame(rows)
 
 
-def generate_excel_report(summary_df: pd.DataFrame, invoices_df: pd.DataFrame, target_df: pd.DataFrame) -> io.BytesIO:
+def build_quarterly_rebate_table(monthly_df: pd.DataFrame, config: dict) -> pd.DataFrame:
+	rows = []
+	for quarter_name, quarter_df in monthly_df.groupby("Trimestre", sort=False):
+		purchase_applicable = float(quarter_df["Compra_Aplicable"].sum())
+		target_e1 = float(quarter_df["Presupuesto_Escala_1"].sum())
+		target_e2 = float(quarter_df["Presupuesto_Escala_2"].sum())
+		quarter_scale = determine_scale(purchase_applicable, target_e1, target_e2)
+		quarter_rate = config["quarterly_rates"].get(quarter_scale, 0.0)
+		quarter_rebate = purchase_applicable * quarter_rate
+
+		recomposition_eligible = 0.0
+		recomposition_blocked = 0.0
+		quarter_month_rate = config["monthly_rates"].get(quarter_scale, 0.0)
+		if quarter_scale != "Sin escala":
+			for _, month_row in quarter_df.iterrows():
+				rate_gap = max(quarter_month_rate - float(month_row["Rebate_Mensual_Pct"]), 0.0)
+				recoverable_value = float(month_row["Compra_Aplicable"]) * rate_gap
+				if month_row["Cartera_Riesgo"]:
+					recomposition_blocked += recoverable_value
+				else:
+					recomposition_eligible += recoverable_value
+
+		rows.append(
+			{
+				"Trimestre": quarter_name,
+				"Compra_Aplicable": purchase_applicable,
+				"Presupuesto_Escala_1": target_e1,
+				"Presupuesto_Escala_2": target_e2,
+				"Cumplimiento_E1": safe_divide(purchase_applicable, target_e1),
+				"Cumplimiento_E2": safe_divide(purchase_applicable, target_e2),
+				"Faltante_E1": max(target_e1 - purchase_applicable, 0.0),
+				"Faltante_E2": max(target_e2 - purchase_applicable, 0.0),
+				"Escala_Lograda": quarter_scale,
+				"Rebate_Trimestral_Pct": quarter_rate,
+				"Rebate_Trimestral_Ganado": quarter_rebate,
+				"Recomposicion_Trimestral_Proyectada": recomposition_eligible,
+				"Recomposicion_Cartera_Bloqueada": recomposition_blocked,
+				"Meses_Cubiertos": ", ".join(quarter_df["Mes"].tolist()),
+			}
+		)
+
+	return pd.DataFrame(rows)
+
+
+def build_cycle_projection(monthly_df: pd.DataFrame, budget_df: pd.DataFrame, config: dict, snapshot_date: date) -> dict:
+	current_month_start = pd.Timestamp(snapshot_date.replace(day=1))
+	elapsed_monthly = monthly_df[monthly_df["Mes_Inicio"] <= current_month_start].copy()
+	elapsed_budget = budget_df[budget_df["Mes_Inicio"] <= current_month_start].copy()
+
+	applicable_purchase = float(elapsed_monthly["Compra_Aplicable"].sum()) if not elapsed_monthly.empty else 0.0
+	target_elapsed_e1 = float(elapsed_budget["Escala 1"].sum()) if not elapsed_budget.empty else 0.0
+	target_elapsed_e2 = float(elapsed_budget["Escala 2"].sum()) if not elapsed_budget.empty else 0.0
+	target_total_e1 = float(budget_df["Escala 1"].sum())
+	target_total_e2 = float(budget_df["Escala 2"].sum())
+	cycle_scale = determine_scale(applicable_purchase, target_elapsed_e1, target_elapsed_e2)
+	cycle_month_rate = config["monthly_rates"].get(cycle_scale, 0.0)
+
+	recoverable_pool = 0.0
+	blocked_pool = 0.0
+	if cycle_scale != "Sin escala":
+		for _, month_row in elapsed_monthly.iterrows():
+			rate_gap = max(cycle_month_rate - float(month_row["Rebate_Mensual_Pct"]), 0.0)
+			recoverable_value = float(month_row["Compra_Aplicable"]) * rate_gap
+			if month_row["Cartera_Riesgo"]:
+				blocked_pool += recoverable_value
+			else:
+				recoverable_pool += recoverable_value
+
+	return {
+		"Compra_Aplicable_Acumulada": applicable_purchase,
+		"Meta_Acumulada_E1": target_elapsed_e1,
+		"Meta_Acumulada_E2": target_elapsed_e2,
+		"Meta_Ciclo_E1": target_total_e1,
+		"Meta_Ciclo_E2": target_total_e2,
+		"Cumplimiento_Acumulado_E1": safe_divide(applicable_purchase, target_elapsed_e1),
+		"Cumplimiento_Acumulado_E2": safe_divide(applicable_purchase, target_elapsed_e2),
+		"Escala_Ciclo": cycle_scale,
+		"Faltante_E1_Actual": max(target_elapsed_e1 - applicable_purchase, 0.0),
+		"Faltante_E2_Actual": max(target_elapsed_e2 - applicable_purchase, 0.0),
+		"Faltante_E1_Ciclo": max(target_total_e1 - applicable_purchase, 0.0),
+		"Faltante_E2_Ciclo": max(target_total_e2 - applicable_purchase, 0.0),
+		"Recomposicion_9M_Proyectada": recoverable_pool * config["cycle_recomposition_factor"],
+		"Recomposicion_9M_Bloqueada": blocked_pool,
+	}
+
+
+def generate_excel_report(executive_df: pd.DataFrame, monthly_df: pd.DataFrame, quarterly_df: pd.DataFrame, invoices_df: pd.DataFrame) -> io.BytesIO:
 	output = io.BytesIO()
 	workbook = Workbook()
 
 	sheets_to_write = [
-		("Resumen_Ciclo", summary_df),
-		("Facturas_Pintuco", invoices_df),
-		("Metas", target_df if not target_df.empty else pd.DataFrame([{"Estado": "Pendiente por definir metas oficiales"}])),
+		("Resumen_Ejecutivo", executive_df if not executive_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
+		("Mes_a_Mes", monthly_df if not monthly_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
+		("Trimestres", quarterly_df if not quarterly_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
+		("Facturas_Pintuco", invoices_df if not invoices_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
 	]
 
 	header_font = Font(bold=True, color="FFFFFF")
@@ -668,11 +949,14 @@ def generate_excel_report(summary_df: pd.DataFrame, invoices_df: pd.DataFrame, t
 	for index, (sheet_name, dataframe) in enumerate(sheets_to_write):
 		worksheet = workbook.active if index == 0 else workbook.create_sheet(title=sheet_name)
 		worksheet.title = sheet_name
+		worksheet.freeze_panes = "A2"
 
-		if dataframe.empty:
-			dataframe = pd.DataFrame([{"Mensaje": "Sin información disponible"}])
+		prepared_df = dataframe.copy()
+		for column in prepared_df.columns:
+			if pd.api.types.is_datetime64_any_dtype(prepared_df[column]):
+				prepared_df[column] = prepared_df[column].dt.strftime("%Y-%m-%d %H:%M:%S")
 
-		rows = dataframe_to_rows(dataframe, index=False, header=True)
+		rows = dataframe_to_rows(prepared_df, index=False, header=True)
 		for row_index, row in enumerate(rows, start=1):
 			for column_index, value in enumerate(row, start=1):
 				cell = worksheet.cell(row=row_index, column=column_index, value=value)
@@ -681,10 +965,10 @@ def generate_excel_report(summary_df: pd.DataFrame, invoices_df: pd.DataFrame, t
 					cell.fill = header_fill
 					cell.alignment = center_alignment
 				elif isinstance(value, (int, float)):
-					column_name = dataframe.columns[column_index - 1]
-					if any(token in column_name for token in ["Compra", "Objetivo", "Faltante", "Rebate", "Exclusion"]):
+					column_name = prepared_df.columns[column_index - 1]
+					if any(token in column_name for token in ["Compra", "Meta", "Faltante", "Rebate", "Exclusion", "Presupuesto", "Bono", "Pendiente", "Recomposicion"]):
 						cell.number_format = currency_format
-					if column_name == "Cumplimiento":
+					if any(token in column_name for token in ["Cumplimiento", "Avance", "Pct"]):
 						cell.number_format = percent_format
 
 		for column_cells in worksheet.columns:
@@ -699,8 +983,8 @@ def generate_excel_report(summary_df: pd.DataFrame, invoices_df: pd.DataFrame, t
 st.markdown(
 	f"""
 	<div class="pintuco-banner">
-		<h1>Portal de Rebate Pintuco</h1>
-		<p>{CURRENT_CYCLE_NAME}. El tablero consolida facturas leídas desde el correo, separa el 12% excluido y calcula el 88% que sí aplica a metas.</p>
+		<h1>Dashboard Ejecutivo de Rebate Pintuco</h1>
+		<p>{CURRENT_CYCLE_NAME}. Seguimiento comercial, financiero y operativo del presupuesto Ferreinox con lectura directa de facturas, estacionalidad, escalas, trimestre y recomposición.</p>
 	</div>
 	""",
 	unsafe_allow_html=True,
@@ -709,16 +993,20 @@ st.markdown(
 st.markdown(
 	f"""
 	<div class="info-card">
-		<strong>Reglas activas del análisis</strong><br>
-		1. El ciclo actual arranca el <strong>{CURRENT_CYCLE_START.strftime('%Y-%m-%d')}</strong>.<br>
-		2. Toda compra se divide entre <strong>12% excluido</strong> y <strong>88% aplicable</strong>.<br>
-		3. La lectura de facturas se toma desde la carpeta de correo <strong>{EMAIL_FOLDER}</strong> y se deja trazabilidad del remitente, asunto, adjunto y fecha de recepción.
+		<strong>Reglas comerciales activas</strong><br>
+		1. La base del cálculo es la compra neta menos el <strong>12% excluido</strong>; el rebate corre sobre el <strong>88% aplicable</strong>.<br>
+		2. Cada mes compara contra <strong>Escala 1</strong> y <strong>Escala 2</strong>; Escala 2 paga más que Escala 1.<br>
+		3. El pago mensual y trimestral se calcula sobre <strong>toda la compra aplicable del periodo</strong>, sin techo.<br>
+		4. Estacionalidad: si al cierre del <strong>tercer domingo</strong> del mes se alcanza al menos el <strong>90% de Escala 2</strong>, se gana un <strong>1% adicional</strong> sobre la compra aplicable del mes.<br>
+		5. La recomposición separa el saldo <strong>elegible</strong> del saldo <strong>bloqueado por cartera</strong> para no mezclar comercial con cobranza.
 	</div>
 	""",
 	unsafe_allow_html=True,
 )
 
-active_targets = get_active_targets()
+config = get_rebate_configuration()
+budget_df = config["budget_df"]
+snapshot_date = datetime.now(COLOMBIA_TZ).date()
 
 sync_col, sync_info_col = st.columns([1, 2])
 with sync_col:
@@ -730,7 +1018,7 @@ with sync_info_col:
 	if "last_pintuco_sync" in st.session_state:
 		st.success(f"Última foto guardada: {st.session_state['last_pintuco_sync']}")
 	else:
-		st.info("Aún no hay una foto guardada en esta sesión. Usa 'Actualizar ahora' para refrescar la base del rebate.")
+		st.info("Aún no hay una foto guardada en esta sesión. Usa 'Sincronizar facturas de Pintuco' para crear la primera foto del ciclo.")
 
 if "last_pintuco_sync_stats" in st.session_state:
 	sync_stats = st.session_state["last_pintuco_sync_stats"]
@@ -751,185 +1039,291 @@ if pintuco_df.empty:
 	st.warning("No hay datos de Pintuco para el ciclo vigente. Ejecuta la sincronización inicial.")
 	st.stop()
 
-filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1.4])
-with filter_col1:
-	filter_start = st.date_input("Desde", value=CURRENT_CYCLE_START, min_value=CURRENT_CYCLE_START, max_value=date.today())
-with filter_col2:
-	filter_end = st.date_input("Hasta", value=date.today(), min_value=CURRENT_CYCLE_START, max_value=date.today())
-with filter_col3:
-	estado_options = ["Pendiente", "Pagada"]
-	estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options)
-with filter_col4:
-	search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto")
+monthly_df = build_monthly_rebate_table(pintuco_df, budget_df, config, snapshot_date)
+quarterly_df = build_quarterly_rebate_table(monthly_df, config)
+cycle_outlook = build_cycle_projection(monthly_df, budget_df, config, snapshot_date)
+summary_df = build_cycle_summary(monthly_df)
+tracking_alerts = build_tracking_alerts(pintuco_df)
 
-if filter_end < filter_start:
-	st.error("La fecha final no puede ser menor que la fecha inicial.")
-	st.stop()
+current_month_start = pd.Timestamp(snapshot_date.replace(day=1))
+current_month_df = monthly_df[monthly_df["Mes_Inicio"] == current_month_start]
+if current_month_df.empty:
+	current_month_df = monthly_df.iloc[[0]]
+current_month = current_month_df.iloc[0]
+current_quarter = str(current_month["Trimestre"])
+current_quarter_df = quarterly_df[quarterly_df["Trimestre"] == current_quarter]
+if current_quarter_df.empty:
+	current_quarter_df = quarterly_df.iloc[[0]]
+current_quarter_row = current_quarter_df.iloc[0]
 
-filtered_df = pintuco_df[
-	(pintuco_df["Fecha_Factura"].dt.date >= filter_start) & (pintuco_df["Fecha_Factura"].dt.date <= filter_end)
-].copy()
+rebate_total_ganado = float(monthly_df["Rebate_Mensual_Ganado"].sum() + monthly_df["Bono_Estacionalidad"].sum() + quarterly_df["Rebate_Trimestral_Ganado"].sum())
 
-if estado_filter:
-	filtered_df = filtered_df[filtered_df["Estado_Pago"].isin(estado_filter)].copy()
+render_kpi_grid(
+	[
+		kpi_card_html("Compra aplicable acumulada", format_currency(cycle_outlook["Compra_Aplicable_Acumulada"]), f"Cumplimiento E2 acumulado: {format_percent(cycle_outlook['Cumplimiento_Acumulado_E2'])}", "navy"),
+		kpi_card_html("Escala actual del ciclo", cycle_outlook["Escala_Ciclo"], f"Faltante acumulado a E2: {format_currency(cycle_outlook['Faltante_E2_Actual'])}", get_scale_tone(cycle_outlook["Escala_Ciclo"])),
+		kpi_card_html("Rebate ganado a hoy", format_currency(rebate_total_ganado), "Mensual + trimestral + estacionalidad", "green"),
+		kpi_card_html("Bolsa 9M proyectada", format_currency(cycle_outlook["Recomposicion_9M_Proyectada"]), f"Bloqueada por cartera: {format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}", "gold"),
+	]
+)
 
-if search_term.strip():
-	search_value = search_term.strip().upper()
-	search_columns = ["Numero_Factura", "Proveedor_Correo", "Remitente_Correo", "Asunto_Correo", "Nombre_Adjunto", "Message_ID"]
-	search_mask = pd.Series(False, index=filtered_df.index)
-	for column in search_columns:
-		search_mask = search_mask | filtered_df[column].fillna("").astype(str).str.upper().str.contains(search_value, regex=False)
-	filtered_df = filtered_df[search_mask].copy()
-
-if filtered_df.empty:
-	st.warning("No hay facturas en el rango seleccionado.")
-	st.stop()
-
-total_neto = filtered_df["Valor_Neto"].sum()
-total_excluido = filtered_df["Compra_Excluida_12"].sum()
-total_aplicable = filtered_df["Compra_Aplicable_Rebate"].sum()
-total_facturas = filtered_df["Numero_Factura"].nunique()
-facturas_pendientes = (filtered_df["Estado_Pago"] == "Pendiente").sum()
-facturas_pagadas = (filtered_df["Estado_Pago"] == "Pagada").sum()
-ultima_factura = filtered_df["Fecha_Factura"].max()
-ultimo_correo = filtered_df["Fecha_Recepcion_Correo"].max()
-valor_pendiente = filtered_df.loc[filtered_df["Estado_Pago"] == "Pendiente", "Valor_Neto"].sum()
-trazabilidad_completa = (
-	filtered_df["Fecha_Recepcion_Correo"].notna()
-	& filtered_df["Remitente_Correo"].fillna("").astype(str).str.strip().ne("")
-	& filtered_df["Message_ID"].fillna("").astype(str).str.strip().ne("")
-).mean()
-tracking_alerts = build_tracking_alerts(filtered_df)
+render_kpi_grid(
+	[
+		kpi_card_html("Mes actual", format_currency(float(current_month["Compra_Aplicable"])), f"{current_month['Mes']} · escala {current_month['Escala_Lograda']}", get_scale_tone(str(current_month["Escala_Lograda"]))),
+		kpi_card_html("Estacionalidad", str(current_month["Estado_Estacionalidad"]), f"Corte: {pd.Timestamp(current_month['Corte_Estacionalidad']).strftime('%Y-%m-%d')} · bono: {format_currency(float(current_month['Bono_Estacionalidad']))}", get_scale_tone(str(current_month["Estado_Estacionalidad"]))),
+		kpi_card_html("Trimestre actual", str(current_quarter_row["Escala_Lograda"]), f"{current_quarter} · faltante E2: {format_currency(float(current_quarter_row['Faltante_E2']))}", get_scale_tone(str(current_quarter_row["Escala_Lograda"]))),
+		kpi_card_html("Recomposición trimestral", format_currency(float(current_quarter_row["Recomposicion_Trimestral_Proyectada"])), f"Bloqueada cartera: {format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}", "gold"),
+	]
+)
 
 st.markdown(
-	f"""
-	<div class="info-card">
-		<strong>Foto operativa del rebate</strong><br>
-		Ventana analizada: <strong>{filter_start.strftime('%Y-%m-%d')}</strong> a <strong>{filter_end.strftime('%Y-%m-%d')}</strong>.<br>
-		Base filtrada: <strong>{len(filtered_df):,}</strong> registros con <strong>{trazabilidad_completa:.0%}</strong> de trazabilidad completa.<br>
-		Valor aún pendiente de pago: <strong>{format_currency(valor_pendiente)}</strong>.
+	"""
+	<div class="note-card">
+		<strong>Lectura ejecutiva</strong><br>
+		El tablero separa lo ya ganado del saldo recuperable. Cuando un mes o trimestre todavía tiene facturas pendientes, ese valor queda marcado como <strong>bloqueado por cartera</strong> y no se suma a la recomposición automática hasta que el riesgo operativo desaparezca.
 	</div>
 	""",
 	unsafe_allow_html=True,
 )
 
-metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-metric_col1.metric("Compra neta leída", format_currency(total_neto))
-metric_col2.metric("12% excluido", format_currency(total_excluido))
-metric_col3.metric("88% aplicable a meta", format_currency(total_aplicable))
-metric_col4.metric("Facturas del periodo", f"{total_facturas:,}")
-
-metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
-metric_col5.metric("Pendientes de pago", f"{facturas_pendientes:,}")
-metric_col6.metric("Pagadas", f"{facturas_pagadas:,}")
-metric_col7.metric("Última factura", ultima_factura.strftime("%Y-%m-%d") if pd.notna(ultima_factura) else "N/D")
-metric_col8.metric("Último correo leído", ultimo_correo.strftime("%Y-%m-%d %H:%M") if pd.notna(ultimo_correo) else "N/D")
-
-metric_col9, metric_col10, metric_col11, metric_col12 = st.columns(4)
-metric_col9.metric("Valor pendiente", format_currency(valor_pendiente))
-metric_col10.metric("Cobertura de trazabilidad", f"{trazabilidad_completa:.0%}")
-metric_col11.metric("Filtro de estados", ", ".join(estado_filter) if estado_filter else "Todos")
-metric_col12.metric("Búsqueda activa", search_term.strip() or "Sin filtro")
-
-summary_df = build_cycle_summary(filtered_df)
-target_df = build_target_projection(total_aplicable, active_targets)
-excel_data = generate_excel_report(summary_df, filtered_df, target_df)
-
-overview_tab, invoices_tab, targets_tab, diagnostics_tab = st.tabs(
-	["📊 Resumen del ciclo", "📑 Facturas y correo", "🎯 Metas y avance", "🛰️ Diagnóstico"]
+overview_tab, monthly_tab, quarter_tab, invoices_tab, diagnostics_tab = st.tabs(
+	["📊 Dirección", "🗓️ Mes a mes", "📦 Trimestre y recomposición", "📑 Facturas y fuente", "🛰️ Diagnóstico"]
 )
 
 with overview_tab:
-	st.subheader("Compras acumuladas del ciclo")
-	st.markdown("La siguiente tabla resume mes a mes lo comprado, lo excluido por regla del 12% y lo que realmente suma para rebate.")
+	st.subheader("Ritmo del ciclo")
+	chart_df = monthly_df.set_index("Mes")[["Compra_Aplicable", "Presupuesto_Escala_1", "Presupuesto_Escala_2"]]
+	st.line_chart(chart_df, use_container_width=True)
+
+	overview_col1, overview_col2 = st.columns([1.2, 1])
+	with overview_col1:
+		st.markdown(
+			f"""
+			<div class="section-card">
+				<strong>Mes actual: {current_month['Mes']}</strong><br><br>
+				Base aplicable: <strong>{format_currency(float(current_month['Compra_Aplicable']))}</strong><br>
+				Presupuesto Escala 1: <strong>{format_currency(float(current_month['Presupuesto_Escala_1']))}</strong><br>
+				Presupuesto Escala 2: <strong>{format_currency(float(current_month['Presupuesto_Escala_2']))}</strong><br>
+				Faltante a E1: <strong>{format_currency(float(current_month['Faltante_E1']))}</strong><br>
+				Faltante a E2: <strong>{format_currency(float(current_month['Faltante_E2']))}</strong><br>
+				Escala lograda: {pill_html(str(current_month['Escala_Lograda']), get_scale_tone(str(current_month['Escala_Lograda'])))}
+			</div>
+			""",
+			unsafe_allow_html=True,
+		)
+	with overview_col2:
+		st.markdown(
+			f"""
+			<div class="section-card">
+				<strong>{current_quarter}</strong><br><br>
+				Compra aplicable: <strong>{format_currency(float(current_quarter_row['Compra_Aplicable']))}</strong><br>
+				Rebate trimestral ganado: <strong>{format_currency(float(current_quarter_row['Rebate_Trimestral_Ganado']))}</strong><br>
+				Recomposición trimestral elegible: <strong>{format_currency(float(current_quarter_row['Recomposicion_Trimestral_Proyectada']))}</strong><br>
+				Recomposición bloqueada por cartera: <strong>{format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}</strong><br>
+				Escala lograda: {pill_html(str(current_quarter_row['Escala_Lograda']), get_scale_tone(str(current_quarter_row['Escala_Lograda'])))}
+			</div>
+			""",
+			unsafe_allow_html=True,
+		)
+
+	st.subheader("Resumen ejecutivo del ciclo")
 	st.dataframe(
 		summary_df,
 		use_container_width=True,
 		hide_index=True,
 		column_config={
-			"Compra_Neta": st.column_config.NumberColumn("Compra neta", format="$ %d"),
-			"Exclusion_12": st.column_config.NumberColumn("12% excluido", format="$ %d"),
-			"Compra_Aplicable": st.column_config.NumberColumn("88% aplicable", format="$ %d"),
-			"Pendientes": st.column_config.NumberColumn("Pendientes", format="%d"),
-			"Pagadas": st.column_config.NumberColumn("Pagadas", format="%d"),
+			"Compra_Neta": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
+			"Exclusion_12": st.column_config.NumberColumn("12% excluido", format="$ %,.0f"),
+			"Compra_Aplicable": st.column_config.NumberColumn("88% aplicable", format="$ %,.0f"),
+			"Presupuesto_Escala_1": st.column_config.NumberColumn("Escala 1", format="$ %,.0f"),
+			"Presupuesto_Escala_2": st.column_config.NumberColumn("Escala 2", format="$ %,.0f"),
+			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
+			"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
+			"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
 		},
 	)
-	st.bar_chart(summary_df.set_index("Mes")[["Compra_Neta", "Compra_Aplicable"]], use_container_width=True)
 
-with invoices_tab:
-	st.subheader("Factura por factura con trazabilidad de correo")
-	st.markdown("Cada fila conserva la relación entre XML leído, remitente, asunto del correo y estado de pago identificado contra la cartera vigente.")
-	display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
+with monthly_tab:
+	st.subheader("Seguimiento mensual")
+	monthly_display_df = monthly_df[
+		[
+			"Mes",
+			"Trimestre",
+			"Compra_Aplicable",
+			"Presupuesto_Escala_1",
+			"Presupuesto_Escala_2",
+			"Cumplimiento_E1",
+			"Cumplimiento_E2",
+			"Faltante_E1",
+			"Faltante_E2",
+			"Escala_Lograda",
+			"Estado_Mes",
+			"Compra_Hasta_Corte",
+			"Meta_Estacionalidad",
+			"Avance_Estacionalidad",
+			"Estado_Estacionalidad",
+			"Rebate_Mensual_Ganado",
+			"Bono_Estacionalidad",
+			"Pendiente_Cartera",
+		]
+	]
 	st.dataframe(
-		display_df,
+		monthly_display_df,
 		use_container_width=True,
 		hide_index=True,
 		column_config={
-			"Fecha_Factura": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
-			"Valor_Neto": st.column_config.NumberColumn("Compra neta", format="$ %d"),
-			"Compra_Excluida_12": st.column_config.NumberColumn("12% excluido", format="$ %d"),
-			"Compra_Aplicable_Rebate": st.column_config.NumberColumn("88% aplicable", format="$ %d"),
-			"Fecha_Recepcion_Correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
-			"Remitente_Correo": "Remitente",
-			"Asunto_Correo": "Asunto",
-			"Nombre_Adjunto": "Adjunto XML/ZIP",
-			"Message_ID": "Message-ID",
-			"Estado_Pago": st.column_config.TextColumn("Estado de pago"),
+			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
+			"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
+			"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
+			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
+			"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
+			"Compra_Hasta_Corte": st.column_config.NumberColumn("Compra al corte", format="$ %,.0f"),
+			"Meta_Estacionalidad": st.column_config.NumberColumn("Meta estacionalidad", format="$ %,.0f"),
+			"Avance_Estacionalidad": st.column_config.ProgressColumn("Avance estacionalidad", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
+			"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
+			"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
 		},
 	)
+	st.bar_chart(monthly_df.set_index("Mes")[["Rebate_Mensual_Ganado", "Bono_Estacionalidad"]], use_container_width=True)
 
-with targets_tab:
-	st.subheader("Metas del nuevo ciclo")
-	if target_df.empty:
-		st.info("Las metas oficiales del nuevo ciclo aún no están cargadas. Ya quedó lista la base de compras y el cálculo del 12% excluido para que mañana solo actualices los objetivos.")
-		st.markdown(
-			f"""
-			<div class="info-card">
-				Compra neta acumulada: <strong>{format_currency(total_neto)}</strong><br>
-				Compra excluida (12%): <strong>{format_currency(total_excluido)}</strong><br>
-				Compra aplicable actual: <strong>{format_currency(total_aplicable)}</strong>
-			</div>
-			""",
-			unsafe_allow_html=True,
-		)
+with quarter_tab:
+	st.subheader("Cumplimiento trimestral y recuperación")
+	st.dataframe(
+		quarterly_df,
+		use_container_width=True,
+		hide_index=True,
+		column_config={
+			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
+			"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
+			"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
+			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+			"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
+			"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
+			"Rebate_Trimestral_Ganado": st.column_config.NumberColumn("Rebate trimestral", format="$ %,.0f"),
+			"Recomposicion_Trimestral_Proyectada": st.column_config.NumberColumn("Recuperable", format="$ %,.0f"),
+			"Recomposicion_Cartera_Bloqueada": st.column_config.NumberColumn("Bloqueado cartera", format="$ %,.0f"),
+		},
+	)
+	st.bar_chart(quarterly_df.set_index("Trimestre")[["Rebate_Trimestral_Ganado", "Recomposicion_Trimestral_Proyectada", "Recomposicion_Cartera_Bloqueada"]], use_container_width=True)
+
+	st.markdown(
+		f"""
+		<div class="section-card">
+			<strong>Recomposición 9 meses</strong><br><br>
+			Escala acumulada al ritmo actual: {pill_html(cycle_outlook['Escala_Ciclo'], get_scale_tone(cycle_outlook['Escala_Ciclo']))}<br><br>
+			Recuperable proyectado: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Proyectada'])}</strong><br>
+			Bloqueado por cartera: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}</strong><br>
+			Faltante ciclo a E2: <strong>{format_currency(cycle_outlook['Faltante_E2_Ciclo'])}</strong>
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+with invoices_tab:
+	st.subheader("Base factura por factura")
+	filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1.4])
+	with filter_col1:
+		filter_start = st.date_input("Desde", value=CURRENT_CYCLE_START, min_value=CURRENT_CYCLE_START, max_value=snapshot_date, key="rebate_from")
+	with filter_col2:
+		filter_end = st.date_input("Hasta", value=snapshot_date, min_value=CURRENT_CYCLE_START, max_value=snapshot_date, key="rebate_to")
+	with filter_col3:
+		estado_options = ["Pendiente", "Pagada"]
+		estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options, key="rebate_state")
+	with filter_col4:
+		search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto", key="rebate_search")
+
+	if filter_end < filter_start:
+		st.error("La fecha final no puede ser menor que la fecha inicial.")
+		st.stop()
+
+	filtered_df = pintuco_df[
+		(pintuco_df["Fecha_Factura"].dt.date >= filter_start) & (pintuco_df["Fecha_Factura"].dt.date <= filter_end)
+	].copy()
+
+	if estado_filter:
+		filtered_df = filtered_df[filtered_df["Estado_Pago"].isin(estado_filter)].copy()
+
+	if search_term.strip():
+		search_value = search_term.strip().upper()
+		search_columns = ["Numero_Factura", "Proveedor_Correo", "Remitente_Correo", "Asunto_Correo", "Nombre_Adjunto", "Message_ID"]
+		search_mask = pd.Series(False, index=filtered_df.index)
+		for column in search_columns:
+			search_mask = search_mask | filtered_df[column].fillna("").astype(str).str.upper().str.contains(search_value, regex=False)
+		filtered_df = filtered_df[search_mask].copy()
+
+	if filtered_df.empty:
+		st.warning("No hay facturas en el rango seleccionado.")
 	else:
+		display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
 		st.dataframe(
-			target_df,
+			display_df,
 			use_container_width=True,
 			hide_index=True,
 			column_config={
-				"Compra_Aplicable_Actual": st.column_config.NumberColumn("Compra aplicable actual", format="$ %d"),
-				"Objetivo": st.column_config.NumberColumn("Meta", format="$ %d"),
-				"Faltante": st.column_config.NumberColumn("Faltante", format="$ %d"),
-				"Cumplimiento": st.column_config.ProgressColumn("Cumplimiento", format="%.1f%%", min_value=0, max_value=1),
-				"Rebate_%": st.column_config.NumberColumn("Rebate", format="%.2f"),
-				"Rebate_Proyectado": st.column_config.NumberColumn("Rebate proyectado", format="$ %d"),
+				"Fecha_Factura": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
+				"Valor_Neto": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
+				"Compra_Excluida_12": st.column_config.NumberColumn("12% excluido", format="$ %,.0f"),
+				"Compra_Aplicable_Rebate": st.column_config.NumberColumn("88% aplicable", format="$ %,.0f"),
+				"Fecha_Recepcion_Correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+				"Estado_Pago": st.column_config.TextColumn("Estado de pago"),
 			},
 		)
 
 with diagnostics_tab:
-	st.subheader("Diagnóstico operativo")
-	unique_senders = filtered_df["Remitente_Correo"].replace("", pd.NA).dropna().nunique()
-	unique_subjects = filtered_df["Asunto_Correo"].replace("", pd.NA).dropna().nunique()
-	duplicate_invoices = filtered_df["Numero_Factura"].duplicated().sum()
+	st.subheader("Diagnóstico operativo y descarga")
+	unique_senders = pintuco_df["Remitente_Correo"].replace("", pd.NA).dropna().nunique()
+	unique_subjects = pintuco_df["Asunto_Correo"].replace("", pd.NA).dropna().nunique()
+	duplicate_invoices = pintuco_df["Numero_Factura"].duplicated().sum()
+	trazabilidad_completa = (
+		pintuco_df["Fecha_Recepcion_Correo"].notna()
+		& pintuco_df["Remitente_Correo"].fillna("").astype(str).str.strip().ne("")
+		& pintuco_df["Message_ID"].fillna("").astype(str).str.strip().ne("")
+	).mean()
 
-	diag_col1, diag_col2, diag_col3 = st.columns(3)
-	diag_col1.metric("Remitentes identificados", f"{unique_senders:,}")
-	diag_col2.metric("Asuntos de correo distintos", f"{unique_subjects:,}")
-	diag_col3.metric("Duplicados en pantalla", f"{duplicate_invoices:,}")
+	render_kpi_grid(
+		[
+			kpi_card_html("Cobertura de trazabilidad", format_percent(float(trazabilidad_completa), 0), "Correo, fecha y Message-ID", "navy"),
+			kpi_card_html("Remitentes identificados", f"{unique_senders:,}", "Origen de correo detectado", "green"),
+			kpi_card_html("Asuntos distintos", f"{unique_subjects:,}", "Control de buzón", "gold"),
+			kpi_card_html("Duplicados visibles", f"{duplicate_invoices:,}", "Facturas repetidas en la base", "red"),
+		]
+	)
 
-	st.markdown("Alertas de seguimiento")
+	st.markdown("Alertas del seguimiento")
 	for alert in tracking_alerts:
 		if "no se detectan alertas" in alert.lower():
 			st.success(alert)
 		else:
 			st.warning(alert)
 
-	st.markdown("Descarga el consolidado para auditoría o trabajo fuera del portal.")
+	executive_export_df = pd.DataFrame(
+		[
+			{
+				"Foto": datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+				"Compra_Aplicable_Acumulada": cycle_outlook["Compra_Aplicable_Acumulada"],
+				"Meta_Acumulada_E1": cycle_outlook["Meta_Acumulada_E1"],
+				"Meta_Acumulada_E2": cycle_outlook["Meta_Acumulada_E2"],
+				"Escala_Ciclo": cycle_outlook["Escala_Ciclo"],
+				"Cumplimiento_Acumulado_E1": cycle_outlook["Cumplimiento_Acumulado_E1"],
+				"Cumplimiento_Acumulado_E2": cycle_outlook["Cumplimiento_Acumulado_E2"],
+				"Rebate_Ganado_A_Hoy": rebate_total_ganado,
+				"Recomposicion_9M_Proyectada": cycle_outlook["Recomposicion_9M_Proyectada"],
+				"Recomposicion_9M_Bloqueada": cycle_outlook["Recomposicion_9M_Bloqueada"],
+			}
+		]
+	)
+	excel_data = generate_excel_report(executive_export_df, monthly_df, quarterly_df, pintuco_df)
+
 	st.download_button(
-		label="⬇️ Descargar consolidado del ciclo",
+		label="⬇️ Descargar consolidado ejecutivo del rebate",
 		data=excel_data,
-		file_name=f"Rebate_Pintuco_Ciclo_2026_{date.today()}.xlsx",
+		file_name=f"Rebate_Pintuco_Ejecutivo_{snapshot_date}.xlsx",
 		mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		use_container_width=True,
 	)
