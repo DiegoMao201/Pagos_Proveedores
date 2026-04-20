@@ -106,6 +106,7 @@ if master_df.empty and plan_df.empty:
 
 # Ensure columns
 for col, default in [("valor_descuento", 0.0), ("valor_a_pagar", 0.0), ("descuento_pct", 0.0),
+                      ("valor_base_descuento", 0.0),
                       ("estado_descuento", ""), ("estado_vencimiento", ""), ("estado_conciliacion", ""),
                       ("dias_para_vencer", 0), ("dias_para_objetivo", 0), ("motivo_pago", ""),
                       ("lote_id", ""), ("estado_lote", ""), ("email_pago", ""), ("email_cc", ""),
@@ -159,7 +160,7 @@ st.markdown(
         <div style="margin-top:.85rem;max-width:920px;line-height:1.55;font-size:1rem;opacity:.95;">
             Tres mesas de decision: <strong>Pagos Criticos</strong> (facturas vencidas y en riesgo),
             <strong>Pagos Financiero</strong> (oportunidades de descuento pronto pago) y
-            <strong>Pagos Neto</strong> (cartera pendiente sin descuento). Selecciona facturas, genera lotes profesionales y exporta a Excel.
+            <strong>Pagos Neto</strong> (cartera pendiente sin descuento). Los descuentos financieros se calculan sobre la <strong>base antes de IVA</strong>. Selecciona facturas, genera lotes profesionales y exporta a Excel.
         </div>
     </div>
     """,
@@ -245,7 +246,7 @@ if selected_supplier != "Todos" or date_range != "Todas":
 
 # ─── Display columns config ─────────────────────────────────────────
 DISPLAY_COLS = [
-    "Seleccionar", "proveedor", "num_factura", "valor_erp",
+    "Seleccionar", "proveedor", "num_factura", "valor_erp", "valor_base_descuento",
     "descuento_pct", "valor_descuento", "valor_a_pagar",
     "fecha_vencimiento_erp", "fecha_limite_descuento",
     "dias_para_vencer", "estado_vencimiento", "estado_conciliacion",
@@ -257,6 +258,7 @@ COLUMN_CONFIG = {
     "proveedor": st.column_config.TextColumn("Proveedor", width="medium"),
     "num_factura": st.column_config.TextColumn("# Factura"),
     "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %,.0f"),
+    "valor_base_descuento": st.column_config.NumberColumn("Base antes IVA", format="$ %,.0f"),
     "descuento_pct": st.column_config.NumberColumn("Dcto %", format="%.1f%%"),
     "valor_descuento": st.column_config.NumberColumn("Descuento", format="$ %,.0f"),
     "valor_a_pagar": st.column_config.NumberColumn("Valor a pagar", format="$ %,.0f"),
@@ -304,7 +306,7 @@ def render_tab_table(df: pd.DataFrame, tab_key: str, empty_msg: str) -> pd.DataF
         sc1, sc2, sc3, sc4 = st.columns(4)
         sc1.metric("Seleccionadas", f"{len(sel_df):,}")
         sc2.metric("Valor original", format_currency(sel_df["valor_erp"].sum()))
-        sc3.metric("Descuento", format_currency(sel_df["valor_descuento"].sum()))
+        sc3.metric("Base descuento", format_currency(sel_df["valor_base_descuento"].sum()))
         sc4.metric("Neto a pagar", format_currency(sel_df["valor_a_pagar"].sum()))
 
     return edited[edited["Seleccionar"]]
@@ -351,14 +353,14 @@ with tab_crit:
 with tab_fin:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="table-header">Pagos Financiero — Oportunidades de descuento pronto pago</div>', unsafe_allow_html=True)
-    st.markdown('<div class="table-sub">Facturas con ventana de descuento abierta. Pagar dentro del plazo captura ahorro financiero directo.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-sub">Facturas con ventana de descuento abierta. El ahorro financiero se calcula sobre la base antes de IVA para reflejar correctamente el descuento comercial.</div>', unsafe_allow_html=True)
 
     if not f_financial.empty:
         vf1, vf2, vf3, vf4 = st.columns(4)
         vf1.metric("Facturas con descuento", f"{len(f_financial):,}")
         vf2.metric("Ahorro potencial", format_currency(f_financial["valor_descuento"].sum()))
         vf3.metric("Mejor % disponible", f"{f_financial['descuento_pct'].max():.1%}" if not f_financial.empty else "0%")
-        vf4.metric("Dias promedio para limite", f"{f_financial['dias_para_vencer'].mean():.0f}" if not f_financial.empty else "—")
+        vf4.metric("Base antes IVA", format_currency(f_financial["valor_base_descuento"].sum()))
 
         # Top opportunities
         top5 = f_financial.nlargest(5, "valor_descuento")
@@ -366,7 +368,7 @@ with tab_fin:
         for _, row in top5.iterrows():
             pct_label = f"{row['descuento_pct']:.1%}"
             st.markdown(
-                f"- **{row['proveedor']}** — {row['num_factura']}: descuento {pct_label} = "
+                f"- **{row['proveedor']}** — {row['num_factura']}: descuento {pct_label} sobre base **{format_currency(row['valor_base_descuento'])}** = "
                 f"**{format_currency(row['valor_descuento'])}** ahorro (vence {str(row.get('fecha_limite_descuento', ''))[:10]})"
             )
 
@@ -374,7 +376,7 @@ with tab_fin:
 
     if not f_financial.empty:
         excel_fin = export_df_to_excel(
-            f_financial[["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar",
+            f_financial[["proveedor", "num_factura", "valor_erp", "valor_base_descuento", "descuento_pct", "valor_descuento", "valor_a_pagar",
                          "fecha_vencimiento_erp", "fecha_limite_descuento", "dias_para_vencer", "estado_descuento", "motivo_pago"]],
             sheet_name="Pagos_Financiero",
             title="Ferreinox — Oportunidades Financieras Pronto Pago",

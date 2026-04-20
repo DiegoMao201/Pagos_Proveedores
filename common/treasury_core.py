@@ -71,6 +71,8 @@ EMAIL_COLUMNS = [
     "fecha_emision_correo",
     "fecha_vencimiento_correo",
     "valor_total_correo",
+    "valor_base_correo",
+    "valor_iva_correo",
     "fecha_recepcion_correo",
     "remitente_correo",
     "asunto_correo",
@@ -139,6 +141,9 @@ MASTER_OPTIONAL_DEFAULTS = {
     "estado_vencimiento": "No aplica",
     "valor_erp": 0.0,
     "valor_total_correo": 0.0,
+    "valor_base_correo": 0.0,
+    "valor_iva_correo": 0.0,
+    "valor_base_descuento": 0.0,
     "diferencia_valor": 0.0,
     "detalle_valor": "",
     "detalle_conciliacion": "",
@@ -171,7 +176,7 @@ MASTER_OPTIONAL_DEFAULTS = {
     "activo": True,
 }
 
-_NUMERIC_COLS = ["valor_erp", "valor_total_correo", "diferencia_valor", "valor_descuento", "valor_a_pagar", "descuento_pct", "dias_para_vencer"]
+_NUMERIC_COLS = ["valor_erp", "valor_total_correo", "valor_base_correo", "valor_iva_correo", "valor_base_descuento", "diferencia_valor", "valor_descuento", "valor_a_pagar", "descuento_pct", "dias_para_vencer"]
 _DATETIME_COLS = ["fecha_limite_descuento", "fecha_vencimiento_erp", "fecha_emision_erp", "fecha_emision_correo", "fecha_vencimiento_correo", "fecha_recepcion_correo", "fecha_programada_pago"]
 _BOOLEAN_COLS = ["registrada_para_pago", "riesgo_mora_48h"]
 
@@ -937,7 +942,9 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
         invoice_number = find_text(["./cbc:ID"])
         issue_date = find_text(["./cbc:IssueDate"])
         due_date = find_text(["./cbc:DueDate", ".//cac:PaymentMeans/cbc:PaymentDueDate"])
-        total_value = find_text([".//cac:LegalMonetaryTotal/cbc:PayableAmount", ".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount"])
+        total_value = find_text([".//cac:LegalMonetaryTotal/cbc:PayableAmount", ".//cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount", ".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount"])
+        base_value = find_text([".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount", ".//cac:LegalMonetaryTotal/cbc:LineExtensionAmount"])
+        tax_value = find_text([".//cac:TaxTotal/cbc:TaxAmount"])
 
         if not supplier_name or not invoice_number or not total_value:
             return None
@@ -954,6 +961,14 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
         if target_suppliers and supplier_norm not in target_suppliers:
             return None
 
+        total_value_clean = clean_numeric(total_value)
+        base_value_clean = clean_numeric(base_value)
+        tax_value_clean = clean_numeric(tax_value)
+        if base_value_clean <= 0:
+            base_value_clean = total_value_clean
+        if tax_value_clean <= 0 and total_value_clean >= base_value_clean:
+            tax_value_clean = total_value_clean - base_value_clean
+
         return {
             "proveedor_correo": supplier_name,
             "proveedor_norm": supplier_norm,
@@ -961,7 +976,9 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
             "num_factura": normalize_invoice_number(invoice_number),
             "fecha_emision_correo": issue_date,
             "fecha_vencimiento_correo": due_date,
-            "valor_total_correo": clean_numeric(total_value),
+            "valor_total_correo": total_value_clean,
+            "valor_base_correo": base_value_clean,
+            "valor_iva_correo": tax_value_clean,
         }
     except Exception:
         return None
@@ -1173,6 +1190,8 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
     df["descuento_pct"] = 0.0
     df["valor_descuento"] = 0.0
     df["valor_a_pagar"] = df["valor_erp"].fillna(0.0)
+    if "valor_base_descuento" not in df.columns:
+        df["valor_base_descuento"] = 0.0
     df["fecha_limite_descuento"] = pd.Series([pd.NaT] * len(df), index=df.index, dtype="object")
     df["estado_descuento"] = "No aplica"
 
@@ -1199,13 +1218,22 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
 
         valid_rules.sort(key=lambda item: (-item[0], item[1]))
         rate, deadline = valid_rules[0]
-        discount_value = row["valor_erp"] * rate
+        discount_base = clean_numeric(row.get("valor_base_descuento"))
+        base_source = "base antes de IVA"
+        if discount_base <= 0:
+            discount_base = clean_numeric(row.get("valor_base_correo"))
+        if discount_base <= 0:
+            discount_base = clean_numeric(row.get("valor_erp"))
+            base_source = "base estimada por falta de detalle IVA"
+
+        discount_value = discount_base * rate
 
         df.at[index, "descuento_pct"] = rate
+        df.at[index, "valor_base_descuento"] = discount_base
         df.at[index, "valor_descuento"] = discount_value
         df.at[index, "valor_a_pagar"] = row["valor_erp"] - discount_value
         df.at[index, "fecha_limite_descuento"] = deadline
-        df.at[index, "estado_descuento"] = f"Disponible {rate:.1%}"
+        df.at[index, "estado_descuento"] = f"Disponible {rate:.1%} sobre {base_source}"
 
     df["fecha_limite_descuento"] = coerce_datetime(df["fecha_limite_descuento"])
     return df
@@ -1319,6 +1347,9 @@ def build_master_dataframe(
         combined.get("valor_total_erp_paid", pd.Series(index=combined.index)),
     ).apply(clean_numeric)
     combined["valor_total_correo"] = combined.get("valor_total_correo", pd.Series(index=combined.index)).apply(clean_numeric)
+    combined["valor_base_correo"] = combined.get("valor_base_correo", pd.Series(index=combined.index)).apply(clean_numeric)
+    combined["valor_iva_correo"] = combined.get("valor_iva_correo", pd.Series(index=combined.index)).apply(clean_numeric)
+    combined["valor_base_descuento"] = combined["valor_base_correo"].where(combined["valor_base_correo"] > 0, combined["valor_erp"])
 
     combined["fecha_emision_erp"] = coerce_datetime(combined["fecha_emision_erp"])
     combined["fecha_vencimiento_erp"] = coerce_datetime(combined["fecha_vencimiento_erp"])
@@ -1452,7 +1483,10 @@ def build_master_dataframe(
         "proveedor_erp",
         "proveedor_correo",
         "valor_erp",
+        "valor_base_descuento",
         "valor_total_correo",
+        "valor_base_correo",
+        "valor_iva_correo",
         "diferencia_valor",
         "detalle_valor",
         "fecha_emision_erp",

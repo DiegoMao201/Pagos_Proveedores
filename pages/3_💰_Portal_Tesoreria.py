@@ -134,6 +134,7 @@ master_df = ensure_columns(
     payload.get("master_df", pd.DataFrame()),
     {
         "detalle_conciliacion": "", "valor_descuento": 0.0, "valor_a_pagar": 0.0,
+        "valor_base_descuento": 0.0,
         "proveedor_correo": "", "fecha_recepcion_correo": pd.NaT, "remitente_correo": "",
         "valor_total_correo": 0.0, "estado_vencimiento": "", "estado_conciliacion": "",
         "estado_erp": "", "riesgo_mora_48h": False, "dias_para_vencer": 0,
@@ -145,7 +146,7 @@ master_df = ensure_columns(
 master_df = master_df[master_df["estado_erp"] != "Saldada"].copy() if not master_df.empty else master_df
 plan_df = ensure_columns(
     payload.get("payment_plan_df", pd.DataFrame()),
-    {"valor_descuento": 0.0, "valor_a_pagar": 0.0, "estado_vencimiento": "", "descuento_pct": 0.0},
+    {"valor_descuento": 0.0, "valor_a_pagar": 0.0, "valor_base_descuento": 0.0, "estado_vencimiento": "", "descuento_pct": 0.0},
 )
 alerts_df = payload.get("risk_alerts_df", pd.DataFrame())
 lot_history_df = payload.get("lot_history_df", pd.DataFrame())
@@ -189,7 +190,7 @@ st.markdown(
         <div style="font-size:2.4rem;font-weight:800;line-height:1.05;margin-top:.35rem;">Portal Ejecutivo de Tesoreria</div>
         <div style="margin-top:.85rem;max-width:920px;line-height:1.55;font-size:1rem;opacity:.95;">
             Control integral de cartera pendiente, conciliación documental, riesgo de mora, oportunidades de descuento y trazabilidad de pagos.
-            Esta vista se enfoca solo en lo pendiente y en el cruce real contra correo.
+            Esta vista se enfoca solo en lo pendiente y en el cruce real contra correo. Los descuentos financieros se calculan sobre la base antes de IVA.
         </div>
         <div class="hero-grid">
             <div class="hero-pill"><div class="hero-pill-label">Cartera pendiente</div><div class="hero-pill-value">{format_currency(pending_value)}</div></div>
