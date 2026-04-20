@@ -149,6 +149,46 @@ def parse_email_datetime(value: str) -> pd.Timestamp:
 		return pd.NaT
 
 
+def normalize_local_datetime(value: Any) -> pd.Timestamp:
+	if value is None or value == "" or pd.isna(value):
+		return pd.NaT
+
+	try:
+		timestamp = pd.Timestamp(value)
+	except Exception:
+		return pd.NaT
+
+	if pd.isna(timestamp):
+		return pd.NaT
+
+	try:
+		if timestamp.tzinfo is None:
+			timestamp = timestamp.tz_localize(COLOMBIA_TZ)
+		else:
+			timestamp = timestamp.tz_convert(COLOMBIA_TZ)
+	except (TypeError, ValueError, AttributeError):
+		return pd.NaT
+
+	return timestamp.tz_localize(None)
+
+
+def normalize_datetime_series(series: pd.Series) -> pd.Series:
+	normalized = series.apply(normalize_local_datetime)
+	return pd.to_datetime(normalized, errors="coerce")
+
+
+def sort_invoice_dataframe(df: pd.DataFrame, by: list[str], ascending: bool | list[bool] = True) -> pd.DataFrame:
+	if df.empty:
+		return df
+
+	sorted_df = df.copy()
+	for column in ["Fecha_Factura", "Fecha_Recepcion_Correo"]:
+		if column in sorted_df.columns:
+			sorted_df[column] = normalize_datetime_series(sorted_df[column])
+
+	return sorted_df.sort_values(by=by, ascending=ascending, na_position="last")
+
+
 def get_target_defaults() -> dict:
 	configured_target = CYCLE_TARGETS["Meta acumulada del ciclo"]
 	return {
@@ -450,16 +490,43 @@ def ensure_invoice_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_invoice_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 	if df.empty:
-		return df
+		return ensure_invoice_columns(df)
 
 	prepared = ensure_invoice_columns(df)
-	prepared["Fecha_Factura"] = pd.to_datetime(prepared["Fecha_Factura"], errors="coerce")
-	prepared["Fecha_Recepcion_Correo"] = pd.to_datetime(prepared["Fecha_Recepcion_Correo"], errors="coerce")
+	prepared["Fecha_Factura"] = normalize_datetime_series(prepared["Fecha_Factura"])
+	prepared["Fecha_Recepcion_Correo"] = normalize_datetime_series(prepared["Fecha_Recepcion_Correo"])
 	prepared["Valor_Neto"] = pd.to_numeric(prepared["Valor_Neto"], errors="coerce").fillna(0.0)
 	prepared["Numero_Factura"] = prepared["Numero_Factura"].apply(normalize_invoice_number)
 	prepared["Compra_Excluida_12"] = prepared["Valor_Neto"] * EXCLUDED_PURCHASE_PERCENT
 	prepared["Compra_Aplicable_Rebate"] = prepared["Valor_Neto"] * APPLICABLE_PURCHASE_FACTOR
 	return prepared
+
+
+def build_tracking_alerts(df: pd.DataFrame) -> list[str]:
+	if df.empty:
+		return ["No hay facturas cargadas para evaluar alertas del ciclo."]
+
+	alerts = []
+	missing_invoice_date = int(df["Fecha_Factura"].isna().sum())
+	missing_email_date = int(df["Fecha_Recepcion_Correo"].isna().sum())
+	missing_message_id = int(df["Message_ID"].fillna("").astype(str).str.strip().eq("").sum())
+	duplicates = int(df["Numero_Factura"].fillna("").duplicated(keep=False).sum())
+	pending_count = int((df["Estado_Pago"] == "Pendiente").sum())
+
+	if missing_invoice_date:
+		alerts.append(f"Hay {missing_invoice_date} facturas sin fecha de emisión válida.")
+	if missing_email_date:
+		alerts.append(f"Hay {missing_email_date} registros sin fecha de recepción del correo.")
+	if missing_message_id:
+		alerts.append(f"Hay {missing_message_id} registros sin Message-ID; la auditoría del correo queda incompleta.")
+	if duplicates:
+		alerts.append(f"Se detectaron {duplicates} filas con número de factura repetido en la vista actual.")
+	if pending_count:
+		alerts.append(f"Siguen pendientes de pago {pending_count} facturas del rango filtrado.")
+	if not alerts:
+		alerts.append("La trazabilidad está completa para el rango filtrado y no se detectan alertas operativas.")
+
+	return alerts
 
 
 def run_pintuco_sync():
@@ -490,11 +557,11 @@ def run_pintuco_sync():
 		st.info(f"Buscando facturas desde {start_date.strftime('%Y-%m-%d')} en la carpeta de correo {EMAIL_FOLDER}.")
 		new_invoices_df, sync_stats = fetch_pintuco_invoices_from_email(start_date)
 
-		combined_df = historical_df.copy()
+		combined_df = prepare_invoice_dataframe(historical_df.copy())
 		if not new_invoices_df.empty:
 			new_invoices_df = prepare_invoice_dataframe(new_invoices_df)
-			combined_df = pd.concat([historical_df, new_invoices_df], ignore_index=True)
-			combined_df.sort_values(by=["Fecha_Factura", "Fecha_Recepcion_Correo"], inplace=True)
+			combined_df = prepare_invoice_dataframe(pd.concat([historical_df, new_invoices_df], ignore_index=True))
+			combined_df = sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"])
 			combined_df.drop_duplicates(subset=["Numero_Factura"], keep="last", inplace=True)
 			st.success(f"Se consolidaron {len(new_invoices_df)} registros de factura detectados desde el correo.")
 		else:
@@ -506,7 +573,7 @@ def run_pintuco_sync():
 			)
 			combined_df = ensure_invoice_columns(combined_df)
 
-			if update_gsheet_from_df(worksheet, combined_df.sort_values(by=["Fecha_Factura", "Numero_Factura"])):
+			if update_gsheet_from_df(worksheet, sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Numero_Factura"])):
 				st.success("✅ Base de datos de Pintuco actualizada correctamente.")
 			else:
 				st.error("❌ La actualización de Google Sheets falló.")
@@ -528,8 +595,7 @@ def load_pintuco_data_from_gsheet() -> pd.DataFrame:
 
 		df = prepare_invoice_dataframe(pd.DataFrame(records))
 		df = df[df["Fecha_Factura"].dt.date >= CURRENT_CYCLE_START].copy()
-		df.sort_values(by=["Fecha_Factura", "Numero_Factura"], inplace=True)
-		return df
+		return sort_invoice_dataframe(df, by=["Fecha_Factura", "Numero_Factura"])
 	except Exception as exc:
 		st.error(f"❌ Error al cargar datos desde Google Sheets: {exc}")
 		return pd.DataFrame()
@@ -662,9 +728,9 @@ with sync_col:
 		st.rerun()
 with sync_info_col:
 	if "last_pintuco_sync" in st.session_state:
-		st.success(f"Última sincronización exitosa: {st.session_state['last_pintuco_sync']}")
+		st.success(f"Última foto guardada: {st.session_state['last_pintuco_sync']}")
 	else:
-		st.info("Aún no se ha ejecutado una sincronización en esta sesión.")
+		st.info("Aún no hay una foto guardada en esta sesión. Usa 'Actualizar ahora' para refrescar la base del rebate.")
 
 if "last_pintuco_sync_stats" in st.session_state:
 	sync_stats = st.session_state["last_pintuco_sync_stats"]
@@ -685,11 +751,16 @@ if pintuco_df.empty:
 	st.warning("No hay datos de Pintuco para el ciclo vigente. Ejecuta la sincronización inicial.")
 	st.stop()
 
-filter_col1, filter_col2 = st.columns(2)
+filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1.4])
 with filter_col1:
 	filter_start = st.date_input("Desde", value=CURRENT_CYCLE_START, min_value=CURRENT_CYCLE_START, max_value=date.today())
 with filter_col2:
 	filter_end = st.date_input("Hasta", value=date.today(), min_value=CURRENT_CYCLE_START, max_value=date.today())
+with filter_col3:
+	estado_options = ["Pendiente", "Pagada"]
+	estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options)
+with filter_col4:
+	search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto")
 
 if filter_end < filter_start:
 	st.error("La fecha final no puede ser menor que la fecha inicial.")
@@ -698,6 +769,17 @@ if filter_end < filter_start:
 filtered_df = pintuco_df[
 	(pintuco_df["Fecha_Factura"].dt.date >= filter_start) & (pintuco_df["Fecha_Factura"].dt.date <= filter_end)
 ].copy()
+
+if estado_filter:
+	filtered_df = filtered_df[filtered_df["Estado_Pago"].isin(estado_filter)].copy()
+
+if search_term.strip():
+	search_value = search_term.strip().upper()
+	search_columns = ["Numero_Factura", "Proveedor_Correo", "Remitente_Correo", "Asunto_Correo", "Nombre_Adjunto", "Message_ID"]
+	search_mask = pd.Series(False, index=filtered_df.index)
+	for column in search_columns:
+		search_mask = search_mask | filtered_df[column].fillna("").astype(str).str.upper().str.contains(search_value, regex=False)
+	filtered_df = filtered_df[search_mask].copy()
 
 if filtered_df.empty:
 	st.warning("No hay facturas en el rango seleccionado.")
@@ -711,6 +793,25 @@ facturas_pendientes = (filtered_df["Estado_Pago"] == "Pendiente").sum()
 facturas_pagadas = (filtered_df["Estado_Pago"] == "Pagada").sum()
 ultima_factura = filtered_df["Fecha_Factura"].max()
 ultimo_correo = filtered_df["Fecha_Recepcion_Correo"].max()
+valor_pendiente = filtered_df.loc[filtered_df["Estado_Pago"] == "Pendiente", "Valor_Neto"].sum()
+trazabilidad_completa = (
+	filtered_df["Fecha_Recepcion_Correo"].notna()
+	& filtered_df["Remitente_Correo"].fillna("").astype(str).str.strip().ne("")
+	& filtered_df["Message_ID"].fillna("").astype(str).str.strip().ne("")
+).mean()
+tracking_alerts = build_tracking_alerts(filtered_df)
+
+st.markdown(
+	f"""
+	<div class="info-card">
+		<strong>Foto operativa del rebate</strong><br>
+		Ventana analizada: <strong>{filter_start.strftime('%Y-%m-%d')}</strong> a <strong>{filter_end.strftime('%Y-%m-%d')}</strong>.<br>
+		Base filtrada: <strong>{len(filtered_df):,}</strong> registros con <strong>{trazabilidad_completa:.0%}</strong> de trazabilidad completa.<br>
+		Valor aún pendiente de pago: <strong>{format_currency(valor_pendiente)}</strong>.
+	</div>
+	""",
+	unsafe_allow_html=True,
+)
 
 metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 metric_col1.metric("Compra neta leída", format_currency(total_neto))
@@ -723,6 +824,12 @@ metric_col5.metric("Pendientes de pago", f"{facturas_pendientes:,}")
 metric_col6.metric("Pagadas", f"{facturas_pagadas:,}")
 metric_col7.metric("Última factura", ultima_factura.strftime("%Y-%m-%d") if pd.notna(ultima_factura) else "N/D")
 metric_col8.metric("Último correo leído", ultimo_correo.strftime("%Y-%m-%d %H:%M") if pd.notna(ultimo_correo) else "N/D")
+
+metric_col9, metric_col10, metric_col11, metric_col12 = st.columns(4)
+metric_col9.metric("Valor pendiente", format_currency(valor_pendiente))
+metric_col10.metric("Cobertura de trazabilidad", f"{trazabilidad_completa:.0%}")
+metric_col11.metric("Filtro de estados", ", ".join(estado_filter) if estado_filter else "Todos")
+metric_col12.metric("Búsqueda activa", search_term.strip() or "Sin filtro")
 
 summary_df = build_cycle_summary(filtered_df)
 target_df = build_target_projection(total_aplicable, active_targets)
@@ -752,7 +859,7 @@ with overview_tab:
 with invoices_tab:
 	st.subheader("Factura por factura con trazabilidad de correo")
 	st.markdown("Cada fila conserva la relación entre XML leído, remitente, asunto del correo y estado de pago identificado contra la cartera vigente.")
-	display_df = filtered_df.sort_values(by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=False)
+	display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
 	st.dataframe(
 		display_df,
 		use_container_width=True,
@@ -810,6 +917,13 @@ with diagnostics_tab:
 	diag_col1.metric("Remitentes identificados", f"{unique_senders:,}")
 	diag_col2.metric("Asuntos de correo distintos", f"{unique_subjects:,}")
 	diag_col3.metric("Duplicados en pantalla", f"{duplicate_invoices:,}")
+
+	st.markdown("Alertas de seguimiento")
+	for alert in tracking_alerts:
+		if "no se detectan alertas" in alert.lower():
+			st.success(alert)
+		else:
+			st.warning(alert)
 
 	st.markdown("Descarga el consolidado para auditoría o trabajo fuera del portal.")
 	st.download_button(
