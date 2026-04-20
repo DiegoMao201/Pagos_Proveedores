@@ -284,16 +284,38 @@ def clean_numeric(value: Any) -> float:
         return 0.0
 
 
-def coerce_datetime(series: pd.Series) -> pd.Series:
-    parsed = pd.to_datetime(series, errors="coerce")
-    if not pd.api.types.is_datetime64_any_dtype(parsed):
-        return pd.Series(pd.NaT, index=series.index)
+def normalize_datetime_value(value: Any) -> pd.Timestamp:
+    if pd.isna(value) or value is None:
+        return pd.NaT
+
+    if isinstance(value, str) and not value.strip():
+        return pd.NaT
+
     try:
-        if getattr(parsed.dt, "tz", None) is None:
-            return parsed.dt.tz_localize(COLOMBIA_TZ, ambiguous="infer")
-        return parsed.dt.tz_convert(COLOMBIA_TZ)
+        parsed = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return pd.NaT
+
+    if pd.isna(parsed):
+        return pd.NaT
+
+    timestamp = pd.Timestamp(parsed)
+    try:
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize(COLOMBIA_TZ)
+        else:
+            timestamp = timestamp.tz_convert(COLOMBIA_TZ)
     except (TypeError, ValueError, AttributeError):
-        return pd.Series(pd.NaT, index=series.index)
+        return pd.NaT
+
+    return timestamp.tz_localize(None)
+
+
+def coerce_datetime(series: pd.Series) -> pd.Series:
+    if series is None:
+        return pd.Series(dtype="datetime64[ns]")
+    normalized = series.apply(normalize_datetime_value)
+    return pd.to_datetime(normalized, errors="coerce")
 
 
 def coalesce(*series_list: pd.Series) -> pd.Series:
@@ -725,11 +747,7 @@ def parse_email_datetime(value: str) -> pd.Timestamp:
         return pd.NaT
     try:
         dt = parsedate_to_datetime(value)
-        if dt.tzinfo is None:
-            dt = COLOMBIA_TZ.localize(dt)
-        else:
-            dt = dt.astimezone(COLOMBIA_TZ)
-        return pd.Timestamp(dt)
+        return normalize_datetime_value(dt)
     except Exception:
         return pd.NaT
 
@@ -1314,7 +1332,7 @@ def build_master_dataframe(
     # Determine which invoices are older than the email reading window.
     # The email sync starts from Jan 1 of the current year, so invoices
     # emitted before that date will never have email support found.
-    email_window_start = pd.Timestamp(date(datetime.now(COLOMBIA_TZ).year, 1, 1), tz=COLOMBIA_TZ)
+    email_window_start = pd.Timestamp(date(datetime.now(COLOMBIA_TZ).year, 1, 1))
     _fe = combined["fecha_emision_erp"].copy()
     # Use emission date; fall back to due date if emission is missing
     _fe = _fe.fillna(combined["fecha_vencimiento_erp"])
