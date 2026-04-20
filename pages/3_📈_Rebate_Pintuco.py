@@ -64,6 +64,7 @@ QUARTERLY_REBATE_RATES = {"Escala 1": 0.01, "Escala 2": 0.025, "Sin escala": 0.0
 SEASONALITY_TARGET_FACTOR = 0.90
 SEASONALITY_RATE = 0.01
 CYCLE_RECOMPOSITION_FACTOR = 0.85
+SEASONALITY_CUTOFF_OVERRIDES = {"2026-04": date(2026, 4, 24)}
 
 INVOICE_COLUMNS = [
 	"Fecha_Factura",
@@ -311,7 +312,10 @@ def build_budget_frame() -> pd.DataFrame:
 	budget_df = pd.DataFrame(MONTHLY_BUDGETS).copy()
 	budget_df["Mes_Inicio"] = pd.to_datetime({"year": CURRENT_CYCLE_START.year, "month": budget_df["Mes_Num"], "day": 1})
 	budget_df["Mes_Clave"] = budget_df["Mes_Inicio"].dt.strftime("%Y-%m")
-	budget_df["Corte_Estacionalidad"] = budget_df["Mes_Inicio"].apply(lambda value: pd.Timestamp(get_third_sunday(value)))
+	budget_df["Corte_Estacionalidad"] = budget_df.apply(
+		lambda row: pd.Timestamp(SEASONALITY_CUTOFF_OVERRIDES.get(row["Mes_Clave"], get_third_sunday(row["Mes_Inicio"]))),
+		axis=1,
+	)
 	return budget_df
 
 
@@ -319,33 +323,26 @@ def get_rebate_configuration() -> dict:
 	budget_df = build_budget_frame()
 	with st.sidebar:
 		st.header("Motor comercial")
-		st.caption("Ferreinox vs Pintuco. Todo el rebate y la estacionalidad se calculan sobre el 88% aplicable después del 12% excluido.")
-		monthly_rate_e1 = st.number_input("Rebate mensual Escala 1 (%)", min_value=0.0, max_value=100.0, value=MONTHLY_REBATE_RATES["Escala 1"] * 100, step=0.1, format="%.2f") / 100
-		monthly_rate_e2 = st.number_input("Rebate mensual Escala 2 (%)", min_value=0.0, max_value=100.0, value=MONTHLY_REBATE_RATES["Escala 2"] * 100, step=0.1, format="%.2f") / 100
-		quarterly_rate_e1 = st.number_input("Rebate trimestral Escala 1 (%)", min_value=0.0, max_value=100.0, value=QUARTERLY_REBATE_RATES["Escala 1"] * 100, step=0.1, format="%.2f") / 100
-		quarterly_rate_e2 = st.number_input("Rebate trimestral Escala 2 (%)", min_value=0.0, max_value=100.0, value=QUARTERLY_REBATE_RATES["Escala 2"] * 100, step=0.1, format="%.2f") / 100
-		seasonality_target = st.number_input("Meta estacionalidad (% de Escala 2)", min_value=0.0, max_value=100.0, value=SEASONALITY_TARGET_FACTOR * 100, step=1.0, format="%.0f") / 100
-		seasonality_rate = st.number_input("Bono estacionalidad (%)", min_value=0.0, max_value=100.0, value=SEASONALITY_RATE * 100, step=0.1, format="%.2f") / 100
-		recomposition_rate = st.number_input("Recuperación 9 meses (%)", min_value=0.0, max_value=100.0, value=CYCLE_RECOMPOSITION_FACTOR * 100, step=1.0, format="%.0f") / 100
-
-		st.markdown("---")
-		edit_budget = st.checkbox("Editar presupuesto mensual en esta sesión", value=False)
-		if edit_budget:
-			edited_budget = st.data_editor(
-				budget_df[["Mes", "Trimestre", "Escala 1", "Escala 2"]],
-				hide_index=True,
-				use_container_width=True,
-				disabled=["Mes", "Trimestre"],
+		st.caption("Parámetros fijos del acuerdo comercial. Sin edición manual en pantalla para evitar lecturas ambiguas.")
+		st.markdown(
+			"\n".join(
+				[
+					f"- Rebate mensual: Escala 1 {format_percent(MONTHLY_REBATE_RATES['Escala 1'], 1)} | Escala 2 {format_percent(MONTHLY_REBATE_RATES['Escala 2'], 1)}",
+					f"- Rebate trimestral: Escala 1 {format_percent(QUARTERLY_REBATE_RATES['Escala 1'], 1)} | Escala 2 {format_percent(QUARTERLY_REBATE_RATES['Escala 2'], 1)}",
+					f"- Estacionalidad: {format_percent(SEASONALITY_TARGET_FACTOR, 0)} de Escala 2 y bono de {format_percent(SEASONALITY_RATE, 1)}",
+					f"- Recomposición 9 meses: {format_percent(CYCLE_RECOMPOSITION_FACTOR, 0)} del saldo elegible",
+					"- Abril 2026: corte especial de estacionalidad extendido al 2026-04-24",
+				]
 			)
-			budget_df[["Escala 1", "Escala 2"]] = edited_budget[["Escala 1", "Escala 2"]].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+		)
 
 	return {
 		"budget_df": budget_df,
-		"monthly_rates": {"Escala 1": monthly_rate_e1, "Escala 2": monthly_rate_e2, "Sin escala": 0.0},
-		"quarterly_rates": {"Escala 1": quarterly_rate_e1, "Escala 2": quarterly_rate_e2, "Sin escala": 0.0},
-		"seasonality_target_factor": seasonality_target,
-		"seasonality_rate": seasonality_rate,
-		"cycle_recomposition_factor": recomposition_rate,
+		"monthly_rates": MONTHLY_REBATE_RATES.copy(),
+		"quarterly_rates": QUARTERLY_REBATE_RATES.copy(),
+		"seasonality_target_factor": SEASONALITY_TARGET_FACTOR,
+		"seasonality_rate": SEASONALITY_RATE,
+		"cycle_recomposition_factor": CYCLE_RECOMPOSITION_FACTOR,
 	}
 
 
