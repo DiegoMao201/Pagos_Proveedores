@@ -1176,7 +1176,7 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
     df["fecha_limite_descuento"] = pd.Series([pd.NaT] * len(df), index=df.index, dtype="object")
     df["estado_descuento"] = "No aplica"
 
-    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize().tz_localize(None)
     for index, row in df.iterrows():
         if row.get("estado_erp") != "Pendiente" or row.get("valor_erp", 0) <= 0 or pd.isna(row.get("fecha_emision_erp")):
             continue
@@ -1187,7 +1187,10 @@ def apply_discount_rules(master_df: pd.DataFrame) -> pd.DataFrame:
         valid_rules = []
         for rule in provider_rules:
             deadline = row["fecha_emision_erp"] + timedelta(days=rule["days"])
-            if deadline.normalize() >= today:
+            dl_ts = pd.Timestamp(deadline)
+            if dl_ts.tzinfo is not None:
+                dl_ts = dl_ts.tz_localize(None)
+            if dl_ts.normalize() >= today:
                 valid_rules.append((rule["rate"], deadline))
 
         if not valid_rules:
@@ -1406,8 +1409,11 @@ def build_master_dataframe(
 
     combined["estado_conciliacion"] = combined.apply(classify_status, axis=1)
     combined["detalle_conciliacion"] = combined.apply(build_reconciliation_detail, axis=1)
-    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
-    combined["dias_para_vencer"] = (combined["fecha_vencimiento_erp"].dt.normalize() - today).dt.days
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize().tz_localize(None)
+    _fv = pd.to_datetime(combined["fecha_vencimiento_erp"], errors="coerce")
+    if _fv.dt.tz is not None:
+        _fv = _fv.dt.tz_localize(None)
+    combined["dias_para_vencer"] = (_fv.dt.normalize() - today).dt.days
 
     def classify_due(row: pd.Series) -> str:
         if row["estado_erp"] != "Pendiente":
@@ -1498,9 +1504,12 @@ def build_payment_plan(master_df: pd.DataFrame) -> pd.DataFrame:
     if plan_df.empty:
         return pd.DataFrame()
 
-    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize()
+    today = pd.Timestamp.now(tz=COLOMBIA_TZ).normalize().tz_localize(None)
     plan_df["fecha_objetivo"] = plan_df["fecha_limite_descuento"].fillna(plan_df["fecha_vencimiento_erp"])
-    plan_df["dias_para_objetivo"] = (plan_df["fecha_objetivo"].dt.normalize() - today).dt.days
+    _fo = pd.to_datetime(plan_df["fecha_objetivo"], errors="coerce")
+    if _fo.dt.tz is not None:
+        _fo = _fo.dt.tz_localize(None)
+    plan_df["dias_para_objetivo"] = (_fo.dt.normalize() - today).dt.days
 
     def assign_reason(row: pd.Series) -> str:
         if row["descuento_pct"] > 0 and pd.notna(row["fecha_limite_descuento"]):

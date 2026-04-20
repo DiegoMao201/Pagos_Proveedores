@@ -121,7 +121,7 @@ for col, default in [("valor_descuento", 0.0), ("valor_a_pagar", 0.0), ("descuen
         master_df[col] = default
 
 # ─── Segment data into three payment categories ────────────────────
-today = pd.Timestamp.now(tz="America/Bogota").normalize()
+today = pd.Timestamp.now(tz="America/Bogota").normalize().tz_localize(None)
 
 # Pagos Críticos: vencidas + riesgo 48h
 critical_df = plan_df[plan_df["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h"])].copy()
