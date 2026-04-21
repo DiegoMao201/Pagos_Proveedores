@@ -135,6 +135,7 @@ master_df = ensure_columns(
     {
         "detalle_conciliacion": "", "valor_descuento": 0.0, "valor_a_pagar": 0.0,
         "valor_base_descuento": 0.0,
+        "origen_soporte": "",
         "proveedor_correo": "", "fecha_recepcion_correo": pd.NaT, "remitente_correo": "",
         "valor_total_correo": 0.0, "estado_vencimiento": "", "estado_conciliacion": "",
         "estado_erp": "", "riesgo_mora_48h": False, "dias_para_vencer": 0,
@@ -172,6 +173,7 @@ n_risk = int((master_df["estado_vencimiento"] == "🟠 Riesgo 48h").sum())
 n_upcoming = int((master_df["estado_vencimiento"] == "🟡 Proxima a vencer").sum())
 n_providers = master_df["proveedor"].nunique()
 only_email_count = int((master_df["estado_conciliacion"] == "Solo correo").sum())
+heuristic_email_count = int((master_df["estado_conciliacion"] == "Correo heuristico").sum())
 no_email_count = int((master_df["estado_conciliacion"] == "Pendiente sin correo").sum())
 conciliated_count = int(master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"]).sum())
 
@@ -199,6 +201,7 @@ st.markdown(
             <div class="hero-pill"><div class="hero-pill-label">Proveedores</div><div class="hero-pill-value">{n_providers:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Vencidas + Riesgo 48h</div><div class="hero-pill-value">{n_overdue + n_risk:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Correo sin reflejo ERP</div><div class="hero-pill-value">{only_email_count:,}</div></div>
+            <div class="hero-pill"><div class="hero-pill-label">Heurístico correo</div><div class="hero-pill-value">{heuristic_email_count:,}</div></div>
         </div>
     </div>
     """,
@@ -275,6 +278,7 @@ if selected_supplier != "Todos" or selected_status or selected_due or selected_e
             {kpi_html("Filtro: Valor pendiente", format_currency(f_pending_val), "", "blue")}
             {kpi_html("Filtro: Ahorro disponible", format_currency(f_discount), "", "gold")}
             {kpi_html("Filtro: Proveedores", f"{filtered_master['proveedor'].nunique():,}", "", "")}
+            {kpi_html("Filtro: Heurístico", f"{int((filtered_master['estado_conciliacion'] == 'Correo heuristico').sum()):,}", "Baja confianza", "purple")}
         </div>
         """,
         unsafe_allow_html=True,
@@ -287,6 +291,7 @@ pay_now_df = filtered_master[
     & (filtered_master["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h", "🟡 Proxima a vencer"]))
 ].copy()
 only_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Solo correo"].copy()
+heuristic_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Correo heuristico"].copy()
 unresolved_df = filtered_master[
     (filtered_master["estado_erp"] == "Pendiente")
     & (filtered_master["estado_conciliacion"] == "Pendiente sin correo")
@@ -465,9 +470,10 @@ with tab_email:
     if only_email_df.empty:
         st.success("No hay facturas con correo sin reflejo en ERP para este filtro.")
     else:
-        ec1, ec2 = st.columns(2)
+        ec1, ec2, ec3 = st.columns(3)
         ec1.metric("Facturas sin reflejo ERP", f"{len(only_email_df):,}")
         ec2.metric("Valor total correo", format_currency(only_email_df["valor_total_correo"].sum()))
+        ec3.metric("Heurístico excluido", f"{len(heuristic_email_df):,}")
         st.caption("Estas facturas no fueron encontradas en la cartera pendiente ni en la cartera saldada que la app descargó desde Dropbox.")
 
         st.dataframe(
@@ -490,6 +496,20 @@ with tab_email:
         st.download_button("📥 Descargar solo correo", excel_email,
                            file_name=f"Ferreinox_Solo_Correo_{date.today()}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_portal_email")
+        if not heuristic_email_df.empty:
+            st.warning("Los casos heurísticos detectados solo desde el cuerpo del correo no cuentan en este indicador ejecutivo. Se muestran abajo solo para auditoría.")
+            st.dataframe(
+                safe_display(heuristic_email_df, [
+                    "proveedor_correo", "num_factura", "valor_total_correo", "origen_soporte",
+                    "fecha_recepcion_correo", "remitente_correo", "detalle_conciliacion",
+                ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
+                    "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+                },
+            )
     st.markdown('</div>', unsafe_allow_html=True)
 
 

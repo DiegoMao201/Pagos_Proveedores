@@ -1426,6 +1426,8 @@ def build_master_dataframe(
                 return "Saldada anterior a lectura"
             return "Saldada sin correo"
         if row["estado_erp"] == "No ERP" and row["en_correo"]:
+            if str(row.get("origen_soporte", "") or "").upper() == "CUERPO":
+                return "Correo heuristico"
             return "Solo correo"
         return "Sin clasificar"
 
@@ -1452,6 +1454,8 @@ def build_master_dataframe(
             return "Está en cartera saldada. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
         if row["estado_conciliacion"] == "Solo correo":
             return "Tiene correo y XML, pero no aparece en las fuentes ERP descargadas desde Dropbox (cartera pendiente ni cartera saldada)."
+        if row["estado_conciliacion"] == "Correo heuristico":
+            return "Se detectó una referencia y un valor en el cuerpo del correo, pero no hubo XML válido ni reflejo ERP. Es un caso de baja confianza para auditoría, no para indicador ejecutivo."
         if row["estado_conciliacion"] in {"Pendiente con valor por revisar", "Saldada con valor por revisar"}:
             return row.get("detalle_valor") or "Existe soporte de correo, pero el valor no coincide con ERP."
         return "Revisar manualmente este caso."
@@ -1484,6 +1488,7 @@ def build_master_dataframe(
         lambda row: "Pendiente con soporte de correo" if row["estado_conciliacion"] == "Pendiente conciliada"
         else "Pendiente sin soporte recibido" if row["estado_conciliacion"] == "Pendiente sin correo"
         else "Correo sin reflejo en fuentes ERP Dropbox" if row["estado_conciliacion"] == "Solo correo"
+        else "Correo heuristico sin XML valido" if row["estado_conciliacion"] == "Correo heuristico"
         else "Saldo abierto con movimientos mixtos ERP" if row.get("movimiento_mixto_erp", False)
         else "Factura ya saldada" if row["estado_erp"] == "Saldada"
         else "Revisar caso manualmente",
@@ -1515,6 +1520,7 @@ def build_master_dataframe(
         "remitente_correo",
         "asunto_correo",
         "nombre_adjunto",
+        "origen_soporte",
         "message_id",
         "estado_erp",
         "estado_conciliacion",
