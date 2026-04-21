@@ -264,6 +264,24 @@ def normalize_invoice_number(value: Any) -> str:
     return normalize_text(value)
 
 
+def is_invoice_like_reference(value: Any) -> bool:
+    normalized = normalize_invoice_number(value)
+    return bool(normalized) and bool(re.search(r"\d", normalized))
+
+
+def expand_document_variants(value: Any) -> list[str]:
+    normalized = normalize_invoice_number(value)
+    if not normalized:
+        return []
+
+    variants = [normalized]
+    if normalized.startswith("PNAL") and len(normalized) > 4:
+        variants.append(normalized[1:])
+    elif normalized.startswith("NAL") and len(normalized) > 3:
+        variants.append(f"P{normalized}")
+    return list(dict.fromkeys(variants))
+
+
 def clean_numeric(value: Any) -> float:
     if pd.isna(value) or value is None:
         return 0.0
@@ -365,11 +383,11 @@ def build_document_candidates(*values: Any) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
     for value in values:
-        normalized = normalize_invoice_number(value)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        candidates.append(normalized)
+        for normalized in expand_document_variants(value):
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            candidates.append(normalized)
     return candidates
 
 
@@ -441,7 +459,7 @@ def extract_references_from_text(content: str) -> list[str]:
     for pattern in patterns:
         for match in re.findall(pattern, upper_content, flags=re.IGNORECASE):
             normalized = normalize_invoice_number(match)
-            if not normalized or len(normalized) < 4 or normalized in seen:
+            if not normalized or len(normalized) < 4 or normalized in seen or not is_invoice_like_reference(normalized):
                 continue
             seen.add(normalized)
             references.append(normalized)
