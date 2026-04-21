@@ -109,6 +109,10 @@ def kpi_html(label: str, value: str, sub: str = "", css: str = "") -> str:
     return f'<div class="kpi-card {css}"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div>{sub_html}</div>'
 
 
+def display_ready(df: pd.DataFrame) -> pd.DataFrame:
+    return safe_display(df, df.columns.tolist())
+
+
 def aging_bucket(days: float) -> str:
     if pd.isna(days):
         return "Sin fecha"
@@ -365,8 +369,8 @@ with tab_overview:
         summary_df.sort_values(by=["Riesgo_48h", "Vencidas", "Valor_Pendiente"], ascending=[False, False, False], inplace=True)
 
         st.dataframe(
-            summary_df,
-            use_container_width=True,
+            display_ready(summary_df),
+            width="stretch",
             hide_index=True,
             column_config={
                 "Valor_Pendiente": st.column_config.NumberColumn("Valor pendiente", format="$ %,.0f"),
@@ -398,8 +402,8 @@ with tab_overview:
         dc1, dc2 = st.columns([1, 1])
         with dc1:
             st.dataframe(
-                conc_dist,
-                use_container_width=True,
+                display_ready(conc_dist),
+                width="stretch",
                 hide_index=True,
                 column_config={"Valor": st.column_config.NumberColumn("Valor total", format="$ %,.0f")},
             )
@@ -416,7 +420,7 @@ with tab_overview:
                     legend=dict(orientation="h", yanchor="bottom", y=-0.2),
                     font=dict(size=12),
                 )
-                st.plotly_chart(fig_conc, use_container_width=True)
+                st.plotly_chart(fig_conc, width="stretch")
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -440,7 +444,7 @@ with tab_pay:
                 "proveedor", "num_factura", "valor_erp", "valor_descuento", "valor_a_pagar",
                 "fecha_vencimiento_erp", "dias_para_vencer", "estado_vencimiento", "detalle_conciliacion",
             ], sort_by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %,.0f"),
@@ -481,7 +485,7 @@ with tab_email:
                 "proveedor_correo", "num_factura", "valor_total_correo",
                 "fecha_recepcion_correo", "remitente_correo", "detalle_conciliacion",
             ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
@@ -503,7 +507,7 @@ with tab_email:
                     "proveedor_correo", "num_factura", "valor_total_correo", "origen_soporte",
                     "fecha_recepcion_correo", "remitente_correo", "detalle_conciliacion",
                 ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
@@ -532,7 +536,7 @@ with tab_unrec:
                 "proveedor", "num_factura", "estado_conciliacion",
                 "valor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "detalle_conciliacion",
             ], sort_by=["proveedor", "num_factura"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %,.0f"),
@@ -570,7 +574,7 @@ with tab_conc:
                 "proveedor", "num_factura", "estado_erp", "estado_conciliacion",
                 "valor_erp", "valor_total_correo", "detalle_conciliacion",
             ], sort_by=["proveedor", "num_factura"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %,.0f"),
@@ -621,8 +625,8 @@ with tab_aging:
         ac1, ac2 = st.columns([1, 1])
         with ac1:
             st.dataframe(
-                aging_agg,
-                use_container_width=True,
+                display_ready(aging_agg),
+                width="stretch",
                 hide_index=True,
                 column_config={"Valor": st.column_config.NumberColumn("Valor total", format="$ %,.0f")},
             )
@@ -639,7 +643,7 @@ with tab_aging:
                 font=dict(size=12),
             )
             fig_aging.update_traces(textposition="outside")
-            st.plotly_chart(fig_aging, use_container_width=True)
+            st.plotly_chart(fig_aging, width="stretch")
 
         # Aging by provider (top 10)
         st.markdown("---")
@@ -663,7 +667,7 @@ with tab_aging:
                 legend=dict(orientation="h", yanchor="bottom", y=-0.25),
                 font=dict(size=11),
             )
-            st.plotly_chart(fig_stack, use_container_width=True)
+            st.plotly_chart(fig_stack, width="stretch")
 
         excel_aging = export_df_to_excel(aging_agg, sheet_name="Aging", title="Ferreinox — Analisis de Aging")
         st.download_button("📥 Descargar aging", excel_aging,
@@ -716,7 +720,7 @@ with tab_provider:
                 showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.35),
                 font=dict(size=11),
             )
-            st.plotly_chart(fig_pareto, use_container_width=True)
+            st.plotly_chart(fig_pareto, width="stretch")
 
         with pc2:
             # Treemap
@@ -727,11 +731,11 @@ with tab_provider:
                 color_continuous_scale="Blues",
             )
             fig_tree.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=380)
-            st.plotly_chart(fig_tree, use_container_width=True)
+            st.plotly_chart(fig_tree, width="stretch")
 
         st.dataframe(
-            prov_val,
-            use_container_width=True,
+            display_ready(prov_val),
+            width="stretch",
             hide_index=True,
             column_config={
                 "Valor_Pendiente": st.column_config.NumberColumn("Valor pendiente", format="$ %,.0f"),
@@ -763,8 +767,8 @@ with tab_provider:
         st.info("No hay descuentos configurados.")
     else:
         st.dataframe(
-            discount_df,
-            use_container_width=True,
+            display_ready(discount_df),
+            width="stretch",
             hide_index=True,
             column_config={
                 "Descuento %": st.column_config.NumberColumn("Descuento %", format="%.1f%%"),
@@ -803,11 +807,13 @@ with tab_trace:
                                         "valor_factura", "valor_descuento", "valor_a_pagar", "estado_lote", "responsable"]
                             if c in lot_filtered.columns]
                 st.dataframe(
-                    lot_filtered[lot_cols].sort_values(
-                        by=[c for c in ["fecha_programada_pago", "lote_id"] if c in lot_filtered.columns],
-                        ascending=False,
+                    display_ready(
+                        lot_filtered[lot_cols].sort_values(
+                            by=[c for c in ["fecha_programada_pago", "lote_id"] if c in lot_filtered.columns],
+                            ascending=False,
+                        )
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     column_config={
                         "valor_factura": st.column_config.NumberColumn("Valor factura", format="$ %,.0f"),
@@ -837,7 +843,7 @@ with tab_trace:
                 email_cols = [c for c in ["fecha_envio", "proveedor", "email_destino", "asunto",
                                           "facturas", "ahorro_total", "estado_envio", "detalle_envio"]
                               if c in email_filtered.columns]
-                st.dataframe(email_filtered[email_cols].tail(30), use_container_width=True, hide_index=True)
+                st.dataframe(display_ready(email_filtered[email_cols].tail(30)), width="stretch", hide_index=True)
             else:
                 st.info(f"No hay correos enviados para {selected_supplier}.")
     st.markdown('</div>', unsafe_allow_html=True)

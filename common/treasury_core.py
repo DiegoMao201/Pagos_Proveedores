@@ -1674,7 +1674,16 @@ def safe_display(
     else:
         result = df
     existing_cols = [c for c in columns if c in result.columns]
-    return result[existing_cols] if existing_cols else pd.DataFrame()
+    if not existing_cols:
+        return pd.DataFrame()
+
+    display_df = result[existing_cols].copy()
+    for column in display_df.columns:
+        if pd.api.types.is_object_dtype(display_df[column]):
+            display_df[column] = display_df[column].apply(
+                lambda value: "" if value is None or pd.isna(value) else str(value)
+            )
+    return display_df
 
 
 def infer_payload_snapshot_metadata(payload: dict) -> dict[str, Any]:
