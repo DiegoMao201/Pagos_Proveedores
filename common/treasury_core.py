@@ -1686,7 +1686,7 @@ def infer_payload_snapshot_metadata(payload: dict) -> dict[str, Any]:
     }
 
 
-def sync_treasury_data() -> dict:
+def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
     """Sincronización progresiva: guarda cada paso de inmediato para no perder avance."""
     gs_client = connect_to_google_sheets()
     if not gs_client:
@@ -1695,7 +1695,8 @@ def sync_treasury_data() -> dict:
 
     sync_errors: list[str] = []
     sync_stats: dict = {}
-    step = st.status("Sincronizando fuentes...", expanded=True)
+    sync_mode_label = "reconstrucción completa" if force_full_rebuild else "sincronización incremental"
+    step = st.status(f"Sincronizando fuentes ({sync_mode_label})...", expanded=True)
 
     # ── 1. Proveedores y datos ya guardados en Sheets ──────────────
     step.update(label="Cargando maestro de proveedores y datos previos...")
@@ -1706,6 +1707,8 @@ def sync_treasury_data() -> dict:
     email_history_df = load_sheet_df(gs_client, SHEET_EMAIL_HISTORY)
     lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
     email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
+    if force_full_rebuild:
+        email_history_df = pd.DataFrame(columns=EMAIL_COLUMNS)
     save_provider_master(gs_client, provider_df)
     st.write(f"✅ Proveedores: {len(provider_df):,} | Historial correo previo: {len(email_history_df):,}")
 
@@ -1739,14 +1742,14 @@ def sync_treasury_data() -> dict:
         partial_master = pd.DataFrame()
 
     # ── 4. Correo: solo la ventana incremental ──────────────────────
-    step.update(label="Leyendo correos nuevos (incremental)...")
-    start_date = determine_sync_start(email_history_df)
-    st.write(f"📧 Leyendo correos desde **{start_date}** (incremental)")
+    step.update(label="Leyendo correos para reconstruir historial..." if force_full_rebuild else "Leyendo correos nuevos (incremental)...")
+    start_date = date(datetime.now(COLOMBIA_TZ).year, 1, 1) if force_full_rebuild else determine_sync_start(email_history_df)
+    st.write(f"📧 Leyendo correos desde **{start_date}** ({'reconstrucción completa' if force_full_rebuild else 'incremental'})")
     try:
         new_email_df, sync_stats = fetch_supplier_invoices_from_email(
             start_date, target_suppliers, provider_df
         )
-        merged_email_df = merge_email_history(email_history_df, new_email_df)
+        merged_email_df = new_email_df.copy() if force_full_rebuild else merge_email_history(email_history_df, new_email_df)
         # Guardar historial de correo de inmediato para no perder progreso
         save_df_to_sheet(gs_client, SHEET_EMAIL_HISTORY, merged_email_df)
         st.write(
@@ -1806,6 +1809,7 @@ def sync_treasury_data() -> dict:
         "email_log_df": email_log_df,
         "sync_stats": sync_stats,
         "sync_started_from": start_date.strftime("%Y-%m-%d"),
+        "sync_mode": "full_rebuild" if force_full_rebuild else "incremental",
         "snapshot_source": "live_sync",
     }
 

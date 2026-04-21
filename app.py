@@ -281,8 +281,13 @@ def display_sidebar(payload: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
+        force_full_rebuild = st.checkbox(
+            "Reconstruir foto completa",
+            value=False,
+            help="Relee el historial de correo desde el inicio del año y reconstruye la foto guardada en Google Sheets. Úsalo cuando cambie la lógica de cálculo o necesites reprocesar soportes históricos.",
+        )
         if st.button("🔄 Actualizar ahora", type="primary", use_container_width=True):
-            result = sync_treasury_data()
+            result = sync_treasury_data(force_full_rebuild=force_full_rebuild)
             if result:
                 st.rerun()
 
@@ -291,7 +296,7 @@ def display_sidebar(payload: dict) -> None:
             snapshot_label = snapshot_at.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(snapshot_at) else "fecha no disponible"
             st.success(f"Mostrando última foto guardada: {snapshot_label}")
             st.caption(
-                f"Consulta inmediata sobre {payload.get('snapshot_rows', 0):,} registros guardados. Actualizar ahora solo trae novedades desde correo y Dropbox."
+                f"Consulta inmediata sobre {payload.get('snapshot_rows', 0):,} registros guardados. Actualizar ahora trae novedades desde correo y Dropbox; activa reconstrucción completa cuando necesites recalcular toda la foto."
             )
 
         if st.session_state.get("last_treasury_sync"):
@@ -310,11 +315,11 @@ def display_sidebar(payload: dict) -> None:
                 )
             )
             st.caption(
-                f"Sincronizacion incremental desde {sync_stats.get('started_from', payload.get('sync_started_from', 'inicio del ano'))}. El sistema relee una ventana corta para evitar omisiones y consolida sin duplicar."
+                f"Sincronizacion {payload.get('sync_mode', 'incremental')} desde {sync_stats.get('started_from', payload.get('sync_started_from', 'inicio del ano'))}. El modo incremental relee una ventana corta; la reconstrucción completa rearma toda la foto del año."
             )
         else:
             if payload.get("has_snapshot"):
-                st.caption("La app abre con la última foto guardada en Google Sheets. No necesitas sincronizar para consultar; usa actualizar solo cuando quieras traer novedades.")
+                st.caption("La app abre con la última foto guardada en Google Sheets. No necesitas sincronizar para consultar; usa actualizar para traer novedades o reconstrucción completa para recalcular la foto guardada.")
             else:
                 st.caption("Todavía no existe una foto guardada en Google Sheets. La primera actualización crea esa base; después la consulta ya será inmediata.")
 
