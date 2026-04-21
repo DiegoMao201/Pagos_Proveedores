@@ -1007,7 +1007,7 @@ snapshot_date = datetime.now(COLOMBIA_TZ).date()
 
 sync_col, sync_info_col = st.columns([1, 2])
 with sync_col:
-	if st.button("🔄 Sincronizar facturas de Pintuco", type="primary", use_container_width=True):
+	if st.button("🔄 Sincronizar facturas de Pintuco", type="primary", width="stretch"):
 		run_pintuco_sync()
 		st.cache_data.clear()
 		st.rerun()
@@ -1090,7 +1090,7 @@ overview_tab, monthly_tab, quarter_tab, invoices_tab, diagnostics_tab = st.tabs(
 with overview_tab:
 	st.subheader("Ritmo del ciclo")
 	chart_df = monthly_df.set_index("Mes")[["Compra_Aplicable", "Presupuesto_Escala_1", "Presupuesto_Escala_2"]]
-	st.line_chart(chart_df, use_container_width=True)
+	st.line_chart(chart_df, width="stretch")
 
 	overview_col1, overview_col2 = st.columns([1.2, 1])
 	with overview_col1:
@@ -1126,7 +1126,7 @@ with overview_tab:
 	st.subheader("Resumen ejecutivo del ciclo")
 	st.dataframe(
 		summary_df,
-		use_container_width=True,
+		width="stretch",
 		hide_index=True,
 		column_config={
 			"Compra_Neta": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
@@ -1168,7 +1168,7 @@ with monthly_tab:
 	]
 	st.dataframe(
 		monthly_display_df,
-		use_container_width=True,
+		width="stretch",
 		hide_index=True,
 		column_config={
 			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
@@ -1186,13 +1186,13 @@ with monthly_tab:
 			"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
 		},
 	)
-	st.bar_chart(monthly_df.set_index("Mes")[["Rebate_Mensual_Ganado", "Bono_Estacionalidad"]], use_container_width=True)
+	st.bar_chart(monthly_df.set_index("Mes")[["Rebate_Mensual_Ganado", "Bono_Estacionalidad"]], width="stretch")
 
 with quarter_tab:
 	st.subheader("Cumplimiento trimestral y recuperación")
 	st.dataframe(
 		quarterly_df,
-		use_container_width=True,
+		width="stretch",
 		hide_index=True,
 		column_config={
 			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
@@ -1207,7 +1207,7 @@ with quarter_tab:
 			"Recomposicion_Cartera_Bloqueada": st.column_config.NumberColumn("Bloqueado cartera", format="$ %,.0f"),
 		},
 	)
-	st.bar_chart(quarterly_df.set_index("Trimestre")[["Rebate_Trimestral_Ganado", "Recomposicion_Trimestral_Proyectada", "Recomposicion_Cartera_Bloqueada"]], use_container_width=True)
+	st.bar_chart(quarterly_df.set_index("Trimestre")[["Rebate_Trimestral_Ganado", "Recomposicion_Trimestral_Proyectada", "Recomposicion_Cartera_Bloqueada"]], width="stretch")
 
 	st.markdown(
 		f"""
@@ -1260,7 +1260,7 @@ with invoices_tab:
 		display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
 		st.dataframe(
 			display_df,
-			use_container_width=True,
+			width="stretch",
 			hide_index=True,
 			column_config={
 				"Fecha_Factura": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
@@ -1322,5 +1322,5 @@ with diagnostics_tab:
 		data=excel_data,
 		file_name=f"Rebate_Pintuco_Ejecutivo_{snapshot_date}.xlsx",
 		mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-		use_container_width=True,
+		width="stretch",
 	)

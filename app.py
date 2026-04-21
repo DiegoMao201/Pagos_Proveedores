@@ -45,7 +45,7 @@ def check_password() -> bool:
         unsafe_allow_html=True,
     )
     password = st.text_input("Contraseña", type="password")
-    if st.button("Ingresar", type="primary", use_container_width=True):
+    if st.button("Ingresar", type="primary", width="stretch"):
         st.session_state["password_correct"] = password == APP_PASSWORD
         if not st.session_state["password_correct"]:
             st.error("Contraseña incorrecta.")
@@ -219,6 +219,10 @@ def inject_styles() -> None:
     )
 
 
+def display_ready(df: pd.DataFrame) -> pd.DataFrame:
+    return safe_display(df, df.columns.tolist())
+
+
 def payload_or_empty() -> dict:
     payload = load_operational_payload()
     payload.setdefault("master_df", pd.DataFrame())
@@ -286,7 +290,7 @@ def display_sidebar(payload: dict) -> None:
             value=False,
             help="Relee el historial de correo desde el inicio del año y reconstruye la foto guardada en Google Sheets. Úsalo cuando cambie la lógica de cálculo o necesites reprocesar soportes históricos.",
         )
-        if st.button("🔄 Actualizar ahora", type="primary", use_container_width=True):
+        if st.button("🔄 Actualizar ahora", type="primary", width="stretch"):
             result = sync_treasury_data(force_full_rebuild=force_full_rebuild)
             if result:
                 st.rerun()
@@ -400,7 +404,7 @@ def display_source_health(payload: dict) -> None:
             {"Fuente": "Trazabilidad lotes/correos", "Registros": summary["lots_registered"] + len(payload["email_log_df"]), "Observacion": "Histórico de lotes programados y evidencia de comunicación enviada."},
         ]
     )
-    st.dataframe(source_summary, use_container_width=True, hide_index=True)
+    st.dataframe(display_ready(source_summary), width="stretch", hide_index=True)
 
     coverage_df = pd.DataFrame(
         [
@@ -410,7 +414,7 @@ def display_source_health(payload: dict) -> None:
             {"Control": "Ahorro capturable", "Valor": format_currency(summary['discount_amount']), "Lectura": "Descuento estimado hoy según reglas vigentes de pronto pago."},
         ]
     )
-    st.dataframe(coverage_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_ready(coverage_df), width="stretch", hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -447,8 +451,8 @@ def display_operational_focus(payload: dict) -> None:
         focus_df["Ahorro_Potencial"] = focus_df["Ahorro_Potencial"].fillna(0.0)
         focus_df.sort_values(by=["Riesgo_48h", "Ahorro_Potencial", "Valor_Pendiente"], ascending=[False, False, False], inplace=True)
         st.dataframe(
-            focus_df.head(12),
-            use_container_width=True,
+            display_ready(focus_df.head(12)),
+            width="stretch",
             hide_index=True,
             column_config={
                 "Valor_Pendiente": st.column_config.NumberColumn("Valor pendiente", format="$ %d"),
@@ -465,8 +469,8 @@ def display_operational_focus(payload: dict) -> None:
         if not lot_history_df.empty:
             lot_preview = lot_history_df.copy().tail(8)
             st.dataframe(
-                lot_preview[[col for col in ["lote_id", "proveedor", "num_factura", "fecha_programada_pago", "estado_lote"] if col in lot_preview.columns]],
-                use_container_width=True,
+                display_ready(lot_preview[[col for col in ["lote_id", "proveedor", "num_factura", "fecha_programada_pago", "estado_lote"] if col in lot_preview.columns]]),
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -475,8 +479,8 @@ def display_operational_focus(payload: dict) -> None:
         if not email_log_df.empty:
             email_preview = email_log_df.copy().tail(8)
             st.dataframe(
-                email_preview[[col for col in ["fecha_envio", "proveedor", "email_destino", "estado_envio", "detalle_envio"] if col in email_preview.columns]],
-                use_container_width=True,
+                display_ready(email_preview[[col for col in ["fecha_envio", "proveedor", "email_destino", "estado_envio", "detalle_envio"] if col in email_preview.columns]]),
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -524,7 +528,7 @@ def display_master_overview(payload: dict) -> None:
                     "valor_descuento",
                     "detalle_conciliacion",
                 ], sort_by=["estado_vencimiento", "fecha_vencimiento_erp", "proveedor"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
@@ -548,7 +552,7 @@ def display_master_overview(payload: dict) -> None:
                     "remitente_correo",
                     "detalle_conciliacion",
                 ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %d"),
@@ -571,7 +575,7 @@ def display_master_overview(payload: dict) -> None:
                     "fecha_vencimiento_erp",
                     "detalle_conciliacion",
                 ], sort_by=["proveedor", "num_factura"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),
@@ -594,7 +598,7 @@ def display_master_overview(payload: dict) -> None:
                     "valor_total_correo",
                     "detalle_conciliacion",
                 ], sort_by=["proveedor", "num_factura"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %d"),

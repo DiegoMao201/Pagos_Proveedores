@@ -278,7 +278,11 @@ def prepare_table(df: pd.DataFrame) -> pd.DataFrame:
     for col in DISPLAY_COLS:
         if col not in table.columns:
             table[col] = ""
-    return table[DISPLAY_COLS]
+    table = table[DISPLAY_COLS].copy()
+    for column in table.columns:
+        if pd.api.types.is_object_dtype(table[column]):
+            table[column] = table[column].apply(lambda value: "" if value is None or pd.isna(value) else str(value))
+    return table
 
 
 def render_tab_table(df: pd.DataFrame, tab_key: str, empty_msg: str) -> pd.DataFrame:
@@ -293,7 +297,7 @@ def render_tab_table(df: pd.DataFrame, tab_key: str, empty_msg: str) -> pd.DataF
 
     edited = st.data_editor(
         table,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         num_rows="fixed",
         column_config=COLUMN_CONFIG,
@@ -437,7 +441,7 @@ with tab_notes:
                     "proveedor", "num_factura", "valor_erp", "fecha_emision_erp",
                     "fecha_vencimiento_erp", "estado_erp", "estado_conciliacion",
                 ], sort_by=["proveedor", "fecha_emision_erp"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor NC", format="$ %,.0f"),
@@ -483,7 +487,7 @@ with tab_sched:
                                        "responsable", "motivo_pago"] if c in sched_filtered.columns]
             st.dataframe(
                 sched_filtered[sched_cols].sort_values(by=[c for c in ["fecha_programada_pago", "lote_id"] if c in sched_filtered.columns], ascending=False),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_factura": st.column_config.NumberColumn("Valor factura", format="$ %,.0f"),
@@ -510,7 +514,7 @@ with tab_sched:
             email_filtered = email_filtered[email_filtered["proveedor"] == selected_supplier]
         if not email_filtered.empty:
             email_cols = [c for c in ["fecha_envio", "proveedor", "asunto", "facturas", "ahorro_total", "estado_envio"] if c in email_filtered.columns]
-            st.dataframe(email_filtered[email_cols].tail(20), use_container_width=True, hide_index=True)
+            st.dataframe(safe_display(email_filtered[email_cols].tail(20), email_cols), width="stretch", hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -541,7 +545,7 @@ with tab_recon:
                     "diferencia_valor", "estado_erp", "estado_conciliacion",
                     "fecha_vencimiento_erp", "detalle_conciliacion",
                 ], sort_by=["proveedor", "num_factura"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "valor_erp": st.column_config.NumberColumn("Valor ERP", format="$ %,.0f"),
@@ -573,8 +577,8 @@ with tab_discounts:
         st.info("No hay descuentos configurados.")
     else:
         st.dataframe(
-            discount_df,
-            use_container_width=True,
+            safe_display(discount_df, discount_df.columns.tolist()),
+            width="stretch",
             hide_index=True,
             column_config={
                 "Descuento %": st.column_config.NumberColumn("Descuento %", format="%.1f%%"),
@@ -624,8 +628,8 @@ else:
     lm4.metric("Valor final a pagar", format_currency(selected_for_lot["valor_a_pagar"].sum()))
 
     st.dataframe(
-        selected_for_lot[["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar", "motivo_pago"]],
-        use_container_width=True,
+        safe_display(selected_for_lot[["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar", "motivo_pago"]], ["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar", "motivo_pago"]),
+        width="stretch",
         hide_index=True,
         column_config={
             "valor_erp": st.column_config.NumberColumn("Valor factura", format="$ %,.0f"),
@@ -665,7 +669,7 @@ else:
     with st.expander("Vista previa del correo profesional", expanded=False):
         st.components.v1.html(html_preview, height=700, scrolling=True)
 
-    if st.button("📨 Registrar lote y enviar correo", type="primary", use_container_width=True, key="btn_send_lot"):
+    if st.button("📨 Registrar lote y enviar correo", type="primary", width="stretch", key="btn_send_lot"):
         if not to_email:
             st.error("Indica el correo destino del proveedor.")
             st.stop()

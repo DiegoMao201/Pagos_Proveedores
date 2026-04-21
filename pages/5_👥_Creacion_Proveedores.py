@@ -80,7 +80,7 @@ def main() -> None:
                 gaps_df[["falta_correo_pago", "falta_alerta", "falta_contacto"]].any(axis=1),
                 ["proveedor", "activo", "email_pago", "email_alertas", "contacto_pagos", "telefono", "observaciones"],
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -102,7 +102,7 @@ def main() -> None:
     with editor_tab:
         edited_df = st.data_editor(
             provider_df[editable_columns],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             num_rows="dynamic",
             column_config={
@@ -122,7 +122,7 @@ def main() -> None:
             key="provider_master_editor",
         )
 
-        if st.button("💾 Guardar maestro de proveedores", type="primary", use_container_width=True):
+        if st.button("💾 Guardar maestro de proveedores", type="primary", width="stretch"):
             updated_df = provider_df.copy()
             for column in edited_df.columns:
                 updated_df[column] = edited_df[column]
