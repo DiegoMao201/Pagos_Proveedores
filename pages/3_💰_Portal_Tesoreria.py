@@ -11,11 +11,13 @@ import streamlit as st
 
 from common.treasury_core import (
     DISCOUNT_PROVIDERS,
+    connect_to_google_sheets,
     ensure_authenticated,
     export_df_to_excel,
     format_currency,
     get_discount_summary_for_suppliers,
     load_operational_payload,
+    register_manual_reconciliation,
     safe_display,
 )
 
@@ -111,6 +113,16 @@ def kpi_html(label: str, value: str, sub: str = "", css: str = "") -> str:
 
 def display_ready(df: pd.DataFrame) -> pd.DataFrame:
     return safe_display(df, df.columns.tolist())
+
+
+def reconciliation_option_label(row: pd.Series) -> str:
+    provider = str(row.get("proveedor_correo") or row.get("proveedor") or "Sin proveedor")
+    document = str(row.get("num_factura") or "Sin documento")
+    amount = format_currency(row.get("valor_total_correo") or row.get("valor_erp") or 0)
+    state = str(row.get("estado_conciliacion") or "")
+    related = str(row.get("documento_relacionado_correo") or row.get("factura_compensada_correo") or "")
+    related_suffix = f" -> {related}" if related else ""
+    return f"{provider} | {document}{related_suffix} | {amount} | {state}"
 
 
 def aging_bucket(days: float) -> str:
@@ -531,21 +543,44 @@ with tab_email:
 with tab_credit_note:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="table-header">Facturas y notas crédito/anulaciones detectadas por correo</div>', unsafe_allow_html=True)
-    st.markdown('<div class="table-sub">Esta vista separa facturas sin ERP que fueron compensadas por una nota crédito/anulación y también las NC que todavía requieren revisión manual.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-sub">Aquí se ve qué ya quedó compensado, qué NC sigue sin match y cómo registrar un cruce manual persistente para sacar esos casos de la lectura operativa.</div>', unsafe_allow_html=True)
 
     if credit_note_recon_df.empty:
         st.success("No hay cruces de nota crédito/anulación para este filtro.")
     else:
+        compensated_invoice_df = credit_note_recon_df[credit_note_recon_df["estado_conciliacion"] == "Solo correo compensado por NC"].copy()
+        credit_note_only_df = credit_note_recon_df[credit_note_recon_df["tipo_documento_correo"] == "NOTA_CREDITO"].copy()
+        unresolved_credit_note_df = credit_note_recon_df[credit_note_recon_df["estado_conciliacion"] == "NC/anulación sin ERP"].copy()
+
         cn1, cn2, cn3 = st.columns(3)
         cn1.metric("Registros vinculados", f"{len(credit_note_recon_df):,}")
-        cn2.metric("Facturas compensadas", f"{int((credit_note_recon_df['estado_conciliacion'] == 'Solo correo compensado por NC').sum()):,}")
-        cn3.metric("NC sin match", f"{int((credit_note_recon_df['estado_conciliacion'] == 'NC/anulación sin ERP').sum()):,}")
+        cn2.metric("Facturas compensadas", f"{len(compensated_invoice_df):,}")
+        cn3.metric("NC sin match", f"{len(unresolved_credit_note_df):,}")
+
+        st.info("Uso recomendado: primero revisa las facturas ya compensadas. Si una NC no quedó enlazada sola, baja al bloque de cruce manual, selecciona la factura y la NC, guarda y ambas saldrán del ruido operativo en adelante.")
+
+        if not compensated_invoice_df.empty:
+            st.markdown("**Facturas de correo ya compensadas por una NC/anulación**")
+            st.dataframe(
+                safe_display(compensated_invoice_df, [
+                    "proveedor_correo", "num_factura", "factura_compensada_correo", "valor_total_correo",
+                    "fecha_recepcion_correo", "detalle_conciliacion",
+                ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
+                    "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+                },
+            )
+
+        st.markdown("**Notas crédito / anulaciones detectadas**")
 
         st.dataframe(
-            safe_display(credit_note_recon_df, [
+            safe_display(credit_note_only_df, [
                 "proveedor_correo", "num_factura", "tipo_documento_correo", "documento_relacionado_correo",
                 "factura_compensada_correo", "valor_total_correo", "fecha_recepcion_correo",
-                "remitente_correo", "estado_conciliacion", "detalle_conciliacion",
+                "remitente_correo", "estado_conciliacion", "descripcion_nota_correo", "detalle_conciliacion",
             ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
             width="stretch",
             hide_index=True,
@@ -554,6 +589,65 @@ with tab_credit_note:
                 "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
             },
         )
+
+        st.markdown("---")
+        st.markdown("**Cruce manual persistente**")
+        st.caption("Si sabes que una factura de correo y una NC/anulación se compensan, puedes registrar el cruce aquí. Quedará guardado en Google Sheets y esos documentos dejarán de salir como no conciliados.")
+
+        manual_invoice_candidates = filtered_master[
+            filtered_master["estado_conciliacion"].isin(["Solo correo", "Solo correo compensado por NC"])
+        ].copy()
+        manual_credit_candidates = filtered_master[
+            filtered_master["estado_conciliacion"].isin(["NC/anulación compensada", "NC/anulación sin ERP"])
+            & filtered_master["tipo_documento_correo"].eq("NOTA_CREDITO")
+        ].copy()
+
+        if manual_invoice_candidates.empty or manual_credit_candidates.empty:
+            st.info("No hay suficientes candidatos visibles para registrar un cruce manual en este filtro.")
+        else:
+            invoice_options = {reconciliation_option_label(row): row["invoice_key"] for _, row in manual_invoice_candidates.iterrows()}
+            credit_options = {reconciliation_option_label(row): row["invoice_key"] for _, row in manual_credit_candidates.iterrows()}
+
+            manual_col1, manual_col2 = st.columns(2)
+            selected_invoice_label = manual_col1.selectbox("Factura a compensar", list(invoice_options.keys()), key="manual_recon_invoice")
+            selected_credit_label = manual_col2.selectbox("NC / anulación relacionada", list(credit_options.keys()), key="manual_recon_credit")
+            manual_note = st.text_input("Nota de auditoría", value="Cruce manual confirmado por tesorería", key="manual_recon_note")
+
+            selected_invoice_key = invoice_options[selected_invoice_label]
+            selected_credit_key = credit_options[selected_credit_label]
+            selected_invoice_row = manual_invoice_candidates[manual_invoice_candidates["invoice_key"] == selected_invoice_key].iloc[0]
+            selected_credit_row = manual_credit_candidates[manual_credit_candidates["invoice_key"] == selected_credit_key].iloc[0]
+
+            preview_df = pd.DataFrame([
+                {
+                    "Rol": "Factura",
+                    "Proveedor": selected_invoice_row.get("proveedor_correo") or selected_invoice_row.get("proveedor"),
+                    "Documento": selected_invoice_row.get("num_factura"),
+                    "Valor": selected_invoice_row.get("valor_total_correo") or selected_invoice_row.get("valor_erp"),
+                    "Estado actual": selected_invoice_row.get("estado_conciliacion"),
+                },
+                {
+                    "Rol": "NC / anulación",
+                    "Proveedor": selected_credit_row.get("proveedor_correo") or selected_credit_row.get("proveedor"),
+                    "Documento": selected_credit_row.get("num_factura"),
+                    "Valor": selected_credit_row.get("valor_total_correo") or selected_credit_row.get("valor_erp"),
+                    "Estado actual": selected_credit_row.get("estado_conciliacion"),
+                },
+            ])
+            st.dataframe(display_ready(preview_df), width="stretch", hide_index=True, column_config={"Valor": st.column_config.NumberColumn("Valor", format="$ %,.0f")})
+
+            if st.button("Guardar cruce manual y sacar de la vista operativa", type="primary", width="stretch", key="save_manual_recon"):
+                gs_client = connect_to_google_sheets()
+                if not gs_client:
+                    st.error("No fue posible conectar con Google Sheets para guardar el cruce manual.")
+                elif selected_invoice_key == selected_credit_key:
+                    st.error("Debes escoger dos documentos distintos.")
+                elif register_manual_reconciliation(gs_client, selected_invoice_row.to_dict(), selected_credit_row.to_dict(), manual_note):
+                    st.session_state.pop("treasury_payload", None)
+                    st.success("Cruce manual guardado. Estos documentos ya no volverán a aparecer como no conciliados en la lectura operativa.")
+                    st.rerun()
+                else:
+                    st.error("No se pudo guardar el cruce manual.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 

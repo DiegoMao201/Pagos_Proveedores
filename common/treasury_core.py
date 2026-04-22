@@ -40,6 +40,7 @@ SHEET_MASTER_INVOICES = "Maestro_Facturas"
 SHEET_PAYMENT_PLAN = "Propuesta_Pagos"
 SHEET_PAYMENT_LOTS = "Lotes_Pago"
 SHEET_EMAIL_LOG = "Historial_Correos"
+SHEET_MANUAL_RECONCILIATION = "Conciliacion_Manual"
 
 PENDING_COLUMNS = [
     "nombre_proveedor_erp",
@@ -132,6 +133,19 @@ EMAIL_LOG_COLUMNS = [
     "detalle_envio",
 ]
 
+MANUAL_RECONCILIATION_COLUMNS = [
+    "resolution_id",
+    "created_at",
+    "resolution_type",
+    "invoice_key_source",
+    "invoice_key_target",
+    "proveedor_norm",
+    "source_num_factura",
+    "target_num_factura",
+    "status",
+    "notes",
+]
+
 MASTER_OPTIONAL_DEFAULTS = {
     "invoice_key": "",
     "proveedor": "",
@@ -143,6 +157,10 @@ MASTER_OPTIONAL_DEFAULTS = {
     "documento_relacionado_correo": "",
     "descripcion_nota_correo": "",
     "factura_compensada_correo": "",
+    "manual_resolution_id": "",
+    "manual_resolution_type": "",
+    "manual_resolution_notes": "",
+    "manual_resolution_target": "",
     "estado_erp": "No ERP",
     "estado_conciliacion": "Sin clasificar",
     "estado_vencimiento": "No aplica",
@@ -1692,6 +1710,74 @@ def build_risk_alerts(master_df: pd.DataFrame) -> pd.DataFrame:
     return alerts_df[_acols].sort_values(by=_asort) if _asort else alerts_df[_acols]
 
 
+def load_manual_reconciliation_df(client: gspread.Client) -> pd.DataFrame:
+    df = load_sheet_df(client, SHEET_MANUAL_RECONCILIATION)
+    if df.empty:
+        return pd.DataFrame(columns=MANUAL_RECONCILIATION_COLUMNS)
+    prepared = df.copy()
+    for column in MANUAL_RECONCILIATION_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = ""
+    prepared["created_at"] = coerce_datetime(prepared["created_at"])
+    prepared["status"] = prepared["status"].fillna("").astype(str)
+    return prepared[MANUAL_RECONCILIATION_COLUMNS]
+
+
+def register_manual_reconciliation(client: gspread.Client, source_row: dict, target_row: dict, notes: str = "") -> bool:
+    resolution_df = pd.DataFrame([
+        {
+            "resolution_id": f"MAN-{uuid.uuid4().hex[:10].upper()}",
+            "created_at": pd.Timestamp.now(tz=COLOMBIA_TZ),
+            "resolution_type": "MANUAL_NC_MATCH",
+            "invoice_key_source": str(source_row.get("invoice_key", "") or ""),
+            "invoice_key_target": str(target_row.get("invoice_key", "") or ""),
+            "proveedor_norm": str(source_row.get("proveedor_norm", "") or target_row.get("proveedor_norm", "") or ""),
+            "source_num_factura": str(source_row.get("num_factura", "") or ""),
+            "target_num_factura": str(target_row.get("num_factura", "") or ""),
+            "status": "ACTIVO",
+            "notes": notes or "",
+        }
+    ])
+    return append_df_to_sheet(client, SHEET_MANUAL_RECONCILIATION, resolution_df, MANUAL_RECONCILIATION_COLUMNS)
+
+
+def apply_manual_reconciliation_rules(master_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.DataFrame:
+    if master_df.empty or manual_df.empty:
+        return master_df
+
+    prepared = master_df.copy()
+    active_rules = manual_df[manual_df["status"].astype(str).str.upper().eq("ACTIVO")].copy()
+    if active_rules.empty:
+        return prepared
+
+    for _, rule in active_rules.iterrows():
+        source_key = str(rule.get("invoice_key_source", "") or "")
+        target_key = str(rule.get("invoice_key_target", "") or "")
+        resolution_id = str(rule.get("resolution_id", "") or "")
+        resolution_type = str(rule.get("resolution_type", "") or "")
+        notes = str(rule.get("notes", "") or "")
+
+        for invoice_key, counterpart in [(source_key, target_key), (target_key, source_key)]:
+            if not invoice_key:
+                continue
+            mask = prepared["invoice_key"].astype(str).eq(invoice_key)
+            if not mask.any():
+                continue
+            prepared.loc[mask, "manual_resolution_id"] = resolution_id
+            prepared.loc[mask, "manual_resolution_type"] = resolution_type
+            prepared.loc[mask, "manual_resolution_notes"] = notes
+            prepared.loc[mask, "manual_resolution_target"] = counterpart
+            prepared.loc[mask, "estado_conciliacion"] = "Conciliación manual"
+            prepared.loc[mask, "detalle_conciliacion"] = (
+                "Cruce manual confirmado por tesorería. "
+                + (f"Documento relacionado: {counterpart}. " if counterpart else "")
+                + (notes if notes else "")
+            ).str.strip()
+            prepared.loc[mask, "motivo_base"] = "Conciliado manualmente por tesorería"
+
+    return prepared
+
+
 def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
     if master_df.empty:
         return master_df.copy()
@@ -1809,6 +1895,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
     email_history_df = load_sheet_df(gs_client, SHEET_EMAIL_HISTORY)
     lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
     email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
+    manual_reconciliation_df = load_manual_reconciliation_df(gs_client)
     if force_full_rebuild:
         email_history_df = pd.DataFrame(columns=EMAIL_COLUMNS)
     save_provider_master(gs_client, provider_df)
@@ -1869,6 +1956,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         master_df = build_master_dataframe(
             pending_df, paid_df, merged_email_df, provider_df, lot_history_df
         )
+        master_df = apply_manual_reconciliation_rules(master_df, manual_reconciliation_df)
         payment_plan_df = build_payment_plan(master_df)
         risk_alerts_df = build_risk_alerts(master_df)
         save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
@@ -1909,6 +1997,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         "risk_alerts_df": risk_alerts_df,
         "lot_history_df": lot_history_df,
         "email_log_df": email_log_df,
+        "manual_reconciliation_df": manual_reconciliation_df,
         "sync_stats": sync_stats,
         "sync_started_from": start_date.strftime("%Y-%m-%d"),
         "sync_mode": "full_rebuild" if force_full_rebuild else "incremental",
@@ -1959,6 +2048,13 @@ def load_operational_payload() -> dict:
     except Exception:
         email_log_df = pd.DataFrame()
 
+    try:
+        manual_reconciliation_df = load_manual_reconciliation_df(gs_client)
+    except Exception:
+        manual_reconciliation_df = pd.DataFrame(columns=MANUAL_RECONCILIATION_COLUMNS)
+
+    master_df = apply_manual_reconciliation_rules(master_df, manual_reconciliation_df)
+
     payload = {
         "provider_df": provider_df,
         "email_history_df": email_history_df,
@@ -1967,6 +2063,7 @@ def load_operational_payload() -> dict:
         "risk_alerts_df": build_risk_alerts(master_df),
         "lot_history_df": lot_history_df,
         "email_log_df": email_log_df,
+        "manual_reconciliation_df": manual_reconciliation_df,
         "snapshot_source": "sheets_cache",
     }
     payload.update(infer_payload_snapshot_metadata(payload))
