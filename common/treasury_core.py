@@ -1410,6 +1410,17 @@ def build_master_dataframe(
     combined["en_saldada"] = combined["num_factura_paid"].notna() if "num_factura_paid" in combined.columns else False
     combined["movimiento_mixto_erp"] = combined["en_pendiente"] & combined["en_saldada"]
     combined["en_correo"] = combined["num_factura"].notna() & combined["proveedor_correo"].astype(str).ne("")
+
+    conditions = [
+        combined["en_pendiente"],
+        combined["en_saldada"],
+    ]
+    choices = ["Pendiente", "Saldada"]
+    combined["estado_erp"] = pd.Series(pd.NA, index=combined.index, dtype="object")
+    combined.loc[conditions[0], "estado_erp"] = choices[0]
+    combined.loc[conditions[1] & combined["estado_erp"].isna(), "estado_erp"] = choices[1]
+    combined["estado_erp"] = combined["estado_erp"].fillna("No ERP")
+
     combined["tipo_documento_correo"] = combined.get("tipo_documento_correo", pd.Series(index=combined.index, dtype=object)).fillna("FACTURA").astype(str)
     combined["documento_relacionado_correo"] = combined.get("documento_relacionado_correo", pd.Series(index=combined.index, dtype=object)).fillna("").astype(str)
     combined["descripcion_nota_correo"] = combined.get("descripcion_nota_correo", pd.Series(index=combined.index, dtype=object)).fillna("").astype(str)
@@ -1439,16 +1450,6 @@ def build_master_dataframe(
     # Use emission date; fall back to due date if emission is missing
     _fe = _fe.fillna(combined["fecha_vencimiento_erp"])
     combined["anterior_a_lectura_correo"] = _fe.notna() & (_fe < email_window_start)
-
-    conditions = [
-        combined["en_pendiente"],
-        combined["en_saldada"],
-    ]
-    choices = ["Pendiente", "Saldada"]
-    combined["estado_erp"] = pd.Series(pd.NA, index=combined.index, dtype="object")
-    combined.loc[conditions[0], "estado_erp"] = choices[0]
-    combined.loc[conditions[1] & combined["estado_erp"].isna(), "estado_erp"] = choices[1]
-    combined["estado_erp"] = combined["estado_erp"].fillna("No ERP")
 
     combined["diferencia_valor"] = (combined["valor_erp"].fillna(0) - combined["valor_total_correo"].fillna(0)).abs()
     value_status = combined.apply(evaluate_value_status, axis=1)
