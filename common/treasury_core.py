@@ -1764,16 +1764,17 @@ def apply_manual_reconciliation_rules(master_df: pd.DataFrame, manual_df: pd.Dat
             mask = prepared["invoice_key"].astype(str).eq(invoice_key)
             if not mask.any():
                 continue
+            detail_text = (
+                "Cruce manual confirmado por tesorería. "
+                + (f"Documento relacionado: {counterpart}. " if counterpart else "")
+                + (notes if notes else "")
+            ).strip()
             prepared.loc[mask, "manual_resolution_id"] = resolution_id
             prepared.loc[mask, "manual_resolution_type"] = resolution_type
             prepared.loc[mask, "manual_resolution_notes"] = notes
             prepared.loc[mask, "manual_resolution_target"] = counterpart
             prepared.loc[mask, "estado_conciliacion"] = "Conciliación manual"
-            prepared.loc[mask, "detalle_conciliacion"] = (
-                "Cruce manual confirmado por tesorería. "
-                + (f"Documento relacionado: {counterpart}. " if counterpart else "")
-                + (notes if notes else "")
-            ).str.strip()
+            prepared.loc[mask, "detalle_conciliacion"] = detail_text
             prepared.loc[mask, "motivo_base"] = "Conciliado manualmente por tesorería"
 
     return prepared
