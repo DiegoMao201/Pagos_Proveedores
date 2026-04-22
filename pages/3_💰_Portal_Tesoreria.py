@@ -140,6 +140,10 @@ master_df = ensure_columns(
         "detalle_conciliacion": "", "valor_descuento": 0.0, "valor_a_pagar": 0.0,
         "valor_base_descuento": 0.0,
         "origen_soporte": "",
+        "tipo_documento_correo": "FACTURA",
+        "documento_relacionado_correo": "",
+        "descripcion_nota_correo": "",
+        "factura_compensada_correo": "",
         "proveedor_correo": "", "fecha_recepcion_correo": pd.NaT, "remitente_correo": "",
         "valor_total_correo": 0.0, "estado_vencimiento": "", "estado_conciliacion": "",
         "estado_erp": "", "riesgo_mora_48h": False, "dias_para_vencer": 0,
@@ -178,6 +182,7 @@ n_upcoming = int((master_df["estado_vencimiento"] == "🟡 Proxima a vencer").su
 n_providers = master_df["proveedor"].nunique()
 only_email_count = int((master_df["estado_conciliacion"] == "Solo correo").sum())
 heuristic_email_count = int((master_df["estado_conciliacion"] == "Correo heuristico").sum())
+credit_note_match_count = int(master_df["estado_conciliacion"].isin(["Solo correo compensado por NC", "NC/anulación compensada", "NC/anulación sin ERP"]).sum())
 no_email_count = int((master_df["estado_conciliacion"] == "Pendiente sin correo").sum())
 conciliated_count = int(master_df["estado_conciliacion"].isin(["Pendiente conciliada", "Saldada conciliada", "Pendiente anterior a lectura", "Saldada anterior a lectura"]).sum())
 
@@ -206,6 +211,7 @@ st.markdown(
             <div class="hero-pill"><div class="hero-pill-label">Vencidas + Riesgo 48h</div><div class="hero-pill-value">{n_overdue + n_risk:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Correo sin reflejo ERP</div><div class="hero-pill-value">{only_email_count:,}</div></div>
             <div class="hero-pill"><div class="hero-pill-label">Heurístico correo</div><div class="hero-pill-value">{heuristic_email_count:,}</div></div>
+            <div class="hero-pill"><div class="hero-pill-label">NC por revisar</div><div class="hero-pill-value">{credit_note_match_count:,}</div></div>
         </div>
     </div>
     """,
@@ -296,6 +302,9 @@ pay_now_df = filtered_master[
 ].copy()
 only_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Solo correo"].copy()
 heuristic_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Correo heuristico"].copy()
+credit_note_recon_df = filtered_master[
+    filtered_master["estado_conciliacion"].isin(["Solo correo compensado por NC", "NC/anulación compensada", "NC/anulación sin ERP"])
+].copy()
 unresolved_df = filtered_master[
     (filtered_master["estado_erp"] == "Pendiente")
     & (filtered_master["estado_conciliacion"] == "Pendiente sin correo")
@@ -308,10 +317,11 @@ conciliated_df = filtered_master[
 
 
 # ─── TABS ───────────────────────────────────────────────────────────
-tab_overview, tab_pay, tab_email, tab_unrec, tab_conc, tab_aging, tab_provider, tab_trace = st.tabs([
+tab_overview, tab_pay, tab_email, tab_credit_note, tab_unrec, tab_conc, tab_aging, tab_provider, tab_trace = st.tabs([
     "📊 Resumen Ejecutivo",
     f"💸 Que pagar ({len(pay_now_df):,})",
     f"📨 Correo sin reflejo ERP ({len(only_email_df):,})",
+    f"🧾 NC / Anulaciones ({len(credit_note_recon_df):,})",
     f"⚠️ No conciliado ({len(unresolved_df):,})",
     f"✅ Conciliado ({len(conciliated_df):,})",
     "📈 Analisis Aging",
@@ -514,6 +524,36 @@ with tab_email:
                     "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
                 },
             )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ── Tab 4: No conciliado ───────────────────────────────────────────
+with tab_credit_note:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="table-header">Facturas y notas crédito/anulaciones detectadas por correo</div>', unsafe_allow_html=True)
+    st.markdown('<div class="table-sub">Esta vista separa facturas sin ERP que fueron compensadas por una nota crédito/anulación y también las NC que todavía requieren revisión manual.</div>', unsafe_allow_html=True)
+
+    if credit_note_recon_df.empty:
+        st.success("No hay cruces de nota crédito/anulación para este filtro.")
+    else:
+        cn1, cn2, cn3 = st.columns(3)
+        cn1.metric("Registros vinculados", f"{len(credit_note_recon_df):,}")
+        cn2.metric("Facturas compensadas", f"{int((credit_note_recon_df['estado_conciliacion'] == 'Solo correo compensado por NC').sum()):,}")
+        cn3.metric("NC sin match", f"{int((credit_note_recon_df['estado_conciliacion'] == 'NC/anulación sin ERP').sum()):,}")
+
+        st.dataframe(
+            safe_display(credit_note_recon_df, [
+                "proveedor_correo", "num_factura", "tipo_documento_correo", "documento_relacionado_correo",
+                "factura_compensada_correo", "valor_total_correo", "fecha_recepcion_correo",
+                "remitente_correo", "estado_conciliacion", "detalle_conciliacion",
+            ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
+                "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+            },
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
 

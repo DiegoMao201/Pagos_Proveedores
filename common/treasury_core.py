@@ -68,6 +68,9 @@ EMAIL_COLUMNS = [
     "num_factura",
     "proveedor_correo",
     "proveedor_norm",
+    "tipo_documento_correo",
+    "documento_relacionado_correo",
+    "descripcion_nota_correo",
     "fecha_emision_correo",
     "fecha_vencimiento_correo",
     "valor_total_correo",
@@ -136,6 +139,10 @@ MASTER_OPTIONAL_DEFAULTS = {
     "proveedor_erp": "",
     "proveedor_correo": "",
     "num_factura": "",
+    "tipo_documento_correo": "FACTURA",
+    "documento_relacionado_correo": "",
+    "descripcion_nota_correo": "",
+    "factura_compensada_correo": "",
     "estado_erp": "No ERP",
     "estado_conciliacion": "Sin clasificar",
     "estado_vencimiento": "No aplica",
@@ -201,6 +208,7 @@ SUPPLIER_ALIASES = {
     "COMPANIAGLOBALDEPINTURASSASS": "PINTUCOCOLOMBIASAS",
     "PINTUCOSAC": "PINTUCOCOLOMBIASAS",
     "INDUSTRIASGOYAINCOLLTDA": "INDUSTRIASGOYAINCOLSAS",
+    "VICTORFABIANHENAOCARDONA": "FERRETECNICAMANIZALES",
 }
 VALUE_MATCH_RULES = {
     "INDUSTRIASGOYAINCOLSAS": {"retention_pct": 0.025},
@@ -279,6 +287,10 @@ def expand_document_variants(value: Any) -> list[str]:
         variants.append(normalized[1:])
     elif normalized.startswith("NAL") and len(normalized) > 3:
         variants.append(f"P{normalized}")
+    if re.fullmatch(r"FVE\d{4,}", normalized):
+        variants.append(normalized[3:])
+    elif re.fullmatch(r"\d{4,}", normalized):
+        variants.append(f"FVE{normalized}")
     return list(dict.fromkeys(variants))
 
 
@@ -938,9 +950,12 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
         root = ET.fromstring(xml_content.encode("utf-8"))
 
         description_node = root.find(".//cac:Attachment/cac:ExternalReference/cbc:Description", namespaces)
-        if description_node is not None and description_node.text and "<Invoice" in description_node.text:
+        if description_node is not None and description_node.text and ("<Invoice" in description_node.text or "<CreditNote" in description_node.text):
             nested_xml = re.sub(r"^[^<]+", "", description_node.text.strip())
             root = ET.fromstring(nested_xml.encode("utf-8"))
+
+        document_tag = re.sub(r"^\{.*\}", "", root.tag or "").upper()
+        document_type = "NOTA_CREDITO" if document_tag == "CREDITNOTE" else "FACTURA"
 
         def find_text(paths: list[str]) -> Optional[str]:
             for path in paths:
@@ -963,6 +978,15 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
         total_value = find_text([".//cac:LegalMonetaryTotal/cbc:PayableAmount", ".//cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount", ".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount"])
         base_value = find_text([".//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount", ".//cac:LegalMonetaryTotal/cbc:LineExtensionAmount"])
         tax_value = find_text([".//cac:TaxTotal/cbc:TaxAmount"])
+        related_document = find_text([
+            ".//cac:BillingReference/cac:InvoiceDocumentReference/cbc:ID",
+            ".//cac:DiscrepancyResponse/cbc:ReferenceID",
+            ".//cac:OrderReference/cbc:ID",
+        ])
+        credit_note_description = find_text([
+            ".//cac:DiscrepancyResponse/cbc:Description",
+            ".//cbc:Note",
+        ])
 
         if not supplier_name or not invoice_number or not total_value:
             return None
@@ -992,6 +1016,9 @@ def parse_invoice_xml(xml_content: str, target_suppliers: set[str], provider_map
             "proveedor_norm": supplier_norm,
             "supplier_nif": supplier_nif_norm,
             "num_factura": normalize_invoice_number(invoice_number),
+            "tipo_documento_correo": document_type,
+            "documento_relacionado_correo": normalize_invoice_number(related_document),
+            "descripcion_nota_correo": credit_note_description or "",
             "fecha_emision_correo": issue_date,
             "fecha_vencimiento_correo": due_date,
             "valor_total_correo": total_value_clean,
@@ -1100,6 +1127,9 @@ def extract_invoice_records_from_message(message_obj, target_suppliers: set[str]
                     "proveedor_norm": provider_norm,
                     "supplier_nif": "",
                     "num_factura": best_reference,
+                    "tipo_documento_correo": "FACTURA",
+                    "documento_relacionado_correo": "",
+                    "descripcion_nota_correo": "",
                     "fecha_emision_correo": pd.NaT,
                     "fecha_vencimiento_correo": pd.NaT,
                     "valor_total_correo": detected_value,
@@ -1380,6 +1410,26 @@ def build_master_dataframe(
     combined["en_saldada"] = combined["num_factura_paid"].notna() if "num_factura_paid" in combined.columns else False
     combined["movimiento_mixto_erp"] = combined["en_pendiente"] & combined["en_saldada"]
     combined["en_correo"] = combined["num_factura"].notna() & combined["proveedor_correo"].astype(str).ne("")
+    combined["tipo_documento_correo"] = combined.get("tipo_documento_correo", pd.Series(index=combined.index, dtype=object)).fillna("FACTURA").astype(str)
+    combined["documento_relacionado_correo"] = combined.get("documento_relacionado_correo", pd.Series(index=combined.index, dtype=object)).fillna("").astype(str)
+    combined["descripcion_nota_correo"] = combined.get("descripcion_nota_correo", pd.Series(index=combined.index, dtype=object)).fillna("").astype(str)
+    combined["factura_compensada_correo"] = combined.get("factura_compensada_correo", pd.Series(index=combined.index, dtype=object)).fillna("").astype(str)
+
+    unmatched_email_mask = (combined["estado_erp"] == "No ERP") & combined["en_correo"]
+    credit_note_rows = combined[unmatched_email_mask & combined["tipo_documento_correo"].eq("NOTA_CREDITO")]
+    for credit_index, credit_row in credit_note_rows.iterrows():
+        related_candidates = build_document_candidates(credit_row.get("documento_relacionado_correo", ""))
+        if not related_candidates:
+            continue
+        provider_norm = str(credit_row.get("proveedor_norm", "") or "")
+        for invoice_index, invoice_row in combined[unmatched_email_mask & combined["tipo_documento_correo"].ne("NOTA_CREDITO")].iterrows():
+            if provider_norm and str(invoice_row.get("proveedor_norm", "") or "") != provider_norm:
+                continue
+            invoice_candidates = build_document_candidates(invoice_row.get("num_factura", ""), invoice_row.get("documento_relacionado_correo", ""), *(str(invoice_row.get("referencias_correo", "") or "").split("|")))
+            if set(related_candidates).intersection(invoice_candidates):
+                combined.at[invoice_index, "factura_compensada_correo"] = str(credit_row.get("num_factura", "") or "")
+                combined.at[credit_index, "factura_compensada_correo"] = str(invoice_row.get("num_factura", "") or "")
+                break
 
     # Determine which invoices are older than the email reading window.
     # The email sync starts from Jan 1 of the current year, so invoices
@@ -1425,7 +1475,13 @@ def build_master_dataframe(
             if row.get("anterior_a_lectura_correo", False):
                 return "Saldada anterior a lectura"
             return "Saldada sin correo"
+        if row["estado_erp"] == "No ERP" and row["en_correo"] and row.get("tipo_documento_correo") == "NOTA_CREDITO":
+            if str(row.get("factura_compensada_correo", "") or ""):
+                return "NC/anulación compensada"
+            return "NC/anulación sin ERP"
         if row["estado_erp"] == "No ERP" and row["en_correo"]:
+            if str(row.get("factura_compensada_correo", "") or ""):
+                return "Solo correo compensado por NC"
             if str(row.get("origen_soporte", "") or "").upper() == "CUERPO":
                 return "Correo heuristico"
             return "Solo correo"
@@ -1454,6 +1510,12 @@ def build_master_dataframe(
             return "Está en cartera saldada. La fecha de emisión es anterior a la ventana de lectura de correo; no aplica cruce documental."
         if row["estado_conciliacion"] == "Solo correo":
             return "Tiene correo y XML, pero no aparece en las fuentes ERP descargadas desde Dropbox (cartera pendiente ni cartera saldada)."
+        if row["estado_conciliacion"] == "Solo correo compensado por NC":
+            return f"La factura no aparece en ERP, pero existe una nota crédito/anulación de correo que referencia este documento: {row.get('factura_compensada_correo', '')}."
+        if row["estado_conciliacion"] == "NC/anulación compensada":
+            return f"La nota crédito/anulación no entró al ERP y compensa la factura de correo {row.get('factura_compensada_correo', '')}."
+        if row["estado_conciliacion"] == "NC/anulación sin ERP":
+            return "Se detectó una nota crédito/anulación por correo, pero todavía no se encontró una factura de correo relacionada ni un reflejo ERP para cerrarla." 
         if row["estado_conciliacion"] == "Correo heuristico":
             return "Se detectó una referencia y un valor en el cuerpo del correo, pero no hubo XML válido ni reflejo ERP. Es un caso de baja confianza para auditoría, no para indicador ejecutivo."
         if row["estado_conciliacion"] in {"Pendiente con valor por revisar", "Saldada con valor por revisar"}:
@@ -1488,6 +1550,8 @@ def build_master_dataframe(
         lambda row: "Pendiente con soporte de correo" if row["estado_conciliacion"] == "Pendiente conciliada"
         else "Pendiente sin soporte recibido" if row["estado_conciliacion"] == "Pendiente sin correo"
         else "Correo sin reflejo en fuentes ERP Dropbox" if row["estado_conciliacion"] == "Solo correo"
+        else "Factura compensada por nota crédito/anulación de correo" if row["estado_conciliacion"] == "Solo correo compensado por NC"
+        else "Nota crédito/anulación detectada por correo" if row["estado_conciliacion"] in {"NC/anulación compensada", "NC/anulación sin ERP"}
         else "Correo heuristico sin XML valido" if row["estado_conciliacion"] == "Correo heuristico"
         else "Saldo abierto con movimientos mixtos ERP" if row.get("movimiento_mixto_erp", False)
         else "Factura ya saldada" if row["estado_erp"] == "Saldada"
@@ -1505,6 +1569,10 @@ def build_master_dataframe(
         "proveedor_norm",
         "proveedor_erp",
         "proveedor_correo",
+        "tipo_documento_correo",
+        "documento_relacionado_correo",
+        "descripcion_nota_correo",
+        "factura_compensada_correo",
         "valor_erp",
         "valor_base_descuento",
         "valor_total_correo",
