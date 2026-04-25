@@ -570,6 +570,73 @@ def aggregate_erp_invoice_rows(df: pd.DataFrame, source_label: str) -> pd.DataFr
     return aggregated
 
 
+def build_paid_history_from_master(master_df: pd.DataFrame) -> pd.DataFrame:
+    history_columns = PAID_COLUMNS + ["documento_cruce", "document_candidates", "proveedor_norm", "invoice_key", "erp_movimientos", "estado_erp_fuente"]
+    if master_df.empty or "estado_erp" not in master_df.columns:
+        return pd.DataFrame(columns=history_columns)
+
+    paid_history = master_df[master_df["estado_erp"].astype(str).eq("Saldada")].copy()
+    if paid_history.empty:
+        return pd.DataFrame(columns=history_columns)
+
+    provider_series = coalesce(
+        paid_history.get("proveedor_erp", pd.Series(index=paid_history.index, dtype=object)),
+        paid_history.get("proveedor", pd.Series(index=paid_history.index, dtype=object)),
+        paid_history.get("proveedor_correo", pd.Series(index=paid_history.index, dtype=object)),
+    ).fillna("").astype(str)
+
+    history_seed = pd.DataFrame(
+        {
+            "nombre_proveedor_erp": provider_series,
+            "serie": pd.Series("", index=paid_history.index, dtype=object),
+            "num_entrada": pd.Series("", index=paid_history.index, dtype=object),
+            "num_factura": paid_history.get("num_factura", pd.Series(index=paid_history.index, dtype=object)).fillna("").astype(str),
+            "estado_documento": pd.Series("H", index=paid_history.index, dtype=object),
+            "fecha_emision_erp": paid_history.get("fecha_emision_erp", pd.Series(index=paid_history.index, dtype="datetime64[ns]")),
+            "fecha_vencimiento_erp": paid_history.get("fecha_vencimiento_erp", pd.Series(index=paid_history.index, dtype="datetime64[ns]")),
+            "valor_total_erp": paid_history.get("valor_erp", pd.Series(index=paid_history.index, dtype=float)).apply(clean_numeric),
+        }
+    )
+    history_seed["fecha_emision_erp"] = coerce_datetime(history_seed["fecha_emision_erp"])
+    history_seed["fecha_vencimiento_erp"] = coerce_datetime(history_seed["fecha_vencimiento_erp"])
+    history_seed = prepare_document_matching_columns(history_seed, "nombre_proveedor_erp", alternate_col="num_entrada")
+    history_seed = sanitize_erp_export(history_seed)
+    if history_seed.empty:
+        return pd.DataFrame(columns=history_columns)
+
+    aggregated = aggregate_erp_invoice_rows(history_seed, "Saldada historica")
+    for column in history_columns:
+        if column not in aggregated.columns:
+            aggregated[column] = ""
+    return aggregated[history_columns].drop_duplicates(subset=["invoice_key"], keep="last")
+
+
+def merge_paid_invoice_history(
+    current_paid_df: pd.DataFrame,
+    historical_paid_df: pd.DataFrame,
+    pending_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    if historical_paid_df.empty:
+        return current_paid_df.copy()
+    if current_paid_df.empty:
+        current_paid_df = pd.DataFrame(columns=historical_paid_df.columns)
+
+    current_keys = set(current_paid_df.get("invoice_key", pd.Series(dtype=str)).fillna("").astype(str))
+    pending_keys = set()
+    if pending_df is not None and not pending_df.empty:
+        pending_keys = set(pending_df.get("invoice_key", pd.Series(dtype=str)).fillna("").astype(str))
+
+    keep_mask = ~historical_paid_df["invoice_key"].fillna("").astype(str).isin(current_keys | pending_keys)
+    preserved_history = historical_paid_df[keep_mask].copy()
+    if preserved_history.empty:
+        return current_paid_df.copy()
+    if current_paid_df.empty:
+        return preserved_history.drop_duplicates(subset=["invoice_key"], keep="first")
+
+    merged = pd.concat([current_paid_df, preserved_history], ignore_index=True, sort=False)
+    return merged.drop_duplicates(subset=["invoice_key"], keep="first")
+
+
 def build_provider_matching_maps(provider_df: pd.DataFrame) -> dict[str, dict[str, str]]:
     if provider_df.empty:
         return {
@@ -1362,6 +1429,11 @@ def build_master_dataframe(
     paid_df = paid_df.drop_duplicates(subset=["invoice_key"], keep="last")
     email_df = email_df.drop_duplicates(subset=["invoice_key"], keep="last")
 
+    if pending_df.empty and not paid_df.empty:
+        pending_df = pd.DataFrame(columns=paid_df.columns)
+    if paid_df.empty and not pending_df.empty:
+        paid_df = pd.DataFrame(columns=pending_df.columns)
+
     combined = pd.merge(pending_df, paid_df, on="invoice_key", how="outer", suffixes=("_pend", "_paid"))
     combined = pd.merge(combined, email_df, on="invoice_key", how="outer")
 
@@ -1891,6 +1963,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
     # ── 1. Proveedores y datos ya guardados en Sheets ──────────────
     step.update(label="Cargando maestro de proveedores y datos previos...")
     provider_df = load_provider_master(gs_client)
+    previous_master_df = ensure_master_dataframe_schema(load_sheet_df(gs_client, SHEET_MASTER_INVOICES))
     target_suppliers = set(
         provider_df[provider_df["activo"].fillna(True)]["proveedor_norm"].tolist()
     )
@@ -1901,7 +1974,10 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
     if force_full_rebuild:
         email_history_df = pd.DataFrame(columns=EMAIL_COLUMNS)
     save_provider_master(gs_client, provider_df)
-    st.write(f"✅ Proveedores: {len(provider_df):,} | Historial correo previo: {len(email_history_df):,}")
+    st.write(
+        f"✅ Proveedores: {len(provider_df):,} | Historial correo previo: {len(email_history_df):,} | "
+        f"Foto previa maestro: {len(previous_master_df):,}"
+    )
 
     # ── 2. Dropbox: cartera pendiente y saldada (rápido, ~segundos) ─
     step.update(label="Descargando cartera desde Dropbox...")
@@ -1913,7 +1989,16 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         if target_suppliers:
             pending_df = pending_df[pending_df["proveedor_norm"].isin(target_suppliers)].copy()
             paid_df = paid_df[paid_df["proveedor_norm"].isin(target_suppliers)].copy()
+        preserved_paid_df = pd.DataFrame()
+        if not force_full_rebuild:
+            preserved_paid_df = build_paid_history_from_master(previous_master_df)
+            if target_suppliers and not preserved_paid_df.empty:
+                preserved_paid_df = preserved_paid_df[preserved_paid_df["proveedor_norm"].isin(target_suppliers)].copy()
+            paid_df = merge_paid_invoice_history(paid_df, preserved_paid_df, pending_df)
         st.write(f"✅ Pendientes Dropbox: {len(pending_df):,} | Saldadas Dropbox: {len(paid_df):,}")
+        if not force_full_rebuild and not preserved_paid_df.empty:
+            preserved_count = int((preserved_paid_df["invoice_key"].astype(str).isin(paid_df["invoice_key"].astype(str))).sum())
+            st.write(f"🧷 Saldadas históricas preservadas para incremental: {preserved_count:,}")
     except Exception as exc:
         sync_errors.append(f"Dropbox: {exc}")
         st.warning(f"⚠️ Error cargando Dropbox: {exc}")
