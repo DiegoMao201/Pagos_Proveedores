@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Seguimiento profesional del rebate de Pintuco."""
+"""Seguimiento profesional del rebate de proveedores estratégicos."""
 
 import email
 import imaplib
@@ -32,13 +32,19 @@ if not st.session_state["password_correct"]:
 	st.stop()
 
 
-st.set_page_config(layout="wide", page_title="Seguimiento Rebate | Pintuco", page_icon="📈")
+st.set_page_config(layout="wide", page_title="Seguimiento Rebate | Proveedores", page_icon="📈")
 
 PINTUCO_ALIASES = ["PINTUCO", "COMPANIA GLOBAL DE PINTURAS"]
 PINTUCO_PROVIDER_NAME_ERP = "PINTUCO COLOMBIA S.A.S"
+ABRACOL_ALIASES = ["ABRACOL", "ABRASIVOS DE COLOMBIA"]
+ABRACOL_PROVIDER_NAMES_ERP = ["ABRACOL S.A.S"]
+GOYA_ALIASES = ["GOYA", "GOYAINCOL"]
+GOYA_PROVIDER_NAMES_ERP = ["INDUSTRIAS GOYAINCOL SAS", "INDUSTRIAS GOYAINCOL LTDA"]
 COLOMBIA_TZ = pytz.timezone("America/Bogota")
 CURRENT_CYCLE_NAME = "Ciclo vigente desde el 1 de abril de 2026"
 CURRENT_CYCLE_START = date(2026, 4, 1)
+FULL_YEAR_CYCLE_NAME = "Ciclo comercial 2026"
+FULL_YEAR_CYCLE_START = date(2026, 1, 1)
 EXCLUDED_PURCHASE_PERCENT = 0.12
 APPLICABLE_PURCHASE_FACTOR = 1 - EXCLUDED_PURCHASE_PERCENT
 
@@ -46,6 +52,8 @@ IMAP_SERVER = "imap.gmail.com"
 EMAIL_FOLDER = "TFHKA/Recepcion/Descargados"
 DROPBOX_FILE_PATH = "/data/Proveedores.csv"
 PINTUCO_WORKSHEET_NAME = "Rebate_Pintuco"
+ABRACOL_WORKSHEET_NAME = "Rebate_Abracol"
+GOYA_WORKSHEET_NAME = "Rebate_Goya"
 
 MONTHLY_BUDGETS = [
 	{"Mes": "Abril", "Mes_Num": 4, "Trimestre": "Q2", "Escala 1": 1456867389.0, "Escala 2": 1544279432.0},
@@ -65,6 +73,51 @@ SEASONALITY_TARGET_FACTOR = 0.90
 SEASONALITY_RATE = 0.01
 CYCLE_RECOMPOSITION_FACTOR = 0.85
 SEASONALITY_CUTOFF_OVERRIDES = {"2026-04": date(2026, 4, 24)}
+
+ABRACOL_REBATE_RATE = 0.06
+VAT_RATE = 0.19
+GOYA_REBATE_NOTE = "La tabla de porcentajes oficial del acuerdo define 40% = 3.5%. La tabla de liquidación semestral muestra 3.0%; el tablero usa la tabla específica de porcentajes como fuente principal."
+
+ABRACOL_BIMESTER_BUDGETS = [
+	{"Periodo": "BIMESTRE 1", "Inicio": date(2026, 1, 1), "Fin": date(2026, 2, 28), "Ventas_2025": 168593107.0, "Meta_2026": 185908415.0},
+	{"Periodo": "BIMESTRE 2", "Inicio": date(2026, 3, 1), "Fin": date(2026, 4, 30), "Ventas_2025": 161386193.0, "Meta_2026": 188109304.0},
+	{"Periodo": "BIMESTRE 3", "Inicio": date(2026, 5, 1), "Fin": date(2026, 6, 30), "Ventas_2025": 171088205.0, "Meta_2026": 202209913.0},
+	{"Periodo": "BIMESTRE 4", "Inicio": date(2026, 7, 1), "Fin": date(2026, 8, 31), "Ventas_2025": 151645921.0, "Meta_2026": 193664256.0},
+	{"Periodo": "BIMESTRE 5", "Inicio": date(2026, 9, 1), "Fin": date(2026, 10, 31), "Ventas_2025": 194956130.0, "Meta_2026": 196577548.0},
+	{"Periodo": "BIMESTRE 6", "Inicio": date(2026, 11, 1), "Fin": date(2026, 12, 31), "Ventas_2025": 159359129.0, "Meta_2026": 191613553.0},
+]
+
+GOYA_SEMESTER_BUDGETS = [
+	{
+		"Periodo": "I SEMESTRE",
+		"Inicio": date(2026, 1, 1),
+		"Fin": date(2026, 6, 30),
+		"Ventas_2024": 206003279.0,
+		"Base_2025": 314805149.0,
+		"Meta_20": 377766179.0,
+		"Meta_30": 409246694.0,
+		"Meta_40": 440727209.0,
+		"Meta_50": 472207724.0,
+	},
+	{
+		"Periodo": "II SEMESTRE",
+		"Inicio": date(2026, 7, 1),
+		"Fin": date(2026, 12, 31),
+		"Ventas_2024": 222481209.0,
+		"Base_2025": 354615080.0,
+		"Meta_20": 425538096.0,
+		"Meta_30": 460999604.0,
+		"Meta_40": 496461112.0,
+		"Meta_50": 531922620.0,
+	},
+]
+
+GOYA_GROWTH_TIERS = [
+	{"growth": 0.50, "rate": 0.04, "label": "50%"},
+	{"growth": 0.40, "rate": 0.035, "label": "40%"},
+	{"growth": 0.30, "rate": 0.025, "label": "30%"},
+	{"growth": 0.20, "rate": 0.02, "label": "20%"},
+]
 
 INVOICE_COLUMNS = [
 	"Fecha_Factura",
@@ -301,6 +354,57 @@ def sort_invoice_dataframe(df: pd.DataFrame, by: list[str], ascending: bool | li
 	return sorted_df.sort_values(by=by, ascending=ascending, na_position="last")
 
 
+def build_abracol_budget_frame() -> pd.DataFrame:
+	return pd.DataFrame(ABRACOL_BIMESTER_BUDGETS).copy()
+
+
+def build_goya_budget_frame() -> pd.DataFrame:
+	return pd.DataFrame(GOYA_SEMESTER_BUDGETS).copy()
+
+
+def get_provider_configs() -> dict[str, dict[str, Any]]:
+	return {
+		"pintuco": {
+			"key": "pintuco",
+			"label": "Pintuco",
+			"title": "Dashboard Ejecutivo de Rebate Pintuco",
+			"cycle_name": CURRENT_CYCLE_NAME,
+			"cycle_start": CURRENT_CYCLE_START,
+			"aliases": PINTUCO_ALIASES,
+			"provider_names_erp": [PINTUCO_PROVIDER_NAME_ERP],
+			"worksheet_name": PINTUCO_WORKSHEET_NAME,
+			"excluded_purchase_percent": EXCLUDED_PURCHASE_PERCENT,
+		},
+		"abracol": {
+			"key": "abracol",
+			"label": "Abracol",
+			"title": "Dashboard Ejecutivo de Rebate Abracol",
+			"cycle_name": FULL_YEAR_CYCLE_NAME,
+			"cycle_start": FULL_YEAR_CYCLE_START,
+			"aliases": ABRACOL_ALIASES,
+			"provider_names_erp": ABRACOL_PROVIDER_NAMES_ERP,
+			"worksheet_name": ABRACOL_WORKSHEET_NAME,
+			"excluded_purchase_percent": 0.0,
+			"flat_rate": ABRACOL_REBATE_RATE,
+			"budget_df": build_abracol_budget_frame(),
+		},
+		"goya": {
+			"key": "goya",
+			"label": "Goya",
+			"title": "Dashboard Ejecutivo de Rebate Goya",
+			"cycle_name": FULL_YEAR_CYCLE_NAME,
+			"cycle_start": FULL_YEAR_CYCLE_START,
+			"aliases": GOYA_ALIASES,
+			"provider_names_erp": GOYA_PROVIDER_NAMES_ERP,
+			"worksheet_name": GOYA_WORKSHEET_NAME,
+			"excluded_purchase_percent": 0.0,
+			"budget_df": build_goya_budget_frame(),
+			"growth_tiers": GOYA_GROWTH_TIERS,
+			"note": GOYA_REBATE_NOTE,
+		},
+	}
+
+
 def get_third_sunday(month_start: pd.Timestamp) -> date:
 	first_day = month_start.date().replace(day=1)
 	days_until_sunday = (6 - first_day.weekday()) % 7
@@ -389,7 +493,7 @@ def update_gsheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame) -> boo
 
 
 @st.cache_data(ttl=600, show_spinner="Descargando cartera vigente de Dropbox...")
-def load_pending_documents_from_dropbox() -> set:
+def load_pending_documents_from_dropbox(provider_names_erp: tuple[str, ...]) -> set:
 	try:
 		dbx = dropbox.Dropbox(
 			oauth2_refresh_token=st.secrets.dropbox["refresh_token"],
@@ -413,28 +517,29 @@ def load_pending_documents_from_dropbox() -> set:
 				"valor_total_erp",
 			],
 		)
-		pintuco_df = df[df["nombre_proveedor_erp"] == PINTUCO_PROVIDER_NAME_ERP].copy()
-		pintuco_df["valor_total_erp"] = pintuco_df["valor_total_erp"].apply(clean_and_convert_numeric)
+		provider_filter = {provider.upper() for provider in provider_names_erp}
+		provider_df = df[df["nombre_proveedor_erp"].fillna("").astype(str).str.upper().isin(provider_filter)].copy()
+		provider_df["valor_total_erp"] = provider_df["valor_total_erp"].apply(clean_and_convert_numeric)
 
-		credit_note_mask = (pintuco_df["valor_total_erp"] < 0) & (
-			pintuco_df["num_factura"].isna() | (pintuco_df["num_factura"].astype(str).str.strip() == "")
+		credit_note_mask = (provider_df["valor_total_erp"] < 0) & (
+			provider_df["num_factura"].isna() | (provider_df["num_factura"].astype(str).str.strip() == "")
 		)
 		if credit_note_mask.any():
-			pintuco_df.loc[credit_note_mask, "num_factura"] = (
+			provider_df.loc[credit_note_mask, "num_factura"] = (
 				"NC-"
-				+ pintuco_df.loc[credit_note_mask, "doc_erp"].astype(str).str.strip()
+				+ provider_df.loc[credit_note_mask, "doc_erp"].astype(str).str.strip()
 				+ "-"
-				+ pintuco_df.loc[credit_note_mask, "valor_total_erp"].abs().astype(int).astype(str)
+				+ provider_df.loc[credit_note_mask, "valor_total_erp"].abs().astype(int).astype(str)
 			)
 
-		pintuco_df.dropna(subset=["num_factura"], inplace=True)
-		return set(pintuco_df["num_factura"].apply(normalize_invoice_number))
+		provider_df.dropna(subset=["num_factura"], inplace=True)
+		return set(provider_df["num_factura"].apply(normalize_invoice_number))
 	except Exception as exc:
 		st.error(f"❌ Error cargando cartera de Dropbox: {exc}")
 		return set()
 
 
-def parse_invoice_xml(xml_content: str) -> dict | None:
+def parse_invoice_xml(xml_content: str, aliases: list[str]) -> dict | None:
 	try:
 		namespaces = {
 			"cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
@@ -459,7 +564,7 @@ def parse_invoice_xml(xml_content: str) -> dict | None:
 			return None
 
 		supplier_name = supplier_name_node.text.strip()
-		if not any(alias in supplier_name.upper() for alias in PINTUCO_ALIASES):
+		if not any(alias in supplier_name.upper() for alias in aliases):
 			return None
 
 		invoice_number_node = invoice_root.find("./cbc:ID", namespaces)
@@ -479,7 +584,7 @@ def parse_invoice_xml(xml_content: str) -> dict | None:
 		return None
 
 
-def extract_invoice_records_from_message(message_obj) -> tuple[list[dict], dict]:
+def extract_invoice_records_from_message(message_obj, aliases: list[str]) -> tuple[list[dict], dict]:
 	records = []
 	stats = {"attachments_scanned": 0, "xml_files_scanned": 0, "invoice_rows_detected": 0}
 
@@ -513,7 +618,7 @@ def extract_invoice_records_from_message(message_obj) -> tuple[list[dict], dict]
 							continue
 						stats["xml_files_scanned"] += 1
 						xml_content = zip_file.read(internal_name).decode("utf-8", "ignore")
-						details = parse_invoice_xml(xml_content)
+						details = parse_invoice_xml(xml_content, aliases)
 						if details:
 							details.update(
 								{
@@ -532,7 +637,7 @@ def extract_invoice_records_from_message(message_obj) -> tuple[list[dict], dict]
 		if is_xml:
 			stats["xml_files_scanned"] += 1
 			xml_content = payload.decode("utf-8", "ignore")
-			details = parse_invoice_xml(xml_content)
+			details = parse_invoice_xml(xml_content, aliases)
 			if details:
 				details.update(
 					{
@@ -549,7 +654,7 @@ def extract_invoice_records_from_message(message_obj) -> tuple[list[dict], dict]
 	return records, stats
 
 
-def fetch_pintuco_invoices_from_email(start_date: date) -> tuple[pd.DataFrame, dict]:
+def fetch_provider_invoices_from_email(start_date: date, aliases: list[str], provider_label: str) -> tuple[pd.DataFrame, dict]:
 	invoices_data = []
 	stats = {
 		"emails_found": 0,
@@ -574,13 +679,13 @@ def fetch_pintuco_invoices_from_email(start_date: date) -> tuple[pd.DataFrame, d
 			mail.logout()
 			return pd.DataFrame(), stats
 
-		progress_text = f"Procesando {len(message_ids)} correos del buzón de Pintuco..."
+		progress_text = f"Procesando {len(message_ids)} correos del buzón de {provider_label}..."
 		progress_bar = st.progress(0, text=progress_text)
 
 		for index, message_id in enumerate(message_ids, start=1):
 			_, data = mail.fetch(message_id, "(RFC822)")
 			message_obj = email.message_from_bytes(data[0][1])
-			records, email_stats = extract_invoice_records_from_message(message_obj)
+			records, email_stats = extract_invoice_records_from_message(message_obj, aliases)
 			invoices_data.extend(records)
 
 			stats["emails_processed"] += 1
@@ -593,7 +698,7 @@ def fetch_pintuco_invoices_from_email(start_date: date) -> tuple[pd.DataFrame, d
 		mail.logout()
 		return pd.DataFrame(invoices_data), stats
 	except Exception as exc:
-		st.error(f"❌ Error procesando correos de Pintuco: {exc}")
+		st.error(f"❌ Error procesando correos de {provider_label}: {exc}")
 		return pd.DataFrame(), stats
 
 
@@ -605,7 +710,7 @@ def ensure_invoice_columns(df: pd.DataFrame) -> pd.DataFrame:
 	return normalized_df.reindex(columns=INVOICE_COLUMNS)
 
 
-def prepare_invoice_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def prepare_invoice_dataframe(df: pd.DataFrame, excluded_purchase_percent: float = EXCLUDED_PURCHASE_PERCENT) -> pd.DataFrame:
 	if df.empty:
 		return ensure_invoice_columns(df)
 
@@ -614,9 +719,78 @@ def prepare_invoice_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 	prepared["Fecha_Recepcion_Correo"] = normalize_datetime_series(prepared["Fecha_Recepcion_Correo"])
 	prepared["Valor_Neto"] = pd.to_numeric(prepared["Valor_Neto"], errors="coerce").fillna(0.0)
 	prepared["Numero_Factura"] = prepared["Numero_Factura"].apply(normalize_invoice_number)
-	prepared["Compra_Excluida_12"] = prepared["Valor_Neto"] * EXCLUDED_PURCHASE_PERCENT
-	prepared["Compra_Aplicable_Rebate"] = prepared["Valor_Neto"] * APPLICABLE_PURCHASE_FACTOR
+	prepared["Compra_Excluida_12"] = prepared["Valor_Neto"] * excluded_purchase_percent
+	prepared["Compra_Aplicable_Rebate"] = prepared["Valor_Neto"] * (1 - excluded_purchase_percent)
 	return prepared
+
+
+def get_last_sync_key(provider_config: dict[str, Any]) -> str:
+	return f"last_{provider_config['key']}_sync"
+
+
+def get_last_sync_stats_key(provider_config: dict[str, Any]) -> str:
+	return f"last_{provider_config['key']}_sync_stats"
+
+
+def run_provider_sync(provider_config: dict[str, Any]) -> None:
+	provider_label = provider_config["label"]
+	cycle_start = provider_config["cycle_start"]
+	excluded_purchase_percent = provider_config.get("excluded_purchase_percent", 0.0)
+	pending_docs_set = load_pending_documents_from_dropbox(tuple(provider_config["provider_names_erp"]))
+
+	with st.spinner(f"Sincronizando facturas y trazabilidad de {provider_label}..."):
+		gs_client = connect_to_google_sheets()
+		if not gs_client:
+			st.error("Sincronización cancelada. No fue posible conectar con Google Sheets.")
+			st.stop()
+
+		worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], provider_config["worksheet_name"])
+		historical_df = pd.DataFrame(columns=INVOICE_COLUMNS)
+		start_date = cycle_start
+
+		try:
+			records = worksheet.get_all_records()
+			if records:
+				historical_df = prepare_invoice_dataframe(pd.DataFrame(records), excluded_purchase_percent)
+				historical_df = historical_df[historical_df["Fecha_Factura"].dt.date >= cycle_start].copy()
+				if not historical_df.empty:
+					last_sync_date = historical_df["Fecha_Factura"].max().date()
+					start_date = max(cycle_start, last_sync_date - timedelta(days=3))
+		except Exception as exc:
+			st.warning(f"No se pudo leer el histórico de Google Sheets. Se sincronizará desde el inicio del ciclo. Detalle: {exc}")
+
+		st.info(f"Buscando facturas desde {start_date.strftime('%Y-%m-%d')} en la carpeta de correo {EMAIL_FOLDER}.")
+		new_invoices_df, sync_stats = fetch_provider_invoices_from_email(start_date, provider_config["aliases"], provider_label)
+
+		combined_df = prepare_invoice_dataframe(historical_df.copy(), excluded_purchase_percent)
+		if not new_invoices_df.empty:
+			new_invoices_df = prepare_invoice_dataframe(new_invoices_df, excluded_purchase_percent)
+			combined_df = prepare_invoice_dataframe(pd.concat([historical_df, new_invoices_df], ignore_index=True), excluded_purchase_percent)
+			combined_df = sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"])
+			combined_df.drop_duplicates(subset=["Numero_Factura"], keep="last", inplace=True)
+			st.success(f"Se consolidaron {len(new_invoices_df)} registros de factura detectados desde el correo.")
+		else:
+			st.info(f"No se detectaron facturas nuevas de {provider_label} en el correo para el rango consultado.")
+
+		if not combined_df.empty:
+			combined_df["Estado_Pago"] = combined_df["Numero_Factura"].apply(
+				lambda number: "Pendiente" if normalize_invoice_number(number) in pending_docs_set else "Pagada"
+			)
+			combined_df = ensure_invoice_columns(combined_df)
+
+			if update_gsheet_from_df(worksheet, sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Numero_Factura"])):
+				st.success(f"✅ Base de datos de {provider_label} actualizada correctamente.")
+			else:
+				st.error("❌ La actualización de Google Sheets falló.")
+		else:
+			st.warning(f"No hay facturas de {provider_label} para guardar en la hoja.")
+
+		st.session_state[get_last_sync_key(provider_config)] = datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+		st.session_state[get_last_sync_stats_key(provider_config)] = sync_stats
+
+
+def fetch_pintuco_invoices_from_email(start_date: date) -> tuple[pd.DataFrame, dict]:
+	return fetch_provider_invoices_from_email(start_date, PINTUCO_ALIASES, "Pintuco")
 
 
 def build_tracking_alerts(df: pd.DataFrame) -> list[str]:
@@ -647,75 +821,28 @@ def build_tracking_alerts(df: pd.DataFrame) -> list[str]:
 
 
 def run_pintuco_sync():
-	with st.spinner("Sincronizando facturas y trazabilidad de Pintuco..."):
-		pending_docs_set = load_pending_documents_from_dropbox()
-
-		gs_client = connect_to_google_sheets()
-		if not gs_client:
-			st.error("Sincronización cancelada. No fue posible conectar con Google Sheets.")
-			st.stop()
-
-		worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
-
-		historical_df = pd.DataFrame(columns=INVOICE_COLUMNS)
-		start_date = CURRENT_CYCLE_START
-
-		try:
-			records = worksheet.get_all_records()
-			if records:
-				historical_df = prepare_invoice_dataframe(pd.DataFrame(records))
-				historical_df = historical_df[historical_df["Fecha_Factura"].dt.date >= CURRENT_CYCLE_START].copy()
-				if not historical_df.empty:
-					last_sync_date = historical_df["Fecha_Factura"].max().date()
-					start_date = max(CURRENT_CYCLE_START, last_sync_date - timedelta(days=3))
-		except Exception as exc:
-			st.warning(f"No se pudo leer el histórico de Google Sheets. Se sincronizará desde el inicio del ciclo. Detalle: {exc}")
-
-		st.info(f"Buscando facturas desde {start_date.strftime('%Y-%m-%d')} en la carpeta de correo {EMAIL_FOLDER}.")
-		new_invoices_df, sync_stats = fetch_pintuco_invoices_from_email(start_date)
-
-		combined_df = prepare_invoice_dataframe(historical_df.copy())
-		if not new_invoices_df.empty:
-			new_invoices_df = prepare_invoice_dataframe(new_invoices_df)
-			combined_df = prepare_invoice_dataframe(pd.concat([historical_df, new_invoices_df], ignore_index=True))
-			combined_df = sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"])
-			combined_df.drop_duplicates(subset=["Numero_Factura"], keep="last", inplace=True)
-			st.success(f"Se consolidaron {len(new_invoices_df)} registros de factura detectados desde el correo.")
-		else:
-			st.info("No se detectaron facturas nuevas de Pintuco en el correo para el rango consultado.")
-
-		if not combined_df.empty:
-			combined_df["Estado_Pago"] = combined_df["Numero_Factura"].apply(
-				lambda number: "Pendiente" if normalize_invoice_number(number) in pending_docs_set else "Pagada"
-			)
-			combined_df = ensure_invoice_columns(combined_df)
-
-			if update_gsheet_from_df(worksheet, sort_invoice_dataframe(combined_df, by=["Fecha_Factura", "Numero_Factura"])):
-				st.success("✅ Base de datos de Pintuco actualizada correctamente.")
-			else:
-				st.error("❌ La actualización de Google Sheets falló.")
-		else:
-			st.warning("No hay facturas de Pintuco para guardar en la hoja.")
-
-		st.session_state["last_pintuco_sync"] = datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-		st.session_state["last_pintuco_sync_stats"] = sync_stats
+	run_provider_sync(get_provider_configs()["pintuco"])
 
 
 @st.cache_data(ttl=300)
-def load_pintuco_data_from_gsheet() -> pd.DataFrame:
+def load_provider_data_from_gsheet(worksheet_name: str, cycle_start: date, excluded_purchase_percent: float) -> pd.DataFrame:
 	try:
 		gs_client = connect_to_google_sheets()
-		worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], PINTUCO_WORKSHEET_NAME)
+		worksheet = get_worksheet(gs_client, st.secrets["google_sheet_id"], worksheet_name)
 		records = worksheet.get_all_records()
 		if not records:
 			return pd.DataFrame()
 
-		df = prepare_invoice_dataframe(pd.DataFrame(records))
-		df = df[df["Fecha_Factura"].dt.date >= CURRENT_CYCLE_START].copy()
+		df = prepare_invoice_dataframe(pd.DataFrame(records), excluded_purchase_percent)
+		df = df[df["Fecha_Factura"].dt.date >= cycle_start].copy()
 		return sort_invoice_dataframe(df, by=["Fecha_Factura", "Numero_Factura"])
 	except Exception as exc:
 		st.error(f"❌ Error al cargar datos desde Google Sheets: {exc}")
 		return pd.DataFrame()
+
+
+def load_pintuco_data_from_gsheet() -> pd.DataFrame:
+	return load_provider_data_from_gsheet(PINTUCO_WORKSHEET_NAME, CURRENT_CYCLE_START, EXCLUDED_PURCHASE_PERCENT)
 
 
 def build_cycle_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -927,15 +1054,18 @@ def build_cycle_projection(monthly_df: pd.DataFrame, budget_df: pd.DataFrame, co
 
 
 def generate_excel_report(executive_df: pd.DataFrame, monthly_df: pd.DataFrame, quarterly_df: pd.DataFrame, invoices_df: pd.DataFrame) -> io.BytesIO:
-	output = io.BytesIO()
-	workbook = Workbook()
-
 	sheets_to_write = [
 		("Resumen_Ejecutivo", executive_df if not executive_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
 		("Mes_a_Mes", monthly_df if not monthly_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
 		("Trimestres", quarterly_df if not quarterly_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
 		("Facturas_Pintuco", invoices_df if not invoices_df.empty else pd.DataFrame([{"Mensaje": "Sin información disponible"}])),
 	]
+	return generate_excel_report_from_sheets(sheets_to_write)
+
+
+def generate_excel_report_from_sheets(sheets_to_write: list[tuple[str, pd.DataFrame]]) -> io.BytesIO:
+	output = io.BytesIO()
+	workbook = Workbook()
 
 	header_font = Font(bold=True, color="FFFFFF")
 	header_fill = PatternFill(start_color="0B3C5D", end_color="0B3C5D", fill_type="solid")
@@ -977,270 +1107,194 @@ def generate_excel_report(executive_df: pd.DataFrame, monthly_df: pd.DataFrame, 
 	return output
 
 
-st.markdown(
-	f"""
-	<div class="pintuco-banner">
-		<h1>Dashboard Ejecutivo de Rebate Pintuco</h1>
-		<p>{CURRENT_CYCLE_NAME}. Seguimiento comercial, financiero y operativo del presupuesto Ferreinox con lectura directa de facturas, estacionalidad, escalas, trimestre y recomposición.</p>
-	</div>
-	""",
-	unsafe_allow_html=True,
-)
+def get_current_period_row(period_df: pd.DataFrame, snapshot_date: date) -> pd.Series:
+	if period_df.empty:
+		return pd.Series(dtype="object")
 
-st.markdown(
-	f"""
-	<div class="info-card">
-		<strong>Reglas comerciales activas</strong><br>
-		1. La base del cálculo es la compra neta menos el <strong>12% excluido</strong>; el rebate corre sobre el <strong>88% aplicable</strong>.<br>
-		2. Cada mes compara contra <strong>Escala 1</strong> y <strong>Escala 2</strong>; Escala 2 paga más que Escala 1.<br>
-		3. El pago mensual y trimestral se calcula sobre <strong>toda la compra aplicable del periodo</strong>, sin techo.<br>
-		4. Estacionalidad: si al cierre del <strong>tercer domingo</strong> del mes se alcanza al menos el <strong>90% de Escala 2</strong>, se gana un <strong>1% adicional</strong> sobre la compra aplicable del mes.<br>
-		5. La recomposición separa el saldo <strong>elegible</strong> del saldo <strong>bloqueado por cartera</strong> para no mezclar comercial con cobranza.
-	</div>
-	""",
-	unsafe_allow_html=True,
-)
-
-config = get_rebate_configuration()
-budget_df = config["budget_df"]
-snapshot_date = datetime.now(COLOMBIA_TZ).date()
-
-sync_col, sync_info_col = st.columns([1, 2])
-with sync_col:
-	if st.button("🔄 Sincronizar facturas de Pintuco", type="primary", width="stretch"):
-		run_pintuco_sync()
-		st.cache_data.clear()
-		st.rerun()
-with sync_info_col:
-	if "last_pintuco_sync" in st.session_state:
-		st.success(f"Última foto guardada: {st.session_state['last_pintuco_sync']}")
-	else:
-		st.info("Aún no hay una foto guardada en esta sesión. Usa 'Sincronizar facturas de Pintuco' para crear la primera foto del ciclo.")
-
-if "last_pintuco_sync_stats" in st.session_state:
-	sync_stats = st.session_state["last_pintuco_sync_stats"]
-	st.caption(
-		" | ".join(
-			[
-				f"Correos encontrados: {sync_stats.get('emails_found', 0)}",
-				f"Correos procesados: {sync_stats.get('emails_processed', 0)}",
-				f"Adjuntos revisados: {sync_stats.get('attachments_scanned', 0)}",
-				f"XML leídos: {sync_stats.get('xml_files_scanned', 0)}",
-				f"Facturas detectadas: {sync_stats.get('invoice_rows_detected', 0)}",
-			]
-		)
-	)
-
-pintuco_df = load_pintuco_data_from_gsheet()
-if pintuco_df.empty:
-	st.warning("No hay datos de Pintuco para el ciclo vigente. Ejecuta la sincronización inicial.")
-	st.stop()
-
-monthly_df = build_monthly_rebate_table(pintuco_df, budget_df, config, snapshot_date)
-quarterly_df = build_quarterly_rebate_table(monthly_df, config)
-cycle_outlook = build_cycle_projection(monthly_df, budget_df, config, snapshot_date)
-summary_df = build_cycle_summary(monthly_df)
-tracking_alerts = build_tracking_alerts(pintuco_df)
-
-current_month_start = pd.Timestamp(snapshot_date.replace(day=1))
-current_month_df = monthly_df[monthly_df["Mes_Inicio"] == current_month_start]
-if current_month_df.empty:
-	current_month_df = monthly_df.iloc[[0]]
-current_month = current_month_df.iloc[0]
-current_quarter = str(current_month["Trimestre"])
-current_quarter_df = quarterly_df[quarterly_df["Trimestre"] == current_quarter]
-if current_quarter_df.empty:
-	current_quarter_df = quarterly_df.iloc[[0]]
-current_quarter_row = current_quarter_df.iloc[0]
-
-rebate_total_ganado = float(monthly_df["Rebate_Mensual_Ganado"].sum() + monthly_df["Bono_Estacionalidad"].sum() + quarterly_df["Rebate_Trimestral_Ganado"].sum())
-
-render_kpi_grid(
-	[
-		kpi_card_html("Compra aplicable acumulada", format_currency(cycle_outlook["Compra_Aplicable_Acumulada"]), f"Cumplimiento E2 acumulado: {format_percent(cycle_outlook['Cumplimiento_Acumulado_E2'])}", "navy"),
-		kpi_card_html("Escala actual del ciclo", cycle_outlook["Escala_Ciclo"], f"Faltante acumulado a E2: {format_currency(cycle_outlook['Faltante_E2_Actual'])}", get_scale_tone(cycle_outlook["Escala_Ciclo"])),
-		kpi_card_html("Rebate ganado a hoy", format_currency(rebate_total_ganado), "Mensual + trimestral + estacionalidad", "green"),
-		kpi_card_html("Bolsa 9M proyectada", format_currency(cycle_outlook["Recomposicion_9M_Proyectada"]), f"Bloqueada por cartera: {format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}", "gold"),
+	current = period_df[
+		(period_df["Inicio"].dt.date <= snapshot_date)
+		& (period_df["Fin"].dt.date >= snapshot_date)
 	]
-)
+	if not current.empty:
+		return current.iloc[0]
 
-render_kpi_grid(
-	[
-		kpi_card_html("Mes actual", format_currency(float(current_month["Compra_Aplicable"])), f"{current_month['Mes']} · escala {current_month['Escala_Lograda']}", get_scale_tone(str(current_month["Escala_Lograda"]))),
-		kpi_card_html("Estacionalidad", str(current_month["Estado_Estacionalidad"]), f"Corte: {pd.Timestamp(current_month['Corte_Estacionalidad']).strftime('%Y-%m-%d')} · bono: {format_currency(float(current_month['Bono_Estacionalidad']))}", get_scale_tone(str(current_month["Estado_Estacionalidad"]))),
-		kpi_card_html("Trimestre actual", str(current_quarter_row["Escala_Lograda"]), f"{current_quarter} · faltante E2: {format_currency(float(current_quarter_row['Faltante_E2']))}", get_scale_tone(str(current_quarter_row["Escala_Lograda"]))),
-		kpi_card_html("Recomposición trimestral", format_currency(float(current_quarter_row["Recomposicion_Trimestral_Proyectada"])), f"Bloqueada cartera: {format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}", "gold"),
-	]
-)
+	past = period_df[period_df["Fin"].dt.date < snapshot_date]
+	if not past.empty:
+		return past.iloc[-1]
 
-st.markdown(
-	"""
-	<div class="note-card">
-		<strong>Lectura ejecutiva</strong><br>
-		El tablero separa lo ya ganado del saldo recuperable. Cuando un mes o trimestre todavía tiene facturas pendientes, ese valor queda marcado como <strong>bloqueado por cartera</strong> y no se suma a la recomposición automática hasta que el riesgo operativo desaparezca.
-	</div>
-	""",
-	unsafe_allow_html=True,
-)
+	return period_df.iloc[0]
 
-overview_tab, monthly_tab, quarter_tab, invoices_tab, diagnostics_tab = st.tabs(
-	["📊 Dirección", "🗓️ Mes a mes", "📦 Trimestre y recomposición", "📑 Facturas y fuente", "🛰️ Diagnóstico"]
-)
 
-with overview_tab:
-	st.subheader("Ritmo del ciclo")
-	chart_df = monthly_df.set_index("Mes")[["Compra_Aplicable", "Presupuesto_Escala_1", "Presupuesto_Escala_2"]]
-	st.line_chart(chart_df, width="stretch")
+def render_provider_sync_panel(provider_config: dict[str, Any]) -> None:
+	sync_col, sync_info_col = st.columns([1, 2])
+	with sync_col:
+		if st.button(f"🔄 Sincronizar facturas de {provider_config['label']}", type="primary", width="stretch", key=f"sync_{provider_config['key']}"):
+			run_provider_sync(provider_config)
+			st.cache_data.clear()
+			st.rerun()
+	with sync_info_col:
+		last_sync_key = get_last_sync_key(provider_config)
+		if last_sync_key in st.session_state:
+			st.success(f"Última foto guardada: {st.session_state[last_sync_key]}")
+		else:
+			st.info(f"Aún no hay una foto guardada para {provider_config['label']}. Usa la sincronización para crear la primera foto del ciclo.")
 
-	overview_col1, overview_col2 = st.columns([1.2, 1])
-	with overview_col1:
-		st.markdown(
-			f"""
-			<div class="section-card">
-				<strong>Mes actual: {current_month['Mes']}</strong><br><br>
-				Base aplicable: <strong>{format_currency(float(current_month['Compra_Aplicable']))}</strong><br>
-				Presupuesto Escala 1: <strong>{format_currency(float(current_month['Presupuesto_Escala_1']))}</strong><br>
-				Presupuesto Escala 2: <strong>{format_currency(float(current_month['Presupuesto_Escala_2']))}</strong><br>
-				Faltante a E1: <strong>{format_currency(float(current_month['Faltante_E1']))}</strong><br>
-				Faltante a E2: <strong>{format_currency(float(current_month['Faltante_E2']))}</strong><br>
-				Escala lograda: {pill_html(str(current_month['Escala_Lograda']), get_scale_tone(str(current_month['Escala_Lograda'])))}
-			</div>
-			""",
-			unsafe_allow_html=True,
-		)
-	with overview_col2:
-		st.markdown(
-			f"""
-			<div class="section-card">
-				<strong>{current_quarter}</strong><br><br>
-				Compra aplicable: <strong>{format_currency(float(current_quarter_row['Compra_Aplicable']))}</strong><br>
-				Rebate trimestral ganado: <strong>{format_currency(float(current_quarter_row['Rebate_Trimestral_Ganado']))}</strong><br>
-				Recomposición trimestral elegible: <strong>{format_currency(float(current_quarter_row['Recomposicion_Trimestral_Proyectada']))}</strong><br>
-				Recomposición bloqueada por cartera: <strong>{format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}</strong><br>
-				Escala lograda: {pill_html(str(current_quarter_row['Escala_Lograda']), get_scale_tone(str(current_quarter_row['Escala_Lograda'])))}
-			</div>
-			""",
-			unsafe_allow_html=True,
+	stats_key = get_last_sync_stats_key(provider_config)
+	if stats_key in st.session_state:
+		sync_stats = st.session_state[stats_key]
+		st.caption(
+			" | ".join(
+				[
+					f"Correos encontrados: {sync_stats.get('emails_found', 0)}",
+					f"Correos procesados: {sync_stats.get('emails_processed', 0)}",
+					f"Adjuntos revisados: {sync_stats.get('attachments_scanned', 0)}",
+					f"XML leídos: {sync_stats.get('xml_files_scanned', 0)}",
+					f"Facturas detectadas: {sync_stats.get('invoice_rows_detected', 0)}",
+				]
+			)
 		)
 
-	st.subheader("Resumen ejecutivo del ciclo")
-	st.dataframe(
-		summary_df,
-		width="stretch",
-		hide_index=True,
-		column_config={
-			"Compra_Neta": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
-			"Exclusion_12": st.column_config.NumberColumn("12% excluido", format="$ %,.0f"),
-			"Compra_Aplicable": st.column_config.NumberColumn("88% aplicable", format="$ %,.0f"),
-			"Presupuesto_Escala_1": st.column_config.NumberColumn("Escala 1", format="$ %,.0f"),
-			"Presupuesto_Escala_2": st.column_config.NumberColumn("Escala 2", format="$ %,.0f"),
-			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
-			"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
-			"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
-		},
-	)
 
-with monthly_tab:
-	st.subheader("Seguimiento mensual")
-	monthly_display_df = monthly_df[
-		[
-			"Mes",
-			"Trimestre",
-			"Compra_Aplicable",
-			"Presupuesto_Escala_1",
-			"Presupuesto_Escala_2",
-			"Cumplimiento_E1",
-			"Cumplimiento_E2",
-			"Faltante_E1",
-			"Faltante_E2",
-			"Escala_Lograda",
-			"Estado_Mes",
-			"Compra_Hasta_Corte",
-			"Meta_Estacionalidad",
-			"Avance_Estacionalidad",
-			"Estado_Estacionalidad",
-			"Rebate_Mensual_Ganado",
-			"Bono_Estacionalidad",
-			"Pendiente_Cartera",
-		]
-	]
-	st.dataframe(
-		monthly_display_df,
-		width="stretch",
-		hide_index=True,
-		column_config={
-			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
-			"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
-			"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
-			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
-			"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
-			"Compra_Hasta_Corte": st.column_config.NumberColumn("Compra al corte", format="$ %,.0f"),
-			"Meta_Estacionalidad": st.column_config.NumberColumn("Meta estacionalidad", format="$ %,.0f"),
-			"Avance_Estacionalidad": st.column_config.ProgressColumn("Avance estacionalidad", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
-			"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
-			"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
-		},
-	)
-	st.bar_chart(monthly_df.set_index("Mes")[["Rebate_Mensual_Ganado", "Bono_Estacionalidad"]], width="stretch")
+def build_abracol_tracking_table(df: pd.DataFrame, budget_df: pd.DataFrame, snapshot_date: date) -> pd.DataFrame:
+	rows = []
+	working_df = df.copy()
 
-with quarter_tab:
-	st.subheader("Cumplimiento trimestral y recuperación")
-	st.dataframe(
-		quarterly_df,
-		width="stretch",
-		hide_index=True,
-		column_config={
-			"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
-			"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
-			"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
-			"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
-			"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
-			"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
-			"Rebate_Trimestral_Ganado": st.column_config.NumberColumn("Rebate trimestral", format="$ %,.0f"),
-			"Recomposicion_Trimestral_Proyectada": st.column_config.NumberColumn("Recuperable", format="$ %,.0f"),
-			"Recomposicion_Cartera_Bloqueada": st.column_config.NumberColumn("Bloqueado cartera", format="$ %,.0f"),
-		},
-	)
-	st.bar_chart(quarterly_df.set_index("Trimestre")[["Rebate_Trimestral_Ganado", "Recomposicion_Trimestral_Proyectada", "Recomposicion_Cartera_Bloqueada"]], width="stretch")
+	for _, budget_row in budget_df.iterrows():
+		start = pd.Timestamp(budget_row["Inicio"])
+		end = pd.Timestamp(budget_row["Fin"])
+		period_df = working_df[
+			(working_df["Fecha_Factura"].dt.date >= start.date())
+			& (working_df["Fecha_Factura"].dt.date <= end.date())
+		].copy()
 
-	st.markdown(
-		f"""
-		<div class="section-card">
-			<strong>Recomposición 9 meses</strong><br><br>
-			Escala acumulada al ritmo actual: {pill_html(cycle_outlook['Escala_Ciclo'], get_scale_tone(cycle_outlook['Escala_Ciclo']))}<br><br>
-			Recuperable proyectado: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Proyectada'])}</strong><br>
-			Bloqueado por cartera: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}</strong><br>
-			Faltante ciclo a E2: <strong>{format_currency(cycle_outlook['Faltante_E2_Ciclo'])}</strong>
-		</div>
-		""",
-		unsafe_allow_html=True,
-	)
+		actual_sales = float(period_df["Valor_Neto"].sum()) if not period_df.empty else 0.0
+		pending_value = float(period_df.loc[period_df["Estado_Pago"] == "Pendiente", "Valor_Neto"].sum()) if not period_df.empty else 0.0
+		rebate_actual = actual_sales * ABRACOL_REBATE_RATE
+		iva_actual = rebate_actual * VAT_RATE
+		total_actual = rebate_actual + iva_actual
+		budget_rebate = float(budget_row["Meta_2026"]) * ABRACOL_REBATE_RATE
 
-with invoices_tab:
+		if snapshot_date < start.date():
+			status = "Futuro"
+		elif actual_sales >= float(budget_row["Meta_2026"]):
+			status = "Cumplido"
+		elif snapshot_date <= end.date():
+			status = "Abierto"
+		else:
+			status = "No cumplido"
+
+		rows.append(
+			{
+				"Periodo": budget_row["Periodo"],
+				"Inicio": start,
+				"Fin": end,
+				"Ventas_2025": float(budget_row["Ventas_2025"]),
+				"Meta_2026": float(budget_row["Meta_2026"]),
+				"Ventas_Actuales_2026": actual_sales,
+				"Cumplimiento_Meta": safe_divide(actual_sales, float(budget_row["Meta_2026"])),
+				"Crecimiento_vs_2025": safe_divide(actual_sales, float(budget_row["Ventas_2025"])) - 1 if float(budget_row["Ventas_2025"]) else 0.0,
+				"Faltante_Meta": max(float(budget_row["Meta_2026"]) - actual_sales, 0.0),
+				"Rebate_Presupuestado": budget_rebate,
+				"Rebate_Actual": rebate_actual,
+				"IVA_Actual": iva_actual,
+				"Total_Actual": total_actual,
+				"Pendiente_Cartera": pending_value,
+				"Rebate_Bloqueado": pending_value * ABRACOL_REBATE_RATE,
+				"Estado_Periodo": status,
+				"Facturas": int(period_df["Numero_Factura"].nunique()) if not period_df.empty else 0,
+			}
+		)
+
+	return pd.DataFrame(rows)
+
+
+def resolve_goya_tier(actual_sales: float, budget_row: pd.Series) -> tuple[str, float, float, str, float]:
+	if actual_sales >= float(budget_row["Meta_50"]):
+		return "50%", 0.50, 0.04, "Meta máxima alcanzada", 0.0
+	if actual_sales >= float(budget_row["Meta_40"]):
+		return "40%", 0.40, 0.035, "50%", max(float(budget_row["Meta_50"]) - actual_sales, 0.0)
+	if actual_sales >= float(budget_row["Meta_30"]):
+		return "30%", 0.30, 0.025, "40%", max(float(budget_row["Meta_40"]) - actual_sales, 0.0)
+	if actual_sales >= float(budget_row["Meta_20"]):
+		return "20%", 0.20, 0.02, "30%", max(float(budget_row["Meta_30"]) - actual_sales, 0.0)
+	return "Sin escala", 0.0, 0.0, "20%", max(float(budget_row["Meta_20"]) - actual_sales, 0.0)
+
+
+def build_goya_tracking_table(df: pd.DataFrame, budget_df: pd.DataFrame, snapshot_date: date) -> pd.DataFrame:
+	rows = []
+	working_df = df.copy()
+
+	for _, budget_row in budget_df.iterrows():
+		start = pd.Timestamp(budget_row["Inicio"])
+		end = pd.Timestamp(budget_row["Fin"])
+		period_df = working_df[
+			(working_df["Fecha_Factura"].dt.date >= start.date())
+			& (working_df["Fecha_Factura"].dt.date <= end.date())
+		].copy()
+
+		actual_sales = float(period_df["Valor_Neto"].sum()) if not period_df.empty else 0.0
+		pending_value = float(period_df.loc[period_df["Estado_Pago"] == "Pendiente", "Valor_Neto"].sum()) if not period_df.empty else 0.0
+		tier_label, growth_target, rebate_rate, next_target_label, missing_to_next = resolve_goya_tier(actual_sales, budget_row)
+		rebate_actual = actual_sales * rebate_rate
+
+		if snapshot_date < start.date():
+			status = "Futuro"
+		elif tier_label != "Sin escala":
+			status = "Cumplido"
+		elif snapshot_date <= end.date():
+			status = "Abierto"
+		else:
+			status = "No cumplido"
+
+		rows.append(
+			{
+				"Periodo": budget_row["Periodo"],
+				"Inicio": start,
+				"Fin": end,
+				"Ventas_2024": float(budget_row["Ventas_2024"]),
+				"Base_2025": float(budget_row["Base_2025"]),
+				"Meta_20": float(budget_row["Meta_20"]),
+				"Meta_30": float(budget_row["Meta_30"]),
+				"Meta_40": float(budget_row["Meta_40"]),
+				"Meta_50": float(budget_row["Meta_50"]),
+				"Ventas_Actuales_2026": actual_sales,
+				"Crecimiento_Actual": safe_divide(actual_sales, float(budget_row["Base_2025"])) - 1 if float(budget_row["Base_2025"]) else 0.0,
+				"Escala_Lograda": tier_label,
+				"Meta_Crecimiento_Lograda": growth_target,
+				"Rebate_Pct": rebate_rate,
+				"Rebate_Ganado": rebate_actual,
+				"Pendiente_Cartera": pending_value,
+				"Rebate_Bloqueado": pending_value * rebate_rate,
+				"Siguiente_Meta": next_target_label,
+				"Faltante_Siguiente_Meta": missing_to_next,
+				"Estado_Periodo": status,
+				"Facturas": int(period_df["Numero_Factura"].nunique()) if not period_df.empty else 0,
+			}
+		)
+
+	return pd.DataFrame(rows)
+
+
+def render_provider_invoice_tab(provider_config: dict[str, Any], provider_df: pd.DataFrame, snapshot_date: date, show_exclusion_columns: bool = False) -> None:
 	st.subheader("Base factura por factura")
+	cycle_start = provider_config["cycle_start"]
 	filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1.4])
 	with filter_col1:
-		filter_start = st.date_input("Desde", value=CURRENT_CYCLE_START, min_value=CURRENT_CYCLE_START, max_value=snapshot_date, key="rebate_from")
+		filter_start = st.date_input("Desde", value=cycle_start, min_value=cycle_start, max_value=snapshot_date, key=f"{provider_config['key']}_from")
 	with filter_col2:
-		filter_end = st.date_input("Hasta", value=snapshot_date, min_value=CURRENT_CYCLE_START, max_value=snapshot_date, key="rebate_to")
+		filter_end = st.date_input("Hasta", value=snapshot_date, min_value=cycle_start, max_value=snapshot_date, key=f"{provider_config['key']}_to")
 	with filter_col3:
 		estado_options = ["Pendiente", "Pagada"]
-		estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options, key="rebate_state")
+		estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options, key=f"{provider_config['key']}_state")
 	with filter_col4:
-		search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto", key="rebate_search")
+		search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto", key=f"{provider_config['key']}_search")
 
 	if filter_end < filter_start:
 		st.error("La fecha final no puede ser menor que la fecha inicial.")
 		st.stop()
 
-	filtered_df = pintuco_df[
-		(pintuco_df["Fecha_Factura"].dt.date >= filter_start) & (pintuco_df["Fecha_Factura"].dt.date <= filter_end)
+	filtered_df = provider_df[
+		(provider_df["Fecha_Factura"].dt.date >= filter_start) & (provider_df["Fecha_Factura"].dt.date <= filter_end)
 	].copy()
 
 	if estado_filter:
@@ -1256,31 +1310,31 @@ with invoices_tab:
 
 	if filtered_df.empty:
 		st.warning("No hay facturas en el rango seleccionado.")
-	else:
-		display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
-		st.dataframe(
-			display_df,
-			width="stretch",
-			hide_index=True,
-			column_config={
-				"Fecha_Factura": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
-				"Valor_Neto": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
-				"Compra_Excluida_12": st.column_config.NumberColumn("12% excluido", format="$ %,.0f"),
-				"Compra_Aplicable_Rebate": st.column_config.NumberColumn("88% aplicable", format="$ %,.0f"),
-				"Fecha_Recepcion_Correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
-				"Estado_Pago": st.column_config.TextColumn("Estado de pago"),
-			},
-		)
+		return
 
-with diagnostics_tab:
+	display_df = sort_invoice_dataframe(filtered_df, by=["Fecha_Factura", "Fecha_Recepcion_Correo"], ascending=[False, False])
+	column_config = {
+		"Fecha_Factura": st.column_config.DateColumn("Fecha factura", format="YYYY-MM-DD"),
+		"Valor_Neto": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
+		"Fecha_Recepcion_Correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+		"Estado_Pago": st.column_config.TextColumn("Estado de pago"),
+	}
+	if show_exclusion_columns:
+		column_config["Compra_Excluida_12"] = st.column_config.NumberColumn("12% excluido", format="$ %,.0f")
+		column_config["Compra_Aplicable_Rebate"] = st.column_config.NumberColumn("88% aplicable", format="$ %,.0f")
+
+	st.dataframe(display_df, width="stretch", hide_index=True, column_config=column_config)
+
+
+def render_provider_diagnostics_tab(provider_label: str, provider_df: pd.DataFrame, alerts: list[str], export_sheets: list[tuple[str, pd.DataFrame]], file_name: str) -> None:
 	st.subheader("Diagnóstico operativo y descarga")
-	unique_senders = pintuco_df["Remitente_Correo"].replace("", pd.NA).dropna().nunique()
-	unique_subjects = pintuco_df["Asunto_Correo"].replace("", pd.NA).dropna().nunique()
-	duplicate_invoices = pintuco_df["Numero_Factura"].duplicated().sum()
+	unique_senders = provider_df["Remitente_Correo"].replace("", pd.NA).dropna().nunique()
+	unique_subjects = provider_df["Asunto_Correo"].replace("", pd.NA).dropna().nunique()
+	duplicate_invoices = provider_df["Numero_Factura"].duplicated().sum()
 	trazabilidad_completa = (
-		pintuco_df["Fecha_Recepcion_Correo"].notna()
-		& pintuco_df["Remitente_Correo"].fillna("").astype(str).str.strip().ne("")
-		& pintuco_df["Message_ID"].fillna("").astype(str).str.strip().ne("")
+		provider_df["Fecha_Recepcion_Correo"].notna()
+		& provider_df["Remitente_Correo"].fillna("").astype(str).str.strip().ne("")
+		& provider_df["Message_ID"].fillna("").astype(str).str.strip().ne("")
 	).mean()
 
 	render_kpi_grid(
@@ -1292,15 +1346,544 @@ with diagnostics_tab:
 		]
 	)
 
-	st.markdown("Alertas del seguimiento")
-	for alert in tracking_alerts:
+	st.markdown(f"Alertas del seguimiento de {provider_label}")
+	for alert in alerts:
 		if "no se detectan alertas" in alert.lower():
 			st.success(alert)
 		else:
 			st.warning(alert)
 
-	executive_export_df = pd.DataFrame(
+	excel_data = generate_excel_report_from_sheets(export_sheets)
+	st.download_button(
+		label="⬇️ Descargar consolidado ejecutivo del rebate",
+		data=excel_data,
+		file_name=file_name,
+		mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		width="stretch",
+	)
+
+
+def render_abracol_dashboard(provider_config: dict[str, Any]) -> None:
+	st.markdown(
+		f"""
+		<div class="pintuco-banner">
+			<h1>{provider_config['title']}</h1>
+			<p>{provider_config['cycle_name']}. Seguimiento bimestral del rebate Gold de Abracol, con cruce de correo y ERP para ver ventas, cumplimiento, rebate y total con IVA.</p>
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	st.markdown(
+		"""
+		<div class="info-card">
+			<strong>Reglas comerciales activas</strong><br>
+			1. Abracol liquida <strong>6%</strong> por bimestre sobre venta neta facturada.<br>
+			2. La <strong>nota se reconoce antes de IVA</strong>; el tablero muestra rebate bruto, IVA estimado y total de la nota.<br>
+			3. La cuota comercial 2026 se compara contra la meta bimestral definida en el cuadro cargado por Ferreinox.<br>
+			4. El cruce de cartera separa el valor ya facturado del valor aún pendiente de pago para lectura financiera.
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	render_provider_sync_panel(provider_config)
+	abracol_df = load_provider_data_from_gsheet(provider_config["worksheet_name"], provider_config["cycle_start"], provider_config["excluded_purchase_percent"])
+	if abracol_df.empty:
+		st.warning("No hay datos de Abracol para el ciclo vigente. Ejecuta la sincronización inicial.")
+		return
+
+	snapshot_date = datetime.now(COLOMBIA_TZ).date()
+	period_df = build_abracol_tracking_table(abracol_df, provider_config["budget_df"], snapshot_date)
+	tracking_alerts = build_tracking_alerts(abracol_df)
+	current_period = get_current_period_row(period_df, snapshot_date)
+	ventas_acumuladas = float(period_df["Ventas_Actuales_2026"].sum())
+	meta_total = float(period_df["Meta_2026"].sum())
+	rebate_total = float(period_df["Rebate_Actual"].sum())
+	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
+
+	render_kpi_grid(
 		[
+			kpi_card_html("Ventas 2026 facturadas", format_currency(ventas_acumuladas), f"Cumplimiento anual: {format_percent(safe_divide(ventas_acumuladas, meta_total))}", "navy"),
+			kpi_card_html("Bimestre actual", str(current_period["Periodo"]), f"Cumplimiento meta: {format_percent(float(current_period['Cumplimiento_Meta']))}", get_scale_tone(str(current_period["Estado_Periodo"]))),
+			kpi_card_html("Rebate bruto estimado", format_currency(rebate_total), f"Abracol 6.0% antes de IVA", "green"),
+			kpi_card_html("Rebate bloqueado cartera", format_currency(rebate_blocked), f"Pendiente cartera: {format_currency(float(period_df['Pendiente_Cartera'].sum()))}", "gold"),
+		]
+	)
+
+	render_kpi_grid(
+		[
+			kpi_card_html("Meta bimestre actual", format_currency(float(current_period["Meta_2026"])), f"Ventas 2025: {format_currency(float(current_period['Ventas_2025']))}", "navy"),
+			kpi_card_html("Ventas actuales", format_currency(float(current_period["Ventas_Actuales_2026"])), f"Crecimiento vs 2025: {format_percent(float(current_period['Crecimiento_vs_2025']))}", "green"),
+			kpi_card_html("IVA estimado nota", format_currency(float(current_period["IVA_Actual"])), f"Total con IVA: {format_currency(float(current_period['Total_Actual']))}", "gold"),
+			kpi_card_html("Estado del periodo", str(current_period["Estado_Periodo"]), f"Faltante meta: {format_currency(float(current_period['Faltante_Meta']))}", get_scale_tone(str(current_period["Estado_Periodo"]))),
+		]
+	)
+
+	st.markdown(
+		"""
+		<div class="note-card">
+			<strong>Lectura ejecutiva</strong><br>
+			Abracol se presenta contra su cuota bimestral. El tablero muestra cuánto de la meta ya está facturado, cuánto rebate bruto genera ese volumen y cuánto está todavía bloqueado por cartera pendiente.
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	overview_tab, period_tab, invoices_tab, diagnostics_tab = st.tabs(["📊 Dirección", "🗓️ Bimestres", "📑 Facturas y fuente", "🛰️ Diagnóstico"])
+
+	with overview_tab:
+		st.subheader("Ritmo bimestral")
+		chart_df = period_df.set_index("Periodo")[["Ventas_Actuales_2026", "Meta_2026"]]
+		st.line_chart(chart_df, width="stretch")
+		overview_col1, overview_col2 = st.columns([1.2, 1])
+		with overview_col1:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>{current_period['Periodo']}</strong><br><br>
+					Meta 2026: <strong>{format_currency(float(current_period['Meta_2026']))}</strong><br>
+					Ventas actuales: <strong>{format_currency(float(current_period['Ventas_Actuales_2026']))}</strong><br>
+					Ventas 2025: <strong>{format_currency(float(current_period['Ventas_2025']))}</strong><br>
+					Faltante meta: <strong>{format_currency(float(current_period['Faltante_Meta']))}</strong><br>
+					Estado: {pill_html(str(current_period['Estado_Periodo']), get_scale_tone(str(current_period['Estado_Periodo'])))}
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+		with overview_col2:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>Rebate del periodo</strong><br><br>
+					Rebate bruto: <strong>{format_currency(float(current_period['Rebate_Actual']))}</strong><br>
+					IVA estimado: <strong>{format_currency(float(current_period['IVA_Actual']))}</strong><br>
+					Total con IVA: <strong>{format_currency(float(current_period['Total_Actual']))}</strong><br>
+					Bloqueado por cartera: <strong>{format_currency(float(current_period['Rebate_Bloqueado']))}</strong>
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+
+	with period_tab:
+		st.subheader("Seguimiento bimestral")
+		st.dataframe(
+			period_df[[
+				"Periodo",
+				"Ventas_2025",
+				"Meta_2026",
+				"Ventas_Actuales_2026",
+				"Cumplimiento_Meta",
+				"Crecimiento_vs_2025",
+				"Faltante_Meta",
+				"Rebate_Actual",
+				"IVA_Actual",
+				"Total_Actual",
+				"Pendiente_Cartera",
+				"Estado_Periodo",
+			]],
+			width="stretch",
+			hide_index=True,
+			column_config={
+				"Ventas_2025": st.column_config.NumberColumn("Ventas 2025", format="$ %,.0f"),
+				"Meta_2026": st.column_config.NumberColumn("Meta 2026", format="$ %,.0f"),
+				"Ventas_Actuales_2026": st.column_config.NumberColumn("Ventas actuales", format="$ %,.0f"),
+				"Cumplimiento_Meta": st.column_config.ProgressColumn("Cumplimiento", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Crecimiento_vs_2025": st.column_config.ProgressColumn("Crec. vs 2025", min_value=-0.2, max_value=0.5, format="%.0f%%"),
+				"Faltante_Meta": st.column_config.NumberColumn("Faltante meta", format="$ %,.0f"),
+				"Rebate_Actual": st.column_config.NumberColumn("Rebate", format="$ %,.0f"),
+				"IVA_Actual": st.column_config.NumberColumn("IVA", format="$ %,.0f"),
+				"Total_Actual": st.column_config.NumberColumn("Total", format="$ %,.0f"),
+				"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
+			},
+		)
+		st.bar_chart(period_df.set_index("Periodo")[["Rebate_Actual", "IVA_Actual"]], width="stretch")
+
+	with invoices_tab:
+		render_provider_invoice_tab(provider_config, abracol_df, snapshot_date)
+
+	with diagnostics_tab:
+		executive_export_df = pd.DataFrame([
+			{
+				"Foto": datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+				"Ventas_2026_Facturadas": ventas_acumuladas,
+				"Meta_2026_Anual": meta_total,
+				"Cumplimiento_Anual": safe_divide(ventas_acumuladas, meta_total),
+				"Rebate_Bruto_Estimado": rebate_total,
+				"Rebate_Bloqueado_Cartera": rebate_blocked,
+			}
+		])
+		render_provider_diagnostics_tab(
+			provider_config["label"],
+			abracol_df,
+			tracking_alerts,
+			[("Resumen_Ejecutivo", executive_export_df), ("Bimestres", period_df), ("Facturas_Abracol", abracol_df)],
+			f"Rebate_Abracol_Ejecutivo_{snapshot_date}.xlsx",
+		)
+
+
+def render_goya_dashboard(provider_config: dict[str, Any]) -> None:
+	st.markdown(
+		f"""
+		<div class="pintuco-banner">
+			<h1>{provider_config['title']}</h1>
+			<p>{provider_config['cycle_name']}. Seguimiento semestral del crecimiento Goya contra base 2025, con liquidación por escalas y control documental sobre correo y ERP.</p>
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	st.markdown(
+		f"""
+		<div class="info-card">
+			<strong>Reglas comerciales activas</strong><br>
+			1. Goya liquida rebate por <strong>semestre</strong>: enero-junio y julio-diciembre.<br>
+			2. La base de comparación es la venta 2025 del semestre; las escalas son <strong>20%, 30%, 40% y 50%</strong> de crecimiento.<br>
+			3. Porcentaje de rebate aplicado sobre la venta vigente: <strong>2.0%, 2.5%, 3.5% y 4.0%</strong>.<br>
+			4. El cálculo usa compras reales facturadas del periodo. Las condiciones estratégicas por mezcla de líneas se muestran como nota comercial, no como bloqueo automático.<br>
+			5. <strong>Nota documental:</strong> {provider_config['note']}
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	render_provider_sync_panel(provider_config)
+	goya_df = load_provider_data_from_gsheet(provider_config["worksheet_name"], provider_config["cycle_start"], provider_config["excluded_purchase_percent"])
+	if goya_df.empty:
+		st.warning("No hay datos de Goya para el ciclo vigente. Ejecuta la sincronización inicial.")
+		return
+
+	snapshot_date = datetime.now(COLOMBIA_TZ).date()
+	period_df = build_goya_tracking_table(goya_df, provider_config["budget_df"], snapshot_date)
+	tracking_alerts = build_tracking_alerts(goya_df)
+	current_period = get_current_period_row(period_df, snapshot_date)
+	ventas_acumuladas = float(period_df["Ventas_Actuales_2026"].sum())
+	base_total = float(period_df["Base_2025"].sum())
+	rebate_total = float(period_df["Rebate_Ganado"].sum())
+	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
+
+	render_kpi_grid(
+		[
+			kpi_card_html("Ventas 2026 facturadas", format_currency(ventas_acumuladas), f"Crecimiento consolidado: {format_percent(safe_divide(ventas_acumuladas, base_total) - 1 if base_total else 0.0)}", "navy"),
+			kpi_card_html("Semestre actual", str(current_period["Periodo"]), f"Escala lograda: {current_period['Escala_Lograda']}", get_scale_tone(str(current_period["Escala_Lograda"]))),
+			kpi_card_html("Rebate ganado", format_currency(rebate_total), f"Pagadero en producto según acuerdo", "green"),
+			kpi_card_html("Rebate bloqueado cartera", format_currency(rebate_blocked), f"Pendiente cartera: {format_currency(float(period_df['Pendiente_Cartera'].sum()))}", "gold"),
+		]
+	)
+
+	render_kpi_grid(
+		[
+			kpi_card_html("Base 2025 semestre", format_currency(float(current_period["Base_2025"])), f"Referencia 2024: {format_currency(float(current_period['Ventas_2024']))}", "navy"),
+			kpi_card_html("Ventas actuales semestre", format_currency(float(current_period["Ventas_Actuales_2026"])), f"Crecimiento actual: {format_percent(float(current_period['Crecimiento_Actual']))}", "green"),
+			kpi_card_html("Tasa rebate aplicada", format_percent(float(current_period["Rebate_Pct"]), 1), f"Siguiente meta: {current_period['Siguiente_Meta']}", "gold"),
+			kpi_card_html("Faltante siguiente meta", format_currency(float(current_period["Faltante_Siguiente_Meta"])), f"Estado: {current_period['Estado_Periodo']}", get_scale_tone(str(current_period["Estado_Periodo"]))),
+		]
+	)
+
+	st.markdown(
+		"""
+		<div class="note-card">
+			<strong>Lectura ejecutiva</strong><br>
+			El tablero compara cada semestre 2026 contra su base 2025, determina la escala lograda y proyecta el rebate sobre la venta facturada. Las condiciones estratégicas por mezcla de líneas y crecimiento en unidades quedan visibles como criterio comercial, pero no se bloquean automáticamente porque hoy no hay detalle SKU en la fuente documental.
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	overview_tab, period_tab, invoices_tab, diagnostics_tab = st.tabs(["📊 Dirección", "🗓️ Semestres", "📑 Facturas y fuente", "🛰️ Diagnóstico"])
+
+	with overview_tab:
+		st.subheader("Ritmo semestral")
+		chart_df = period_df.set_index("Periodo")[["Ventas_Actuales_2026", "Meta_20", "Meta_30", "Meta_40", "Meta_50"]]
+		st.line_chart(chart_df, width="stretch")
+		overview_col1, overview_col2 = st.columns([1.15, 1])
+		with overview_col1:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>{current_period['Periodo']}</strong><br><br>
+					Base 2025: <strong>{format_currency(float(current_period['Base_2025']))}</strong><br>
+					Ventas 2026: <strong>{format_currency(float(current_period['Ventas_Actuales_2026']))}</strong><br>
+					Meta 20%: <strong>{format_currency(float(current_period['Meta_20']))}</strong><br>
+					Meta 50%: <strong>{format_currency(float(current_period['Meta_50']))}</strong><br>
+					Escala lograda: {pill_html(str(current_period['Escala_Lograda']), get_scale_tone(str(current_period['Escala_Lograda'])))}
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+		with overview_col2:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>Condiciones comerciales visibles</strong><br><br>
+					Rebate ganado: <strong>{format_currency(float(current_period['Rebate_Ganado']))}</strong><br>
+					Bloqueado cartera: <strong>{format_currency(float(current_period['Rebate_Bloqueado']))}</strong><br>
+					Siguiente meta: <strong>{current_period['Siguiente_Meta']}</strong><br>
+					Faltante siguiente meta: <strong>{format_currency(float(current_period['Faltante_Siguiente_Meta']))}</strong>
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+
+	with period_tab:
+		st.subheader("Seguimiento semestral")
+		st.dataframe(
+			period_df[[
+				"Periodo",
+				"Ventas_2024",
+				"Base_2025",
+				"Ventas_Actuales_2026",
+				"Crecimiento_Actual",
+				"Meta_20",
+				"Meta_30",
+				"Meta_40",
+				"Meta_50",
+				"Escala_Lograda",
+				"Rebate_Pct",
+				"Rebate_Ganado",
+				"Pendiente_Cartera",
+				"Estado_Periodo",
+			]],
+			width="stretch",
+			hide_index=True,
+			column_config={
+				"Ventas_2024": st.column_config.NumberColumn("Ventas 2024", format="$ %,.0f"),
+				"Base_2025": st.column_config.NumberColumn("Base 2025", format="$ %,.0f"),
+				"Ventas_Actuales_2026": st.column_config.NumberColumn("Ventas 2026", format="$ %,.0f"),
+				"Crecimiento_Actual": st.column_config.ProgressColumn("Crecimiento", min_value=-0.2, max_value=0.6, format="%.0f%%"),
+				"Meta_20": st.column_config.NumberColumn("Meta 20%", format="$ %,.0f"),
+				"Meta_30": st.column_config.NumberColumn("Meta 30%", format="$ %,.0f"),
+				"Meta_40": st.column_config.NumberColumn("Meta 40%", format="$ %,.0f"),
+				"Meta_50": st.column_config.NumberColumn("Meta 50%", format="$ %,.0f"),
+				"Rebate_Pct": st.column_config.NumberColumn("% Rebate", format="%.1f%%"),
+				"Rebate_Ganado": st.column_config.NumberColumn("Rebate ganado", format="$ %,.0f"),
+				"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
+			},
+		)
+
+	with invoices_tab:
+		render_provider_invoice_tab(provider_config, goya_df, snapshot_date)
+
+	with diagnostics_tab:
+		executive_export_df = pd.DataFrame([
+			{
+				"Foto": datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+				"Ventas_2026_Facturadas": ventas_acumuladas,
+				"Base_2025_Acumulada": base_total,
+				"Crecimiento_Acumulado": safe_divide(ventas_acumuladas, base_total) - 1 if base_total else 0.0,
+				"Rebate_Ganado": rebate_total,
+				"Rebate_Bloqueado_Cartera": rebate_blocked,
+			}
+		])
+		render_provider_diagnostics_tab(
+			provider_config["label"],
+			goya_df,
+			tracking_alerts,
+			[("Resumen_Ejecutivo", executive_export_df), ("Semestres", period_df), ("Facturas_Goya", goya_df)],
+			f"Rebate_Goya_Ejecutivo_{snapshot_date}.xlsx",
+		)
+
+
+def render_pintuco_dashboard(provider_config: dict[str, Any]) -> None:
+	st.markdown(
+		f"""
+		<div class="pintuco-banner">
+			<h1>{provider_config['title']}</h1>
+			<p>{provider_config['cycle_name']}. Seguimiento comercial, financiero y operativo del presupuesto Ferreinox con lectura directa de facturas, estacionalidad, escalas, trimestre y recomposición.</p>
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	st.markdown(
+		"""
+		<div class="info-card">
+			<strong>Reglas comerciales activas</strong><br>
+			1. La base del cálculo es la compra neta menos el <strong>12% excluido</strong>; el rebate corre sobre el <strong>88% aplicable</strong>.<br>
+			2. Cada mes compara contra <strong>Escala 1</strong> y <strong>Escala 2</strong>; Escala 2 paga más que Escala 1.<br>
+			3. El pago mensual y trimestral se calcula sobre <strong>toda la compra aplicable del periodo</strong>, sin techo.<br>
+			4. Estacionalidad: si al cierre del <strong>tercer domingo</strong> del mes se alcanza al menos el <strong>90% de Escala 2</strong>, se gana un <strong>1% adicional</strong> sobre la compra aplicable del mes.<br>
+			5. La recomposición separa el saldo <strong>elegible</strong> del saldo <strong>bloqueado por cartera</strong> para no mezclar comercial con cobranza.
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	config = get_rebate_configuration()
+	budget_df = config["budget_df"]
+	snapshot_date = datetime.now(COLOMBIA_TZ).date()
+	render_provider_sync_panel(provider_config)
+
+	pintuco_df = load_pintuco_data_from_gsheet()
+	if pintuco_df.empty:
+		st.warning("No hay datos de Pintuco para el ciclo vigente. Ejecuta la sincronización inicial.")
+		return
+
+	monthly_df = build_monthly_rebate_table(pintuco_df, budget_df, config, snapshot_date)
+	quarterly_df = build_quarterly_rebate_table(monthly_df, config)
+	cycle_outlook = build_cycle_projection(monthly_df, budget_df, config, snapshot_date)
+	summary_df = build_cycle_summary(monthly_df)
+	tracking_alerts = build_tracking_alerts(pintuco_df)
+
+	current_month_start = pd.Timestamp(snapshot_date.replace(day=1))
+	current_month_df = monthly_df[monthly_df["Mes_Inicio"] == current_month_start]
+	if current_month_df.empty:
+		current_month_df = monthly_df.iloc[[0]]
+	current_month = current_month_df.iloc[0]
+	current_quarter = str(current_month["Trimestre"])
+	current_quarter_df = quarterly_df[quarterly_df["Trimestre"] == current_quarter]
+	if current_quarter_df.empty:
+		current_quarter_df = quarterly_df.iloc[[0]]
+	current_quarter_row = current_quarter_df.iloc[0]
+	rebate_total_ganado = float(monthly_df["Rebate_Mensual_Ganado"].sum() + monthly_df["Bono_Estacionalidad"].sum() + quarterly_df["Rebate_Trimestral_Ganado"].sum())
+
+	render_kpi_grid(
+		[
+			kpi_card_html("Compra aplicable acumulada", format_currency(cycle_outlook["Compra_Aplicable_Acumulada"]), f"Cumplimiento E2 acumulado: {format_percent(cycle_outlook['Cumplimiento_Acumulado_E2'])}", "navy"),
+			kpi_card_html("Escala actual del ciclo", cycle_outlook["Escala_Ciclo"], f"Faltante acumulado a E2: {format_currency(cycle_outlook['Faltante_E2_Actual'])}", get_scale_tone(cycle_outlook["Escala_Ciclo"])),
+			kpi_card_html("Rebate ganado a hoy", format_currency(rebate_total_ganado), "Mensual + trimestral + estacionalidad", "green"),
+			kpi_card_html("Bolsa 9M proyectada", format_currency(cycle_outlook["Recomposicion_9M_Proyectada"]), f"Bloqueada por cartera: {format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}", "gold"),
+		]
+	)
+
+	render_kpi_grid(
+		[
+			kpi_card_html("Mes actual", format_currency(float(current_month["Compra_Aplicable"])), f"{current_month['Mes']} · escala {current_month['Escala_Lograda']}", get_scale_tone(str(current_month["Escala_Lograda"]))),
+			kpi_card_html("Estacionalidad", str(current_month["Estado_Estacionalidad"]), f"Corte: {pd.Timestamp(current_month['Corte_Estacionalidad']).strftime('%Y-%m-%d')} · bono: {format_currency(float(current_month['Bono_Estacionalidad']))}", get_scale_tone(str(current_month["Estado_Estacionalidad"]))),
+			kpi_card_html("Trimestre actual", str(current_quarter_row["Escala_Lograda"]), f"{current_quarter} · faltante E2: {format_currency(float(current_quarter_row['Faltante_E2']))}", get_scale_tone(str(current_quarter_row["Escala_Lograda"]))),
+			kpi_card_html("Recomposición trimestral", format_currency(float(current_quarter_row["Recomposicion_Trimestral_Proyectada"])), f"Bloqueada cartera: {format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}", "gold"),
+		]
+	)
+
+	st.markdown(
+		"""
+		<div class="note-card">
+			<strong>Lectura ejecutiva</strong><br>
+			El tablero separa lo ya ganado del saldo recuperable. Cuando un mes o trimestre todavía tiene facturas pendientes, ese valor queda marcado como <strong>bloqueado por cartera</strong> y no se suma a la recomposición automática hasta que el riesgo operativo desaparezca.
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
+
+	overview_tab, monthly_tab, quarter_tab, invoices_tab, diagnostics_tab = st.tabs(["📊 Dirección", "🗓️ Mes a mes", "📦 Trimestre y recomposición", "📑 Facturas y fuente", "🛰️ Diagnóstico"])
+
+	with overview_tab:
+		st.subheader("Ritmo del ciclo")
+		chart_df = monthly_df.set_index("Mes")[["Compra_Aplicable", "Presupuesto_Escala_1", "Presupuesto_Escala_2"]]
+		st.line_chart(chart_df, width="stretch")
+		overview_col1, overview_col2 = st.columns([1.2, 1])
+		with overview_col1:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>Mes actual: {current_month['Mes']}</strong><br><br>
+					Base aplicable: <strong>{format_currency(float(current_month['Compra_Aplicable']))}</strong><br>
+					Presupuesto Escala 1: <strong>{format_currency(float(current_month['Presupuesto_Escala_1']))}</strong><br>
+					Presupuesto Escala 2: <strong>{format_currency(float(current_month['Presupuesto_Escala_2']))}</strong><br>
+					Faltante a E1: <strong>{format_currency(float(current_month['Faltante_E1']))}</strong><br>
+					Faltante a E2: <strong>{format_currency(float(current_month['Faltante_E2']))}</strong><br>
+					Escala lograda: {pill_html(str(current_month['Escala_Lograda']), get_scale_tone(str(current_month['Escala_Lograda'])))}
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+		with overview_col2:
+			st.markdown(
+				f"""
+				<div class="section-card">
+					<strong>{current_quarter}</strong><br><br>
+					Compra aplicable: <strong>{format_currency(float(current_quarter_row['Compra_Aplicable']))}</strong><br>
+					Rebate trimestral ganado: <strong>{format_currency(float(current_quarter_row['Rebate_Trimestral_Ganado']))}</strong><br>
+					Recomposición trimestral elegible: <strong>{format_currency(float(current_quarter_row['Recomposicion_Trimestral_Proyectada']))}</strong><br>
+					Recomposición bloqueada por cartera: <strong>{format_currency(float(current_quarter_row['Recomposicion_Cartera_Bloqueada']))}</strong><br>
+					Escala lograda: {pill_html(str(current_quarter_row['Escala_Lograda']), get_scale_tone(str(current_quarter_row['Escala_Lograda'])))}
+				</div>
+				""",
+				unsafe_allow_html=True,
+			)
+
+		st.subheader("Resumen ejecutivo del ciclo")
+		st.dataframe(
+			summary_df,
+			width="stretch",
+			hide_index=True,
+			column_config={
+				"Compra_Neta": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
+				"Exclusion_12": st.column_config.NumberColumn("12% excluido", format="$ %,.0f"),
+				"Compra_Aplicable": st.column_config.NumberColumn("88% aplicable", format="$ %,.0f"),
+				"Presupuesto_Escala_1": st.column_config.NumberColumn("Escala 1", format="$ %,.0f"),
+				"Presupuesto_Escala_2": st.column_config.NumberColumn("Escala 2", format="$ %,.0f"),
+				"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
+				"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
+				"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
+			},
+		)
+
+	with monthly_tab:
+		st.subheader("Seguimiento mensual")
+		monthly_display_df = monthly_df[["Mes", "Trimestre", "Compra_Aplicable", "Presupuesto_Escala_1", "Presupuesto_Escala_2", "Cumplimiento_E1", "Cumplimiento_E2", "Faltante_E1", "Faltante_E2", "Escala_Lograda", "Estado_Mes", "Compra_Hasta_Corte", "Meta_Estacionalidad", "Avance_Estacionalidad", "Estado_Estacionalidad", "Rebate_Mensual_Ganado", "Bono_Estacionalidad", "Pendiente_Cartera"]]
+		st.dataframe(
+			monthly_display_df,
+			width="stretch",
+			hide_index=True,
+			column_config={
+				"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
+				"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
+				"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
+				"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
+				"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
+				"Compra_Hasta_Corte": st.column_config.NumberColumn("Compra al corte", format="$ %,.0f"),
+				"Meta_Estacionalidad": st.column_config.NumberColumn("Meta estacionalidad", format="$ %,.0f"),
+				"Avance_Estacionalidad": st.column_config.ProgressColumn("Avance estacionalidad", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Rebate_Mensual_Ganado": st.column_config.NumberColumn("Rebate mensual", format="$ %,.0f"),
+				"Bono_Estacionalidad": st.column_config.NumberColumn("Bono estacionalidad", format="$ %,.0f"),
+				"Pendiente_Cartera": st.column_config.NumberColumn("Pendiente cartera", format="$ %,.0f"),
+			},
+		)
+		st.bar_chart(monthly_df.set_index("Mes")[["Rebate_Mensual_Ganado", "Bono_Estacionalidad"]], width="stretch")
+
+	with quarter_tab:
+		st.subheader("Cumplimiento trimestral y recuperación")
+		st.dataframe(
+			quarterly_df,
+			width="stretch",
+			hide_index=True,
+			column_config={
+				"Compra_Aplicable": st.column_config.NumberColumn("Compra aplicable", format="$ %,.0f"),
+				"Presupuesto_Escala_1": st.column_config.NumberColumn("Meta E1", format="$ %,.0f"),
+				"Presupuesto_Escala_2": st.column_config.NumberColumn("Meta E2", format="$ %,.0f"),
+				"Cumplimiento_E1": st.column_config.ProgressColumn("Cumpl. E1", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Cumplimiento_E2": st.column_config.ProgressColumn("Cumpl. E2", min_value=0.0, max_value=1.2, format="%.0f%%"),
+				"Faltante_E1": st.column_config.NumberColumn("Faltante E1", format="$ %,.0f"),
+				"Faltante_E2": st.column_config.NumberColumn("Faltante E2", format="$ %,.0f"),
+				"Rebate_Trimestral_Ganado": st.column_config.NumberColumn("Rebate trimestral", format="$ %,.0f"),
+				"Recomposicion_Trimestral_Proyectada": st.column_config.NumberColumn("Recuperable", format="$ %,.0f"),
+				"Recomposicion_Cartera_Bloqueada": st.column_config.NumberColumn("Bloqueado cartera", format="$ %,.0f"),
+			},
+		)
+		st.bar_chart(quarterly_df.set_index("Trimestre")[["Rebate_Trimestral_Ganado", "Recomposicion_Trimestral_Proyectada", "Recomposicion_Cartera_Bloqueada"]], width="stretch")
+		st.markdown(
+			f"""
+			<div class="section-card">
+				<strong>Recomposición 9 meses</strong><br><br>
+				Escala acumulada al ritmo actual: {pill_html(cycle_outlook['Escala_Ciclo'], get_scale_tone(cycle_outlook['Escala_Ciclo']))}<br><br>
+				Recuperable proyectado: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Proyectada'])}</strong><br>
+				Bloqueado por cartera: <strong>{format_currency(cycle_outlook['Recomposicion_9M_Bloqueada'])}</strong><br>
+				Faltante ciclo a E2: <strong>{format_currency(cycle_outlook['Faltante_E2_Ciclo'])}</strong>
+			</div>
+			""",
+			unsafe_allow_html=True,
+		)
+
+	with invoices_tab:
+		render_provider_invoice_tab(provider_config, pintuco_df, snapshot_date, show_exclusion_columns=True)
+
+	with diagnostics_tab:
+		executive_export_df = pd.DataFrame([
 			{
 				"Foto": datetime.now(COLOMBIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
 				"Compra_Aplicable_Acumulada": cycle_outlook["Compra_Aplicable_Acumulada"],
@@ -1313,14 +1896,24 @@ with diagnostics_tab:
 				"Recomposicion_9M_Proyectada": cycle_outlook["Recomposicion_9M_Proyectada"],
 				"Recomposicion_9M_Bloqueada": cycle_outlook["Recomposicion_9M_Bloqueada"],
 			}
-		]
-	)
-	excel_data = generate_excel_report(executive_export_df, monthly_df, quarterly_df, pintuco_df)
+		])
+		render_provider_diagnostics_tab(
+			provider_config["label"],
+			pintuco_df,
+			tracking_alerts,
+			[("Resumen_Ejecutivo", executive_export_df), ("Mes_a_Mes", monthly_df), ("Trimestres", quarterly_df), ("Facturas_Pintuco", pintuco_df)],
+			f"Rebate_Pintuco_Ejecutivo_{snapshot_date}.xlsx",
+		)
 
-	st.download_button(
-		label="⬇️ Descargar consolidado ejecutivo del rebate",
-		data=excel_data,
-		file_name=f"Rebate_Pintuco_Ejecutivo_{snapshot_date}.xlsx",
-		mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-		width="stretch",
-	)
+
+provider_configs = get_provider_configs()
+provider_tabs = st.tabs(["🎨 Pintuco", "🧱 Abracol", "🟦 Goya"])
+
+with provider_tabs[0]:
+	render_pintuco_dashboard(provider_configs["pintuco"])
+
+with provider_tabs[1]:
+	render_abracol_dashboard(provider_configs["abracol"])
+
+with provider_tabs[2]:
+	render_goya_dashboard(provider_configs["goya"])
