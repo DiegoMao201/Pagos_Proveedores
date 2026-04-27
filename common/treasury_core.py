@@ -41,6 +41,7 @@ SHEET_PAYMENT_PLAN = "Propuesta_Pagos"
 SHEET_PAYMENT_LOTS = "Lotes_Pago"
 SHEET_EMAIL_LOG = "Historial_Correos"
 SHEET_MANUAL_RECONCILIATION = "Conciliacion_Manual"
+SHEET_INVOICE_EXCLUSIONS = "Facturas_Excluidas"
 
 PENDING_COLUMNS = [
     "nombre_proveedor_erp",
@@ -146,6 +147,17 @@ MANUAL_RECONCILIATION_COLUMNS = [
     "notes",
 ]
 
+INVOICE_EXCLUSION_COLUMNS = [
+    "exclusion_id",
+    "created_at",
+    "invoice_key",
+    "proveedor_norm",
+    "num_factura",
+    "status",
+    "reason",
+    "source",
+]
+
 MASTER_OPTIONAL_DEFAULTS = {
     "invoice_key": "",
     "proveedor": "",
@@ -161,6 +173,8 @@ MASTER_OPTIONAL_DEFAULTS = {
     "manual_resolution_type": "",
     "manual_resolution_notes": "",
     "manual_resolution_target": "",
+    "exclusion_id": "",
+    "motivo_exclusion": "",
     "estado_erp": "No ERP",
     "estado_conciliacion": "Sin clasificar",
     "estado_vencimiento": "No aplica",
@@ -184,6 +198,7 @@ MASTER_OPTIONAL_DEFAULTS = {
     "fecha_programada_pago": pd.NaT,
     "estado_descuento": "No aplica",
     "registrada_para_pago": False,
+    "excluir_de_calculos": False,
     "riesgo_mora_48h": False,
     "dias_para_vencer": 0,
     "remitente_correo": "",
@@ -203,7 +218,7 @@ MASTER_OPTIONAL_DEFAULTS = {
 
 _NUMERIC_COLS = ["valor_erp", "valor_total_correo", "valor_base_correo", "valor_iva_correo", "valor_base_descuento", "diferencia_valor", "valor_descuento", "valor_a_pagar", "descuento_pct", "dias_para_vencer"]
 _DATETIME_COLS = ["fecha_limite_descuento", "fecha_vencimiento_erp", "fecha_emision_erp", "fecha_emision_correo", "fecha_vencimiento_correo", "fecha_recepcion_correo", "fecha_programada_pago"]
-_BOOLEAN_COLS = ["registrada_para_pago", "riesgo_mora_48h"]
+_BOOLEAN_COLS = ["registrada_para_pago", "excluir_de_calculos", "riesgo_mora_48h"]
 
 DISCOUNT_PROVIDERS = {
     "ABRACOL S.A.S": [{"days": 8, "rate": 0.04}],
@@ -1852,6 +1867,106 @@ def apply_manual_reconciliation_rules(master_df: pd.DataFrame, manual_df: pd.Dat
     return prepared
 
 
+def load_invoice_exclusion_df(client: gspread.Client) -> pd.DataFrame:
+    df = load_sheet_df(client, SHEET_INVOICE_EXCLUSIONS)
+    if df.empty:
+        return pd.DataFrame(columns=INVOICE_EXCLUSION_COLUMNS)
+
+    prepared = df.copy()
+    for column in INVOICE_EXCLUSION_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = ""
+    prepared["created_at"] = coerce_datetime(prepared["created_at"])
+    prepared["status"] = prepared["status"].fillna("").astype(str)
+    prepared["invoice_key"] = prepared["invoice_key"].fillna("").astype(str)
+    prepared["proveedor_norm"] = prepared["proveedor_norm"].fillna("").astype(str)
+    prepared["num_factura"] = prepared["num_factura"].fillna("").astype(str)
+    prepared["reason"] = prepared["reason"].fillna("").astype(str)
+    prepared["source"] = prepared["source"].fillna("").astype(str)
+    return prepared[INVOICE_EXCLUSION_COLUMNS]
+
+
+def register_invoice_exclusion(
+    client: gspread.Client,
+    invoice_key: str,
+    proveedor_norm: str,
+    num_factura: str,
+    reason: str = "",
+    source: str = "app",
+) -> bool:
+    invoice_key = str(invoice_key or "").strip()
+    if not invoice_key:
+        return False
+
+    exclusion_df = pd.DataFrame([
+        {
+            "exclusion_id": f"EXC-{uuid.uuid4().hex[:10].upper()}",
+            "created_at": pd.Timestamp.now(tz=COLOMBIA_TZ),
+            "invoice_key": invoice_key,
+            "proveedor_norm": str(proveedor_norm or "").strip(),
+            "num_factura": normalize_invoice_number(num_factura),
+            "status": "ACTIVO",
+            "reason": str(reason or "").strip(),
+            "source": str(source or "app").strip(),
+        }
+    ])
+    return append_df_to_sheet(client, SHEET_INVOICE_EXCLUSIONS, exclusion_df, INVOICE_EXCLUSION_COLUMNS)
+
+
+def deactivate_invoice_exclusion(client: gspread.Client, exclusion_id: str) -> bool:
+    exclusion_id = str(exclusion_id or "").strip()
+    if not exclusion_id:
+        return False
+
+    existing_df = load_invoice_exclusion_df(client)
+    if existing_df.empty:
+        return False
+
+    mask = existing_df["exclusion_id"].astype(str).eq(exclusion_id)
+    if not mask.any():
+        return False
+
+    existing_df.loc[mask, "status"] = "INACTIVO"
+    return save_df_to_sheet(client, SHEET_INVOICE_EXCLUSIONS, existing_df[INVOICE_EXCLUSION_COLUMNS])
+
+
+def apply_invoice_exclusion_rules(master_df: pd.DataFrame, exclusion_df: pd.DataFrame) -> pd.DataFrame:
+    if master_df.empty:
+        return master_df.copy()
+
+    prepared = ensure_master_dataframe_schema(master_df)
+    prepared["excluir_de_calculos"] = False
+    prepared["motivo_exclusion"] = ""
+    prepared["exclusion_id"] = ""
+
+    if exclusion_df.empty:
+        return prepared
+
+    active_exclusions = exclusion_df[exclusion_df["status"].astype(str).str.upper().eq("ACTIVO")].copy()
+    if active_exclusions.empty:
+        return prepared
+
+    active_exclusions.sort_values(by="created_at", inplace=True)
+    active_exclusions = active_exclusions.drop_duplicates(subset=["invoice_key"], keep="last")
+    exclusion_lookup = active_exclusions.set_index("invoice_key")
+    key_series = prepared.get("invoice_key", pd.Series(index=prepared.index, dtype=object)).fillna("").astype(str)
+    excluded_mask = key_series.isin(exclusion_lookup.index)
+    if not excluded_mask.any():
+        return prepared
+
+    prepared.loc[excluded_mask, "excluir_de_calculos"] = True
+    prepared.loc[excluded_mask, "motivo_exclusion"] = key_series[excluded_mask].map(exclusion_lookup["reason"]).fillna("")
+    prepared.loc[excluded_mask, "exclusion_id"] = key_series[excluded_mask].map(exclusion_lookup["exclusion_id"]).fillna("")
+    return prepared
+
+
+def build_operational_master_df(master_df: pd.DataFrame) -> pd.DataFrame:
+    prepared = ensure_master_dataframe_schema(master_df)
+    if prepared.empty or "excluir_de_calculos" not in prepared.columns:
+        return prepared
+    return prepared[~prepared["excluir_de_calculos"].fillna(False)].copy()
+
+
 def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
     if master_df.empty:
         return master_df.copy()
@@ -1971,6 +2086,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
     lot_history_df = load_sheet_df(gs_client, SHEET_PAYMENT_LOTS)
     email_log_df = load_sheet_df(gs_client, SHEET_EMAIL_LOG)
     manual_reconciliation_df = load_manual_reconciliation_df(gs_client)
+    invoice_exclusion_df = load_invoice_exclusion_df(gs_client)
     if force_full_rebuild:
         email_history_df = pd.DataFrame(columns=EMAIL_COLUMNS)
     save_provider_master(gs_client, provider_df)
@@ -2010,6 +2126,7 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         partial_master = build_master_dataframe(
             pending_df, paid_df, merged_email_df, provider_df, lot_history_df
         )
+        partial_master = apply_invoice_exclusion_rules(partial_master, invoice_exclusion_df)
         save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, partial_master)
         st.write(f"✅ Foto parcial guardada: {len(partial_master):,} registros (Dropbox + historial previo)")
     except Exception as exc:
@@ -2044,8 +2161,10 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
             pending_df, paid_df, merged_email_df, provider_df, lot_history_df
         )
         master_df = apply_manual_reconciliation_rules(master_df, manual_reconciliation_df)
-        payment_plan_df = build_payment_plan(master_df)
-        risk_alerts_df = build_risk_alerts(master_df)
+        master_df = apply_invoice_exclusion_rules(master_df, invoice_exclusion_df)
+        operational_master_df = build_operational_master_df(master_df)
+        payment_plan_df = build_payment_plan(operational_master_df)
+        risk_alerts_df = build_risk_alerts(operational_master_df)
         save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
         save_df_to_sheet(gs_client, SHEET_PAYMENT_PLAN, payment_plan_df)
         st.write(
@@ -2058,8 +2177,9 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         st.warning(f"⚠️ Error construyendo maestro final: {exc}")
         master_df = partial_master if not partial_master.empty else pd.DataFrame()
         master_df = ensure_master_dataframe_schema(master_df)
-        payment_plan_df = build_payment_plan(master_df)
-        risk_alerts_df = build_risk_alerts(master_df)
+        operational_master_df = build_operational_master_df(master_df)
+        payment_plan_df = build_payment_plan(operational_master_df)
+        risk_alerts_df = build_risk_alerts(operational_master_df)
         # Guardar aunque sea parcial
         try:
             save_df_to_sheet(gs_client, SHEET_MASTER_INVOICES, master_df)
@@ -2079,12 +2199,14 @@ def sync_treasury_data(force_full_rebuild: bool = False) -> dict:
         "email_history_df": merged_email_df,
         "pending_df": pending_df,
         "paid_df": paid_df,
-        "master_df": master_df,
+        "master_df": build_operational_master_df(master_df),
+        "master_df_all": master_df,
         "payment_plan_df": payment_plan_df,
         "risk_alerts_df": risk_alerts_df,
         "lot_history_df": lot_history_df,
         "email_log_df": email_log_df,
         "manual_reconciliation_df": manual_reconciliation_df,
+        "invoice_exclusion_df": invoice_exclusion_df,
         "sync_stats": sync_stats,
         "sync_started_from": start_date.strftime("%Y-%m-%d"),
         "sync_mode": "full_rebuild" if force_full_rebuild else "incremental",
@@ -2140,17 +2262,26 @@ def load_operational_payload() -> dict:
     except Exception:
         manual_reconciliation_df = pd.DataFrame(columns=MANUAL_RECONCILIATION_COLUMNS)
 
+    try:
+        invoice_exclusion_df = load_invoice_exclusion_df(gs_client)
+    except Exception:
+        invoice_exclusion_df = pd.DataFrame(columns=INVOICE_EXCLUSION_COLUMNS)
+
     master_df = apply_manual_reconciliation_rules(master_df, manual_reconciliation_df)
+    master_df = apply_invoice_exclusion_rules(master_df, invoice_exclusion_df)
+    operational_master_df = build_operational_master_df(master_df)
 
     payload = {
         "provider_df": provider_df,
         "email_history_df": email_history_df,
-        "master_df": master_df,
-        "payment_plan_df": build_payment_plan(master_df),
-        "risk_alerts_df": build_risk_alerts(master_df),
+        "master_df": operational_master_df,
+        "master_df_all": master_df,
+        "payment_plan_df": build_payment_plan(operational_master_df),
+        "risk_alerts_df": build_risk_alerts(operational_master_df),
         "lot_history_df": lot_history_df,
         "email_log_df": email_log_df,
         "manual_reconciliation_df": manual_reconciliation_df,
+        "invoice_exclusion_df": invoice_exclusion_df,
         "snapshot_source": "sheets_cache",
     }
     payload.update(infer_payload_snapshot_metadata(payload))

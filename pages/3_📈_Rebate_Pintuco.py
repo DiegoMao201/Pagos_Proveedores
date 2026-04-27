@@ -22,6 +22,14 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+from common.treasury_core import (
+	INVOICE_EXCLUSION_COLUMNS,
+	deactivate_invoice_exclusion,
+	load_invoice_exclusion_df,
+	normalize_supplier_key,
+	register_invoice_exclusion,
+)
+
 
 if "password_correct" not in st.session_state:
 	st.session_state["password_correct"] = False
@@ -130,6 +138,21 @@ INVOICE_COLUMNS = [
 	"Nombre_Adjunto",
 	"Message_ID",
 	"Estado_Pago",
+]
+
+PROVIDER_EXCLUSION_DISPLAY_COLUMNS = [
+	"Fecha_Factura",
+	"Numero_Factura",
+	"Valor_Neto",
+	"Estado_Pago",
+	"Fecha_Recepcion_Correo",
+	"Remitente_Correo",
+	"Asunto_Correo",
+	"Nombre_Adjunto",
+	"Message_ID",
+	"Excluir_De_Calculos",
+	"Motivo_Exclusion",
+	"Fecha_Exclusion",
 ]
 
 st.markdown(
@@ -724,6 +747,56 @@ def prepare_invoice_dataframe(df: pd.DataFrame, excluded_purchase_percent: float
 	return prepared
 
 
+@st.cache_data(ttl=120)
+def load_invoice_exclusion_registry() -> pd.DataFrame:
+	gs_client = connect_to_google_sheets()
+	if not gs_client:
+		return pd.DataFrame(columns=INVOICE_EXCLUSION_COLUMNS)
+	return load_invoice_exclusion_df(gs_client)
+
+
+def build_provider_invoice_key(provider_config: dict[str, Any], invoice_number: Any) -> str:
+	provider_norm = normalize_supplier_key(provider_config["provider_names_erp"][0])
+	return f"{provider_norm}|{normalize_invoice_number(invoice_number)}"
+
+
+def apply_provider_invoice_exclusions(provider_df: pd.DataFrame, provider_config: dict[str, Any], exclusion_df: pd.DataFrame) -> pd.DataFrame:
+	prepared = provider_df.copy()
+	prepared["Invoice_Key"] = prepared["Numero_Factura"].apply(lambda value: build_provider_invoice_key(provider_config, value))
+	prepared["Excluir_De_Calculos"] = False
+	prepared["Motivo_Exclusion"] = ""
+	prepared["Fecha_Exclusion"] = pd.NaT
+	prepared["Exclusion_ID"] = ""
+
+	if exclusion_df.empty:
+		return prepared
+
+	active_exclusions = exclusion_df[exclusion_df["status"].astype(str).str.upper().eq("ACTIVO")].copy()
+	if active_exclusions.empty:
+		return prepared
+
+	active_exclusions.sort_values(by="created_at", inplace=True)
+	active_exclusions = active_exclusions.drop_duplicates(subset=["invoice_key"], keep="last")
+	lookup = active_exclusions.set_index("invoice_key")
+	mask = prepared["Invoice_Key"].astype(str).isin(lookup.index)
+	if not mask.any():
+		return prepared
+
+	prepared.loc[mask, "Excluir_De_Calculos"] = True
+	prepared.loc[mask, "Motivo_Exclusion"] = prepared.loc[mask, "Invoice_Key"].map(lookup["reason"]).fillna("")
+	prepared.loc[mask, "Fecha_Exclusion"] = prepared.loc[mask, "Invoice_Key"].map(lookup["created_at"])
+	prepared.loc[mask, "Exclusion_ID"] = prepared.loc[mask, "Invoice_Key"].map(lookup["exclusion_id"]).fillna("")
+	return prepared
+
+
+def split_provider_dataset(provider_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+	prepared = provider_df.copy()
+	prepared["Excluir_De_Calculos"] = prepared.get("Excluir_De_Calculos", pd.Series(False, index=prepared.index)).astype(bool)
+	active_df = prepared[~prepared["Excluir_De_Calculos"]].copy()
+	excluded_df = prepared[prepared["Excluir_De_Calculos"]].copy()
+	return active_df, excluded_df
+
+
 def get_last_sync_key(provider_config: dict[str, Any]) -> str:
 	return f"last_{provider_config['key']}_sync"
 
@@ -1278,7 +1351,7 @@ def build_goya_tracking_table(df: pd.DataFrame, budget_df: pd.DataFrame, snapsho
 def render_provider_invoice_tab(provider_config: dict[str, Any], provider_df: pd.DataFrame, snapshot_date: date, show_exclusion_columns: bool = False) -> None:
 	st.subheader("Base factura por factura")
 	cycle_start = provider_config["cycle_start"]
-	filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1.4])
+	filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns([1, 1, 1, 1.1, 1.4])
 	with filter_col1:
 		filter_start = st.date_input("Desde", value=cycle_start, min_value=cycle_start, max_value=snapshot_date, key=f"{provider_config['key']}_from")
 	with filter_col2:
@@ -1287,15 +1360,29 @@ def render_provider_invoice_tab(provider_config: dict[str, Any], provider_df: pd
 		estado_options = ["Pendiente", "Pagada"]
 		estado_filter = st.multiselect("Estado de pago", options=estado_options, default=estado_options, key=f"{provider_config['key']}_state")
 	with filter_col4:
+		visibility_filter = st.selectbox("Visibilidad", options=["Activas", "Excluidas", "Todas"], index=0, key=f"{provider_config['key']}_visibility")
+	with filter_col5:
 		search_term = st.text_input("Buscar factura o correo", placeholder="Factura, remitente, asunto o adjunto", key=f"{provider_config['key']}_search")
 
 	if filter_end < filter_start:
 		st.error("La fecha final no puede ser menor que la fecha inicial.")
 		st.stop()
 
+	provider_df = provider_df.copy()
+	provider_df["Fecha_Exclusion"] = normalize_datetime_series(provider_df.get("Fecha_Exclusion", pd.Series(index=provider_df.index, dtype=object)))
+	provider_df["Excluir_De_Calculos"] = provider_df.get("Excluir_De_Calculos", pd.Series(False, index=provider_df.index)).astype(bool)
+	active_count = int((~provider_df["Excluir_De_Calculos"]).sum())
+	excluded_count = int(provider_df["Excluir_De_Calculos"].sum())
+	st.caption(f"Facturas activas: {active_count:,} · Facturas excluidas de cálculos: {excluded_count:,}")
+
 	filtered_df = provider_df[
 		(provider_df["Fecha_Factura"].dt.date >= filter_start) & (provider_df["Fecha_Factura"].dt.date <= filter_end)
 	].copy()
+
+	if visibility_filter == "Activas":
+		filtered_df = filtered_df[~filtered_df["Excluir_De_Calculos"]].copy()
+	elif visibility_filter == "Excluidas":
+		filtered_df = filtered_df[filtered_df["Excluir_De_Calculos"]].copy()
 
 	if estado_filter:
 		filtered_df = filtered_df[filtered_df["Estado_Pago"].isin(estado_filter)].copy()
@@ -1318,12 +1405,83 @@ def render_provider_invoice_tab(provider_config: dict[str, Any], provider_df: pd
 		"Valor_Neto": st.column_config.NumberColumn("Compra neta", format="$ %,.0f"),
 		"Fecha_Recepcion_Correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
 		"Estado_Pago": st.column_config.TextColumn("Estado de pago"),
+		"Excluir_De_Calculos": st.column_config.CheckboxColumn("Excluir"),
+		"Fecha_Exclusion": st.column_config.DatetimeColumn("Fecha exclusión", format="YYYY-MM-DD HH:mm"),
 	}
 	if show_exclusion_columns:
 		column_config["Compra_Excluida_12"] = st.column_config.NumberColumn("12% excluido", format="$ %,.0f")
 		column_config["Compra_Aplicable_Rebate"] = st.column_config.NumberColumn("88% aplicable", format="$ %,.0f")
 
-	st.dataframe(display_df, width="stretch", hide_index=True, column_config=column_config)
+	visible_columns = [column for column in PROVIDER_EXCLUSION_DISPLAY_COLUMNS if column in display_df.columns]
+	if show_exclusion_columns:
+		visible_columns.extend([column for column in ["Compra_Excluida_12", "Compra_Aplicable_Rebate"] if column in display_df.columns])
+
+	st.dataframe(display_df[visible_columns], width="stretch", hide_index=True, column_config=column_config)
+
+	st.markdown("---")
+	st.markdown("**Control de exclusiones**")
+	st.caption("Marca aquí las facturas promocionales o no operativas para que dejen de sumar en rebates y en el resto de vistas de la app. La exclusión queda guardada en Google Sheets y se puede revertir.")
+
+	active_candidates = sort_invoice_dataframe(provider_df[~provider_df["Excluir_De_Calculos"]].copy(), by=["Fecha_Factura", "Numero_Factura"], ascending=[False, False])
+	excluded_candidates = sort_invoice_dataframe(provider_df[provider_df["Excluir_De_Calculos"]].copy(), by=["Fecha_Exclusion", "Fecha_Factura"], ascending=[False, False])
+
+	manage_col1, manage_col2 = st.columns(2)
+	with manage_col1:
+		st.markdown("Excluir factura")
+		if active_candidates.empty:
+			st.info("No hay facturas activas disponibles para excluir.")
+		else:
+			exclude_options = {
+				f"{row['Numero_Factura']} | {row['Fecha_Factura'].date() if pd.notna(row['Fecha_Factura']) else 'Sin fecha'} | {format_currency(float(row['Valor_Neto']))}": row["Invoice_Key"]
+				for _, row in active_candidates.iterrows()
+			}
+			selected_exclude_label = st.selectbox("Factura a excluir", list(exclude_options.keys()), key=f"{provider_config['key']}_exclude_invoice")
+			exclude_reason = st.text_input("Motivo", value="Factura promocional / no tener en cuenta", key=f"{provider_config['key']}_exclude_reason")
+			selected_exclude_key = exclude_options[selected_exclude_label]
+			selected_exclude_row = active_candidates[active_candidates["Invoice_Key"] == selected_exclude_key].iloc[0]
+			if st.button("Guardar exclusión", type="primary", width="stretch", key=f"{provider_config['key']}_save_exclusion"):
+				gs_client = connect_to_google_sheets()
+				if not gs_client:
+					st.error("No fue posible conectar con Google Sheets para guardar la exclusión.")
+				elif register_invoice_exclusion(
+					gs_client,
+					invoice_key=selected_exclude_row["Invoice_Key"],
+					proveedor_norm=normalize_supplier_key(provider_config["provider_names_erp"][0]),
+					num_factura=selected_exclude_row["Numero_Factura"],
+					reason=exclude_reason,
+					source=f"rebate_{provider_config['key']}",
+				):
+					load_invoice_exclusion_registry.clear()
+					load_provider_data_from_gsheet.clear()
+					st.session_state.pop("treasury_payload", None)
+					st.success("Factura marcada para no tener en cuenta. Desde ahora deja de sumar en los cálculos de la app.")
+					st.rerun()
+				else:
+					st.error("No se pudo guardar la exclusión.")
+
+	with manage_col2:
+		st.markdown("Revertir exclusión")
+		if excluded_candidates.empty:
+			st.info("No hay facturas excluidas para este proveedor.")
+		else:
+			restore_options = {
+				f"{row['Numero_Factura']} | {row['Fecha_Factura'].date() if pd.notna(row['Fecha_Factura']) else 'Sin fecha'} | {row['Motivo_Exclusion'] or 'Sin motivo'}": row["Exclusion_ID"]
+				for _, row in excluded_candidates.iterrows()
+			}
+			selected_restore_label = st.selectbox("Factura a reincluir", list(restore_options.keys()), key=f"{provider_config['key']}_restore_invoice")
+			selected_restore_id = restore_options[selected_restore_label]
+			if st.button("Quitar exclusión", width="stretch", key=f"{provider_config['key']}_restore_exclusion"):
+				gs_client = connect_to_google_sheets()
+				if not gs_client:
+					st.error("No fue posible conectar con Google Sheets para revertir la exclusión.")
+				elif deactivate_invoice_exclusion(gs_client, selected_restore_id):
+					load_invoice_exclusion_registry.clear()
+					load_provider_data_from_gsheet.clear()
+					st.session_state.pop("treasury_payload", None)
+					st.success("La factura volvió a quedar activa en todos los cálculos.")
+					st.rerun()
+				else:
+					st.error("No se pudo revertir la exclusión.")
 
 
 def render_provider_diagnostics_tab(provider_label: str, provider_df: pd.DataFrame, alerts: list[str], export_sheets: list[tuple[str, pd.DataFrame]], file_name: str) -> None:
@@ -1388,14 +1546,20 @@ def render_abracol_dashboard(provider_config: dict[str, Any]) -> None:
 	)
 
 	render_provider_sync_panel(provider_config)
+	exclusion_df = load_invoice_exclusion_registry()
 	abracol_df = load_provider_data_from_gsheet(provider_config["worksheet_name"], provider_config["cycle_start"], provider_config["excluded_purchase_percent"])
+	abracol_df = apply_provider_invoice_exclusions(abracol_df, provider_config, exclusion_df)
 	if abracol_df.empty:
 		st.warning("No hay datos de Abracol para el ciclo vigente. Ejecuta la sincronización inicial.")
 		return
+	abracol_active_df, abracol_excluded_df = split_provider_dataset(abracol_df)
+	if abracol_active_df.empty and not abracol_excluded_df.empty:
+		st.warning("Todas las facturas visibles de Abracol quedaron excluidas de cálculos. Revisa la pestaña de facturas para reactivar las que sí deben contar.")
+		return
 
 	snapshot_date = datetime.now(COLOMBIA_TZ).date()
-	period_df = build_abracol_tracking_table(abracol_df, provider_config["budget_df"], snapshot_date)
-	tracking_alerts = build_tracking_alerts(abracol_df)
+	period_df = build_abracol_tracking_table(abracol_active_df, provider_config["budget_df"], snapshot_date)
+	tracking_alerts = build_tracking_alerts(abracol_active_df)
 	current_period = get_current_period_row(period_df, snapshot_date)
 	ventas_acumuladas = float(period_df["Ventas_Actuales_2026"].sum())
 	meta_total = float(period_df["Meta_2026"].sum())
@@ -1548,14 +1712,20 @@ def render_goya_dashboard(provider_config: dict[str, Any]) -> None:
 	)
 
 	render_provider_sync_panel(provider_config)
+	exclusion_df = load_invoice_exclusion_registry()
 	goya_df = load_provider_data_from_gsheet(provider_config["worksheet_name"], provider_config["cycle_start"], provider_config["excluded_purchase_percent"])
+	goya_df = apply_provider_invoice_exclusions(goya_df, provider_config, exclusion_df)
 	if goya_df.empty:
 		st.warning("No hay datos de Goya para el ciclo vigente. Ejecuta la sincronización inicial.")
 		return
+	goya_active_df, goya_excluded_df = split_provider_dataset(goya_df)
+	if goya_active_df.empty and not goya_excluded_df.empty:
+		st.warning("Todas las facturas visibles de Goya quedaron excluidas de cálculos. Revisa la pestaña de facturas para reactivar las que sí deben contar.")
+		return
 
 	snapshot_date = datetime.now(COLOMBIA_TZ).date()
-	period_df = build_goya_tracking_table(goya_df, provider_config["budget_df"], snapshot_date)
-	tracking_alerts = build_tracking_alerts(goya_df)
+	period_df = build_goya_tracking_table(goya_active_df, provider_config["budget_df"], snapshot_date)
+	tracking_alerts = build_tracking_alerts(goya_active_df)
 	current_period = get_current_period_row(period_df, snapshot_date)
 	ventas_acumuladas = float(period_df["Ventas_Actuales_2026"].sum())
 	base_total = float(period_df["Base_2025"].sum())
@@ -1714,16 +1884,22 @@ def render_pintuco_dashboard(provider_config: dict[str, Any]) -> None:
 	snapshot_date = datetime.now(COLOMBIA_TZ).date()
 	render_provider_sync_panel(provider_config)
 
+	exclusion_df = load_invoice_exclusion_registry()
 	pintuco_df = load_pintuco_data_from_gsheet()
+	pintuco_df = apply_provider_invoice_exclusions(pintuco_df, provider_config, exclusion_df)
 	if pintuco_df.empty:
 		st.warning("No hay datos de Pintuco para el ciclo vigente. Ejecuta la sincronización inicial.")
 		return
+	pintuco_active_df, pintuco_excluded_df = split_provider_dataset(pintuco_df)
+	if pintuco_active_df.empty and not pintuco_excluded_df.empty:
+		st.warning("Todas las facturas visibles de Pintuco quedaron excluidas de cálculos. Revisa la pestaña de facturas para reactivar las que sí deben contar.")
+		return
 
-	monthly_df = build_monthly_rebate_table(pintuco_df, budget_df, config, snapshot_date)
+	monthly_df = build_monthly_rebate_table(pintuco_active_df, budget_df, config, snapshot_date)
 	quarterly_df = build_quarterly_rebate_table(monthly_df, config)
 	cycle_outlook = build_cycle_projection(monthly_df, budget_df, config, snapshot_date)
 	summary_df = build_cycle_summary(monthly_df)
-	tracking_alerts = build_tracking_alerts(pintuco_df)
+	tracking_alerts = build_tracking_alerts(pintuco_active_df)
 
 	current_month_start = pd.Timestamp(snapshot_date.replace(day=1))
 	current_month_df = monthly_df[monthly_df["Mes_Inicio"] == current_month_start]

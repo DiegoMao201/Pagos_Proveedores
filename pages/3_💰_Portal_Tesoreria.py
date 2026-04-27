@@ -12,11 +12,13 @@ import streamlit as st
 from common.treasury_core import (
     DISCOUNT_PROVIDERS,
     connect_to_google_sheets,
+    deactivate_invoice_exclusion,
     ensure_authenticated,
     export_df_to_excel,
     format_currency,
     get_discount_summary_for_suppliers,
     load_operational_payload,
+    register_invoice_exclusion,
     register_manual_reconciliation,
     safe_display,
 )
@@ -164,7 +166,27 @@ master_df = ensure_columns(
         "condiciones_comerciales": "",
     },
 )
+master_df_all = ensure_columns(
+    payload.get("master_df_all", payload.get("master_df", pd.DataFrame())),
+    {
+        "detalle_conciliacion": "", "valor_descuento": 0.0, "valor_a_pagar": 0.0,
+        "valor_base_descuento": 0.0,
+        "origen_soporte": "",
+        "tipo_documento_correo": "FACTURA",
+        "documento_relacionado_correo": "",
+        "descripcion_nota_correo": "",
+        "factura_compensada_correo": "",
+        "proveedor_correo": "", "fecha_recepcion_correo": pd.NaT, "remitente_correo": "",
+        "valor_total_correo": 0.0, "estado_vencimiento": "", "estado_conciliacion": "",
+        "estado_erp": "", "riesgo_mora_48h": False, "dias_para_vencer": 0,
+        "descuento_pct": 0.0, "diferencia_valor": 0.0, "fecha_vencimiento_erp": pd.NaT,
+        "fecha_emision_erp": pd.NaT, "valor_erp": 0.0, "num_factura": "", "proveedor": "",
+        "condiciones_comerciales": "", "invoice_key": "", "proveedor_norm": "",
+        "excluir_de_calculos": False, "motivo_exclusion": "", "exclusion_id": "",
+    },
+)
 master_df = master_df[master_df["estado_erp"] != "Saldada"].copy() if not master_df.empty else master_df
+master_df_all = master_df_all[master_df_all["estado_erp"] != "Saldada"].copy() if not master_df_all.empty else master_df_all
 plan_df = ensure_columns(
     payload.get("payment_plan_df", pd.DataFrame()),
     {"valor_descuento": 0.0, "valor_a_pagar": 0.0, "valor_base_descuento": 0.0, "estado_vencimiento": "", "descuento_pct": 0.0},
@@ -275,19 +297,24 @@ selected_erp = filter_c4.multiselect(
 
 # Apply filters
 filtered_master = master_df.copy()
+filtered_master_all = master_df_all.copy()
 filtered_plan = plan_df.copy()
 filtered_alerts = alerts_df.copy()
 if selected_supplier != "Todos":
     filtered_master = filtered_master[filtered_master["proveedor"] == selected_supplier].copy()
+    filtered_master_all = filtered_master_all[filtered_master_all["proveedor"] == selected_supplier].copy()
     filtered_plan = filtered_plan[filtered_plan["proveedor"] == selected_supplier].copy() if "proveedor" in filtered_plan.columns else filtered_plan
     filtered_alerts = filtered_alerts[filtered_alerts["proveedor"] == selected_supplier].copy() if not filtered_alerts.empty and "proveedor" in filtered_alerts.columns else filtered_alerts
 if selected_status:
     filtered_master = filtered_master[filtered_master["estado_conciliacion"].isin(selected_status)].copy()
+    filtered_master_all = filtered_master_all[filtered_master_all["estado_conciliacion"].isin(selected_status)].copy()
 if selected_due:
     filtered_master = filtered_master[filtered_master["estado_vencimiento"].isin(selected_due)].copy()
+    filtered_master_all = filtered_master_all[filtered_master_all["estado_vencimiento"].isin(selected_due)].copy()
     filtered_plan = filtered_plan[filtered_plan["estado_vencimiento"].isin(selected_due)].copy() if "estado_vencimiento" in filtered_plan.columns else filtered_plan
 if selected_erp:
     filtered_master = filtered_master[filtered_master["estado_erp"].isin(selected_erp)].copy()
+    filtered_master_all = filtered_master_all[filtered_master_all["estado_erp"].isin(selected_erp)].copy()
 
 # Filtered KPIs
 if selected_supplier != "Todos" or selected_status or selected_due or selected_erp:
@@ -313,6 +340,10 @@ pay_now_df = filtered_master[
     & (filtered_master["estado_vencimiento"].isin(["🔴 Vencida", "🟠 Riesgo 48h", "🟡 Proxima a vencer"]))
 ].copy()
 only_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Solo correo"].copy()
+excluded_only_email_df = filtered_master_all[
+    filtered_master_all["estado_conciliacion"].eq("Solo correo")
+    & filtered_master_all["excluir_de_calculos"].fillna(False)
+].copy()
 heuristic_email_df = filtered_master[filtered_master["estado_conciliacion"] == "Correo heuristico"].copy()
 credit_note_recon_df = filtered_master[
     filtered_master["estado_conciliacion"].isin(["Solo correo compensado por NC", "NC/anulación compensada", "NC/anulación sin ERP"])
@@ -494,18 +525,85 @@ with tab_email:
     st.markdown('<div class="table-sub">Documentos XML detectados en el buzón que no aparecen en las fuentes ERP descargadas desde Dropbox.</div>', unsafe_allow_html=True)
 
     if only_email_df.empty:
-        st.success("No hay facturas con correo sin reflejo en ERP para este filtro.")
+        if excluded_only_email_df.empty:
+            st.success("No hay facturas con correo sin reflejo en ERP para este filtro.")
+        else:
+            st.info("No hay facturas activas en solo correo para este filtro, pero sí hay facturas que ya fueron excluidas desde este flujo.")
     else:
         ec1, ec2, ec3 = st.columns(3)
         ec1.metric("Facturas sin reflejo ERP", f"{len(only_email_df):,}")
         ec2.metric("Valor total correo", format_currency(only_email_df["valor_total_correo"].sum()))
-        ec3.metric("Heurístico excluido", f"{len(heuristic_email_df):,}")
+        ec3.metric("Ya excluidas", f"{len(excluded_only_email_df):,}")
         st.caption("Estas facturas no fueron encontradas en la cartera pendiente ni en la cartera saldada que la app descargó desde Dropbox.")
 
         st.dataframe(
             safe_display(only_email_df, [
                 "proveedor_correo", "num_factura", "valor_total_correo",
-                "fecha_recepcion_correo", "remitente_correo", "detalle_conciliacion",
+                "fecha_recepcion_correo", "remitente_correo", "invoice_key", "detalle_conciliacion",
+            ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "valor_total_correo": st.column_config.NumberColumn("Valor correo", format="$ %,.0f"),
+                "fecha_recepcion_correo": st.column_config.DatetimeColumn("Fecha correo", format="YYYY-MM-DD HH:mm"),
+                "invoice_key": st.column_config.TextColumn("Clave interna"),
+            },
+        )
+
+        st.markdown("---")
+        st.markdown("**Excluir estas facturas de toda la app**")
+        st.caption("Usa este bloque cuando confirmes que una factura de correo no va a ingresar al ERP y no debe sumar en rebate, tesorería ni planificador.")
+
+        exclusion_options = {
+            reconciliation_option_label(row): row["invoice_key"]
+            for _, row in only_email_df.iterrows()
+        }
+        exclude_col1, exclude_col2 = st.columns([1.6, 1])
+        selected_exclusion_label = exclude_col1.selectbox(
+            "Factura a excluir",
+            list(exclusion_options.keys()),
+            key="portal_only_email_exclude",
+        )
+        exclusion_reason = exclude_col2.text_input(
+            "Motivo",
+            value="Factura promocional / no tener en cuenta",
+            key="portal_only_email_exclude_reason",
+        )
+
+        selected_exclusion_key = exclusion_options[selected_exclusion_label]
+        selected_exclusion_row = only_email_df[only_email_df["invoice_key"] == selected_exclusion_key].iloc[0]
+        if st.button("Excluir de todos los cálculos", type="primary", width="stretch", key="portal_save_invoice_exclusion"):
+            gs_client = connect_to_google_sheets()
+            if not gs_client:
+                st.error("No fue posible conectar con Google Sheets para guardar la exclusión.")
+            elif register_invoice_exclusion(
+                gs_client,
+                invoice_key=str(selected_exclusion_row.get("invoice_key", "") or ""),
+                proveedor_norm=str(selected_exclusion_row.get("proveedor_norm", "") or ""),
+                num_factura=str(selected_exclusion_row.get("num_factura", "") or ""),
+                reason=exclusion_reason,
+                source="portal_tesoreria_only_email",
+            ):
+                st.session_state.pop("treasury_payload", None)
+                st.success("Factura excluida. Ya no volverá a sumar en ninguna parte de la app.")
+                st.rerun()
+            else:
+                st.error("No se pudo guardar la exclusión.")
+
+        excel_email = export_df_to_excel(
+            only_email_df[["proveedor_correo", "num_factura", "valor_total_correo", "fecha_recepcion_correo", "remitente_correo"]],
+            sheet_name="Solo_Correo", title="Ferreinox — Facturas Solo en Correo",
+        )
+        st.download_button("📥 Descargar solo correo", excel_email,
+                           file_name=f"Ferreinox_Solo_Correo_{date.today()}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_portal_email")
+    if not excluded_only_email_df.empty:
+        st.markdown("---")
+        st.markdown("**Facturas ya excluidas desde este flujo**")
+        st.dataframe(
+            safe_display(excluded_only_email_df, [
+                "proveedor_correo", "num_factura", "valor_total_correo", "fecha_recepcion_correo",
+                "motivo_exclusion", "exclusion_id",
             ], sort_by=["fecha_recepcion_correo", "proveedor_correo"], ascending=[False, True]),
             width="stretch",
             hide_index=True,
@@ -515,13 +613,35 @@ with tab_email:
             },
         )
 
-        excel_email = export_df_to_excel(
-            only_email_df[["proveedor_correo", "num_factura", "valor_total_correo", "fecha_recepcion_correo", "remitente_correo"]],
-            sheet_name="Solo_Correo", title="Ferreinox — Facturas Solo en Correo",
+        restore_options = {
+            reconciliation_option_label(row): row["exclusion_id"]
+            for _, row in excluded_only_email_df.iterrows()
+        }
+        restore_col1, restore_col2 = st.columns([1.6, 1])
+        selected_restore_label = restore_col1.selectbox(
+            "Factura a reincluir",
+            list(restore_options.keys()),
+            key="portal_only_email_restore",
         )
-        st.download_button("📥 Descargar solo correo", excel_email,
-                           file_name=f"Ferreinox_Solo_Correo_{date.today()}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_portal_email")
+        restore_col2.caption("La reinclusión hace que la factura vuelva a aparecer en todos los cálculos y vistas.")
+        selected_restore_id = restore_options[selected_restore_label]
+        if st.button("Quitar exclusión", width="stretch", key="portal_restore_invoice_exclusion"):
+            gs_client = connect_to_google_sheets()
+            if not gs_client:
+                st.error("No fue posible conectar con Google Sheets para revertir la exclusión.")
+            elif deactivate_invoice_exclusion(gs_client, selected_restore_id):
+                st.session_state.pop("treasury_payload", None)
+                st.success("La factura volvió a quedar activa en toda la app.")
+                st.rerun()
+            else:
+                st.error("No se pudo revertir la exclusión.")
+
+    if only_email_df.empty and not excluded_only_email_df.empty:
+        ec1, ec2, ec3 = st.columns(3)
+        ec1.metric("Facturas sin reflejo ERP", "0")
+        ec2.metric("Valor total correo", format_currency(0))
+        ec3.metric("Ya excluidas", f"{len(excluded_only_email_df):,}")
+
         if not heuristic_email_df.empty:
             st.warning("Los casos heurísticos detectados solo desde el cuerpo del correo no cuentan en este indicador ejecutivo. Se muestran abajo solo para auditoría.")
             st.dataframe(
