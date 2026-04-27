@@ -19,6 +19,7 @@ from common.treasury_core import (
     get_discount_summary_for_suppliers,
     load_operational_payload,
     register_invoice_exclusion,
+    register_invoice_exclusions,
     register_manual_reconciliation,
     safe_display,
 )
@@ -559,33 +560,45 @@ with tab_email:
             for _, row in only_email_df.iterrows()
         }
         exclude_col1, exclude_col2 = st.columns([1.6, 1])
-        selected_exclusion_label = exclude_col1.selectbox(
-            "Factura a excluir",
+        selected_exclusion_labels = exclude_col1.multiselect(
+            "Facturas a excluir",
             list(exclusion_options.keys()),
+            default=[],
             key="portal_only_email_exclude",
         )
         exclusion_reason = exclude_col2.text_input(
-            "Motivo",
+            "Motivo común del lote",
             value="Factura promocional / no tener en cuenta",
             key="portal_only_email_exclude_reason",
         )
 
-        selected_exclusion_key = exclusion_options[selected_exclusion_label]
-        selected_exclusion_row = only_email_df[only_email_df["invoice_key"] == selected_exclusion_key].iloc[0]
-        if st.button("Excluir de todos los cálculos", type="primary", width="stretch", key="portal_save_invoice_exclusion"):
+        selected_exclusion_keys = [exclusion_options[label] for label in selected_exclusion_labels]
+        selected_exclusion_rows = only_email_df[only_email_df["invoice_key"].isin(selected_exclusion_keys)].copy()
+        if not selected_exclusion_rows.empty:
+            st.caption(
+                f"Lote seleccionado: {len(selected_exclusion_rows):,} facturas por {format_currency(selected_exclusion_rows['valor_total_correo'].sum())}."
+            )
+        if st.button("Excluir lote de todos los cálculos", type="primary", width="stretch", key="portal_save_invoice_exclusion"):
             gs_client = connect_to_google_sheets()
             if not gs_client:
                 st.error("No fue posible conectar con Google Sheets para guardar la exclusión.")
-            elif register_invoice_exclusion(
+            elif selected_exclusion_rows.empty:
+                st.error("Debes seleccionar al menos una factura para excluir.")
+            elif register_invoice_exclusions(
                 gs_client,
-                invoice_key=str(selected_exclusion_row.get("invoice_key", "") or ""),
-                proveedor_norm=str(selected_exclusion_row.get("proveedor_norm", "") or ""),
-                num_factura=str(selected_exclusion_row.get("num_factura", "") or ""),
-                reason=exclusion_reason,
-                source="portal_tesoreria_only_email",
+                [
+                    {
+                        "invoice_key": str(row.get("invoice_key", "") or ""),
+                        "proveedor_norm": str(row.get("proveedor_norm", "") or ""),
+                        "num_factura": str(row.get("num_factura", "") or ""),
+                        "reason": exclusion_reason,
+                        "source": "portal_tesoreria_only_email",
+                    }
+                    for _, row in selected_exclusion_rows.iterrows()
+                ],
             ):
                 st.session_state.pop("treasury_payload", None)
-                st.success("Factura excluida. Ya no volverá a sumar en ninguna parte de la app.")
+                st.success(f"Se excluyeron {len(selected_exclusion_rows):,} facturas. Ya no volverán a sumar en ninguna parte de la app.")
                 st.rerun()
             else:
                 st.error("No se pudo guardar la exclusión.")
@@ -618,20 +631,23 @@ with tab_email:
             for _, row in excluded_only_email_df.iterrows()
         }
         restore_col1, restore_col2 = st.columns([1.6, 1])
-        selected_restore_label = restore_col1.selectbox(
-            "Factura a reincluir",
+        selected_restore_labels = restore_col1.multiselect(
+            "Facturas a reincluir",
             list(restore_options.keys()),
+            default=[],
             key="portal_only_email_restore",
         )
         restore_col2.caption("La reinclusión hace que la factura vuelva a aparecer en todos los cálculos y vistas.")
-        selected_restore_id = restore_options[selected_restore_label]
-        if st.button("Quitar exclusión", width="stretch", key="portal_restore_invoice_exclusion"):
+        selected_restore_ids = [restore_options[label] for label in selected_restore_labels]
+        if st.button("Quitar exclusión del lote", width="stretch", key="portal_restore_invoice_exclusion"):
             gs_client = connect_to_google_sheets()
             if not gs_client:
                 st.error("No fue posible conectar con Google Sheets para revertir la exclusión.")
-            elif deactivate_invoice_exclusion(gs_client, selected_restore_id):
+            elif not selected_restore_ids:
+                st.error("Debes seleccionar al menos una factura para reincluir.")
+            elif all(deactivate_invoice_exclusion(gs_client, exclusion_id) for exclusion_id in selected_restore_ids):
                 st.session_state.pop("treasury_payload", None)
-                st.success("La factura volvió a quedar activa en toda la app.")
+                st.success(f"Se reincluyeron {len(selected_restore_ids):,} facturas en toda la app.")
                 st.rerun()
             else:
                 st.error("No se pudo revertir la exclusión.")

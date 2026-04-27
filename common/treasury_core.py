@@ -1930,6 +1930,32 @@ def register_invoice_exclusion(
     return append_df_to_sheet(client, SHEET_INVOICE_EXCLUSIONS, exclusion_df, INVOICE_EXCLUSION_COLUMNS)
 
 
+def register_invoice_exclusions(client: gspread.Client, rows: list[dict[str, Any]]) -> bool:
+    prepared_rows: list[dict[str, Any]] = []
+    for row in rows:
+        invoice_key = str(row.get("invoice_key", "") or "").strip()
+        if not invoice_key:
+            continue
+        prepared_rows.append(
+            {
+                "exclusion_id": f"EXC-{uuid.uuid4().hex[:10].upper()}",
+                "created_at": pd.Timestamp.now(tz=COLOMBIA_TZ),
+                "invoice_key": invoice_key,
+                "proveedor_norm": str(row.get("proveedor_norm", "") or "").strip(),
+                "num_factura": normalize_invoice_number(row.get("num_factura", "")),
+                "status": "ACTIVO",
+                "reason": str(row.get("reason", "") or "").strip(),
+                "source": str(row.get("source", "app") or "app").strip(),
+            }
+        )
+
+    if not prepared_rows:
+        return False
+
+    exclusion_df = pd.DataFrame(prepared_rows)
+    return append_df_to_sheet(client, SHEET_INVOICE_EXCLUSIONS, exclusion_df, INVOICE_EXCLUSION_COLUMNS)
+
+
 def deactivate_invoice_exclusion(client: gspread.Client, exclusion_id: str) -> bool:
     exclusion_id = str(exclusion_id or "").strip()
     if not exclusion_id:
