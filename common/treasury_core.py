@@ -819,12 +819,25 @@ def get_or_create_worksheet(client: gspread.Client, worksheet_name: str) -> gspr
 
 
 def load_sheet_df(client: gspread.Client, worksheet_name: str) -> pd.DataFrame:
-    try:
-        worksheet = get_or_create_worksheet(client, worksheet_name)
-        records = worksheet.get_all_records()
-        return pd.DataFrame(records) if records else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+    return _load_sheet_df_internal(client, worksheet_name, raise_on_error=False)
+
+
+def _load_sheet_df_internal(client: gspread.Client, worksheet_name: str, raise_on_error: bool = False) -> pd.DataFrame:
+    last_exception: Optional[Exception] = None
+    for _ in range(3):
+        try:
+            worksheet = get_or_create_worksheet(client, worksheet_name)
+            records = worksheet.get_all_records()
+            return pd.DataFrame(records) if records else pd.DataFrame()
+        except Exception as exc:
+            last_exception = exc
+
+    if raise_on_error and last_exception is not None:
+        raise RuntimeError(f"No se pudo leer la hoja {worksheet_name}: {last_exception}") from last_exception
+
+    if last_exception is not None:
+        st.warning(f"⚠️ No se pudo leer la hoja {worksheet_name}. La app mostrará datos incompletos hasta que Google Sheets responda correctamente. Detalle: {last_exception}")
+    return pd.DataFrame()
 
 
 def update_worksheet_from_df(worksheet: gspread.Worksheet, df: pd.DataFrame) -> bool:
@@ -857,7 +870,11 @@ def save_df_to_sheet(client: gspread.Client, worksheet_name: str, df: pd.DataFra
 
 
 def append_df_to_sheet(client: gspread.Client, worksheet_name: str, new_rows_df: pd.DataFrame, ordered_columns: list[str]) -> bool:
-    existing = load_sheet_df(client, worksheet_name)
+    try:
+        existing = _load_sheet_df_internal(client, worksheet_name, raise_on_error=True)
+    except Exception as exc:
+        st.error(f"❌ No se pudo leer la hoja {worksheet_name} antes de agregar registros. Se cancela la escritura para no sobrescribir información existente. Detalle: {exc}")
+        return False
     combined = pd.concat([existing, new_rows_df], ignore_index=True) if not existing.empty else new_rows_df.copy()
     for column in ordered_columns:
         if column not in combined.columns:

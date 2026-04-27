@@ -747,7 +747,6 @@ def prepare_invoice_dataframe(df: pd.DataFrame, excluded_purchase_percent: float
 	return prepared
 
 
-@st.cache_data(ttl=120)
 def load_invoice_exclusion_registry() -> pd.DataFrame:
 	gs_client = connect_to_google_sheets()
 	if not gs_client:
@@ -897,7 +896,6 @@ def run_pintuco_sync():
 	run_provider_sync(get_provider_configs()["pintuco"])
 
 
-@st.cache_data(ttl=300)
 def load_provider_data_from_gsheet(worksheet_name: str, cycle_start: date, excluded_purchase_percent: float) -> pd.DataFrame:
 	try:
 		gs_client = connect_to_google_sheets()
