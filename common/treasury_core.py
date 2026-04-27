@@ -240,6 +240,9 @@ SUPPLIER_ALIASES = {
     "COMPANIAGLOBALDEPINTURASSAS": "PINTUCOCOLOMBIASAS",
     "COMPANIAGLOBALDEPINTURASSASS": "PINTUCOCOLOMBIASAS",
     "PINTUCOSAC": "PINTUCOCOLOMBIASAS",
+    "ABRASIVOSDECOLOMBIA": "ABRACOLSAS",
+    "ABRASIVOSDECOLOMBIASA": "ABRACOLSAS",
+    "ABRASIVOSDECOLOMBIASAS": "ABRACOLSAS",
     "INDUSTRIASGOYAINCOLLTDA": "INDUSTRIASGOYAINCOLSAS",
     "VICTORFABIANHENAOCARDONA": "FERRETECNICAMANIZALES",
     "HENAOCARDONAVICTORFABIANNIT75098702": "FERRETECNICAMANIZALES",
@@ -304,6 +307,17 @@ def normalize_supplier_fingerprint(value: Any) -> str:
 
 def normalize_invoice_number(value: Any) -> str:
     return normalize_text(value)
+
+
+def normalize_invoice_key(value: Any) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+
+    provider_part, separator, invoice_part = raw_value.partition("|")
+    if not separator:
+        return normalize_invoice_number(raw_value)
+    return f"{normalize_supplier_key(provider_part)}|{normalize_invoice_number(invoice_part)}"
 
 
 def is_invoice_like_reference(value: Any) -> bool:
@@ -1895,9 +1909,9 @@ def load_invoice_exclusion_df(client: gspread.Client) -> pd.DataFrame:
             prepared[column] = ""
     prepared["created_at"] = coerce_datetime(prepared["created_at"])
     prepared["status"] = prepared["status"].fillna("").astype(str)
-    prepared["invoice_key"] = prepared["invoice_key"].fillna("").astype(str)
-    prepared["proveedor_norm"] = prepared["proveedor_norm"].fillna("").astype(str)
-    prepared["num_factura"] = prepared["num_factura"].fillna("").astype(str)
+    prepared["invoice_key"] = prepared["invoice_key"].apply(normalize_invoice_key)
+    prepared["proveedor_norm"] = prepared["proveedor_norm"].apply(normalize_supplier_key)
+    prepared["num_factura"] = prepared["num_factura"].apply(normalize_invoice_number)
     prepared["reason"] = prepared["reason"].fillna("").astype(str)
     prepared["source"] = prepared["source"].fillna("").astype(str)
     return prepared[INVOICE_EXCLUSION_COLUMNS]
@@ -1911,7 +1925,7 @@ def register_invoice_exclusion(
     reason: str = "",
     source: str = "app",
 ) -> bool:
-    invoice_key = str(invoice_key or "").strip()
+    invoice_key = normalize_invoice_key(invoice_key)
     if not invoice_key:
         return False
 
@@ -1920,7 +1934,7 @@ def register_invoice_exclusion(
             "exclusion_id": f"EXC-{uuid.uuid4().hex[:10].upper()}",
             "created_at": pd.Timestamp.now(tz=COLOMBIA_TZ),
             "invoice_key": invoice_key,
-            "proveedor_norm": str(proveedor_norm or "").strip(),
+            "proveedor_norm": normalize_supplier_key(proveedor_norm),
             "num_factura": normalize_invoice_number(num_factura),
             "status": "ACTIVO",
             "reason": str(reason or "").strip(),
@@ -1933,7 +1947,7 @@ def register_invoice_exclusion(
 def register_invoice_exclusions(client: gspread.Client, rows: list[dict[str, Any]]) -> bool:
     prepared_rows: list[dict[str, Any]] = []
     for row in rows:
-        invoice_key = str(row.get("invoice_key", "") or "").strip()
+        invoice_key = normalize_invoice_key(row.get("invoice_key", ""))
         if not invoice_key:
             continue
         prepared_rows.append(
@@ -1941,7 +1955,7 @@ def register_invoice_exclusions(client: gspread.Client, rows: list[dict[str, Any
                 "exclusion_id": f"EXC-{uuid.uuid4().hex[:10].upper()}",
                 "created_at": pd.Timestamp.now(tz=COLOMBIA_TZ),
                 "invoice_key": invoice_key,
-                "proveedor_norm": str(row.get("proveedor_norm", "") or "").strip(),
+                "proveedor_norm": normalize_supplier_key(row.get("proveedor_norm", "")),
                 "num_factura": normalize_invoice_number(row.get("num_factura", "")),
                 "status": "ACTIVO",
                 "reason": str(row.get("reason", "") or "").strip(),
