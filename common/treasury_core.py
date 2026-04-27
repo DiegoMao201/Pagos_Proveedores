@@ -2049,6 +2049,19 @@ def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
                 .fillna(False)
             )
 
+    if "proveedor_norm" in prepared.columns:
+        prepared["proveedor_norm"] = prepared["proveedor_norm"].apply(normalize_supplier_key)
+
+    if "num_factura" in prepared.columns:
+        prepared["num_factura"] = prepared["num_factura"].apply(normalize_invoice_number)
+
+    if "invoice_key" in prepared.columns:
+        prepared["invoice_key"] = prepared["invoice_key"].apply(normalize_invoice_key)
+
+    for column in ["manual_resolution_target", "invoice_key_source", "invoice_key_target"]:
+        if column in prepared.columns:
+            prepared[column] = prepared[column].apply(normalize_invoice_key)
+
     if (prepared["valor_a_pagar"] == 0).all() and "valor_erp" in prepared.columns:
         prepared["valor_a_pagar"] = prepared["valor_erp"] - prepared["valor_descuento"]
 
