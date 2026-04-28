@@ -228,6 +228,18 @@ f_financial = apply_filters(financial_df)
 f_neto = apply_filters(neto_df)
 
 
+def filter_credit_notes_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if selected_supplier != "Todos":
+        result = result[result["proveedor"] == selected_supplier]
+    if "proveedor" in result.columns and "num_factura" in result.columns:
+        result = result.sort_values(by=["proveedor", "num_factura"], ascending=[True, True])
+    return result
+
+
+visible_credit_notes = filter_credit_notes_for_display(credit_notes_df)
+
+
 # ─── Filtered KPIs after filter ─────────────────────────────────────
 if selected_supplier != "Todos" or date_range != "Todas":
     combined_filtered = pd.concat([f_critical, f_financial, f_neto], ignore_index=True)
@@ -338,8 +350,12 @@ def render_credit_note_selector(df: pd.DataFrame, tab_key: str, empty_msg: str) 
         st.info(empty_msg)
         return pd.DataFrame()
 
+    shared_selected_key = "planner_selected_credit_note_keys"
+    shared_selected = set(st.session_state.get(shared_selected_key, []))
+
     select_all = st.checkbox(f"Seleccionar todas las notas crédito ({len(df):,})", key=f"select_all_{tab_key}")
     table = prepare_credit_note_table(df)
+    table["Seleccionar"] = table["invoice_key"].isin(shared_selected)
     if select_all:
         table["Seleccionar"] = True
 
@@ -363,6 +379,11 @@ def render_credit_note_selector(df: pd.DataFrame, tab_key: str, empty_msg: str) 
     )
 
     selected_keys = edited[edited["Seleccionar"]]["invoice_key"].tolist()
+    visible_keys = set(df["invoice_key"].tolist())
+    shared_selected.difference_update(visible_keys)
+    shared_selected.update(selected_keys)
+    st.session_state[shared_selected_key] = sorted(shared_selected)
+
     if selected_keys:
         sel_df = df[df["invoice_key"].isin(selected_keys)].copy()
         sc1, sc2 = st.columns(2)
@@ -397,6 +418,11 @@ with tab_crit:
         vc3.metric("Valor urgente", format_currency(f_critical["valor_erp"].sum()))
 
     selected_crit = render_tab_table(f_critical, "critical", "No hay facturas criticas en este filtro. ✅")
+
+    st.markdown("---")
+    st.markdown("**Notas crédito visibles en esta mesa**")
+    st.caption("La selección de notas crédito se comparte entre todas las pestañas. Si la marcas aquí, ya queda aplicada al lote.")
+    render_credit_note_selector(visible_credit_notes, "critical_notes", "No hay notas crédito disponibles en este filtro.")
 
     if not f_critical.empty:
         excel_crit = export_df_to_excel(
@@ -434,6 +460,11 @@ with tab_fin:
 
     selected_fin = render_tab_table(f_financial, "financial", "No hay facturas con descuento financiero en este filtro.")
 
+    st.markdown("---")
+    st.markdown("**Notas crédito visibles en esta mesa**")
+    st.caption("Las NC se muestran aquí para que no tengas que cambiar de pestaña al armar el lote. La selección es compartida.")
+    render_credit_note_selector(visible_credit_notes, "financial_notes", "No hay notas crédito disponibles en este filtro.")
+
     if not f_financial.empty:
         excel_fin = export_df_to_excel(
             f_financial[["proveedor", "num_factura", "valor_erp", "valor_base_descuento", "descuento_pct", "valor_descuento", "valor_a_pagar",
@@ -460,6 +491,11 @@ with tab_neto:
 
     selected_neto = render_tab_table(f_neto, "neto", "No hay facturas en pagos neto para este filtro.")
 
+    st.markdown("---")
+    st.markdown("**Notas crédito visibles en esta mesa**")
+    st.caption("Puedes seleccionar las NC desde esta misma mesa; el lote las tomará una sola vez aunque también aparezcan en otras pestañas.")
+    render_credit_note_selector(visible_credit_notes, "neto_notes", "No hay notas crédito disponibles en este filtro.")
+
     if not f_neto.empty:
         excel_neto = export_df_to_excel(
             f_neto[["proveedor", "num_factura", "valor_erp", "valor_a_pagar", "fecha_vencimiento_erp",
@@ -481,9 +517,7 @@ with tab_notes:
     if credit_notes_df.empty:
         st.info("No se encontraron notas crédito en la cartera actual.")
     else:
-        nc_filtered = credit_notes_df.copy()
-        if selected_supplier != "Todos":
-            nc_filtered = nc_filtered[nc_filtered["proveedor"] == selected_supplier]
+        nc_filtered = visible_credit_notes.copy()
 
         if nc_filtered.empty:
             st.info(f"No hay notas crédito para {selected_supplier}.")
@@ -647,11 +681,11 @@ with tab_discounts:
 # ─── PAYMENT LOT BUILDER (floating section) ─────────────────────────
 st.markdown("---")
 st.markdown("## 📨 Generar Lote de Pago")
-st.markdown("Las facturas seleccionadas en cualquier pestaña (Criticos, Financiero o Neto) se consolidan aqui para armar el lote.")
+st.markdown("Las facturas seleccionadas en cualquier pestaña (Criticos, Financiero o Neto) y las notas crédito visibles en todas las mesas se consolidan aqui para armar el lote.")
 
 # Collect all selected invoice keys from all tabs
 all_selected_keys = set()
-for tab_key in ["critical", "financial", "neto", "notes"]:
+for tab_key in ["critical", "financial", "neto"]:
     editor_key = f"editor_{tab_key}"
     if editor_key in st.session_state:
         editor_data = st.session_state[editor_key]
@@ -659,6 +693,8 @@ for tab_key in ["critical", "financial", "neto", "notes"]:
             sel = editor_data[editor_data["Seleccionar"]]
             if "invoice_key" in sel.columns:
                 all_selected_keys.update(sel["invoice_key"].tolist())
+
+all_selected_keys.update(st.session_state.get("planner_selected_credit_note_keys", []))
 
 selected_invoices_for_lot = plan_df[plan_df["invoice_key"].isin(all_selected_keys)].copy() if all_selected_keys else pd.DataFrame()
 selected_credit_notes_for_lot = credit_notes_df[credit_notes_df["invoice_key"].isin(all_selected_keys)].copy() if all_selected_keys else pd.DataFrame()
