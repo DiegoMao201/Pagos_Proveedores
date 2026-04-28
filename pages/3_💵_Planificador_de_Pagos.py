@@ -316,6 +316,62 @@ def render_tab_table(df: pd.DataFrame, tab_key: str, empty_msg: str) -> pd.DataF
     return edited[edited["Seleccionar"]]
 
 
+def prepare_credit_note_table(df: pd.DataFrame) -> pd.DataFrame:
+    table = df.copy()
+    table["Seleccionar"] = False
+    required_cols = [
+        "Seleccionar", "proveedor", "num_factura", "valor_erp", "fecha_emision_erp",
+        "fecha_vencimiento_erp", "estado_erp", "estado_conciliacion", "invoice_key",
+    ]
+    for col in required_cols:
+        if col not in table.columns:
+            table[col] = ""
+    table = table[required_cols].copy()
+    for column in table.columns:
+        if pd.api.types.is_object_dtype(table[column]):
+            table[column] = table[column].apply(lambda value: "" if value is None or pd.isna(value) else str(value))
+    return table
+
+
+def render_credit_note_selector(df: pd.DataFrame, tab_key: str, empty_msg: str) -> pd.DataFrame:
+    if df.empty:
+        st.info(empty_msg)
+        return pd.DataFrame()
+
+    select_all = st.checkbox(f"Seleccionar todas las notas crédito ({len(df):,})", key=f"select_all_{tab_key}")
+    table = prepare_credit_note_table(df)
+    if select_all:
+        table["Seleccionar"] = True
+
+    edited = st.data_editor(
+        table,
+        width="stretch",
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "Seleccionar": st.column_config.CheckboxColumn("✔"),
+            "proveedor": st.column_config.TextColumn("Proveedor", width="medium"),
+            "num_factura": st.column_config.TextColumn("Nota crédito"),
+            "valor_erp": st.column_config.NumberColumn("Valor NC", format="$ %,.0f"),
+            "fecha_emision_erp": st.column_config.DateColumn("Emisión", format="YYYY-MM-DD"),
+            "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
+            "estado_erp": st.column_config.TextColumn("Estado ERP"),
+            "estado_conciliacion": st.column_config.TextColumn("Conciliación"),
+            "invoice_key": st.column_config.TextColumn("Clave", width="small"),
+        },
+        key=f"editor_{tab_key}",
+    )
+
+    selected_keys = edited[edited["Seleccionar"]]["invoice_key"].tolist()
+    if selected_keys:
+        sel_df = df[df["invoice_key"].isin(selected_keys)].copy()
+        sc1, sc2 = st.columns(2)
+        sc1.metric("Notas crédito seleccionadas", f"{len(sel_df):,}")
+        sc2.metric("Valor a descontar", format_currency(abs(sel_df["valor_erp"].sum())))
+
+    return edited[edited["Seleccionar"]]
+
+
 # ─── TABS ───────────────────────────────────────────────────────────
 tab_crit, tab_fin, tab_neto, tab_notes, tab_sched, tab_recon, tab_discounts = st.tabs([
     f"🔴 Pagos Criticos ({len(f_critical):,})",
@@ -436,19 +492,9 @@ with tab_notes:
             nc1.metric("Notas crédito", f"{len(nc_filtered):,}")
             nc2.metric("Valor total NC", format_currency(abs(nc_filtered["valor_erp"].sum())))
 
-            st.dataframe(
-                safe_display(nc_filtered, [
-                    "proveedor", "num_factura", "valor_erp", "fecha_emision_erp",
-                    "fecha_vencimiento_erp", "estado_erp", "estado_conciliacion",
-                ], sort_by=["proveedor", "fecha_emision_erp"]),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "valor_erp": st.column_config.NumberColumn("Valor NC", format="$ %,.0f"),
-                    "fecha_emision_erp": st.column_config.DateColumn("Emisión", format="YYYY-MM-DD"),
-                    "fecha_vencimiento_erp": st.column_config.DateColumn("Vence", format="YYYY-MM-DD"),
-                },
-            )
+            selected_notes = render_credit_note_selector(nc_filtered, "notes", "No hay notas crédito seleccionables.")
+            if not selected_notes.empty:
+                st.caption("Las notas crédito seleccionadas se llevarán al lote como renglones negativos para descontar el pago del proveedor.")
 
             excel_nc = export_df_to_excel(
                 nc_filtered[["proveedor", "num_factura", "valor_erp", "fecha_emision_erp", "fecha_vencimiento_erp", "estado_erp"]],
@@ -605,7 +651,7 @@ st.markdown("Las facturas seleccionadas en cualquier pestaña (Criticos, Financi
 
 # Collect all selected invoice keys from all tabs
 all_selected_keys = set()
-for tab_key in ["critical", "financial", "neto"]:
+for tab_key in ["critical", "financial", "neto", "notes"]:
     editor_key = f"editor_{tab_key}"
     if editor_key in st.session_state:
         editor_data = st.session_state[editor_key]
@@ -614,18 +660,29 @@ for tab_key in ["critical", "financial", "neto"]:
             if "invoice_key" in sel.columns:
                 all_selected_keys.update(sel["invoice_key"].tolist())
 
-selected_for_lot = plan_df[plan_df["invoice_key"].isin(all_selected_keys)].copy() if all_selected_keys else pd.DataFrame()
+selected_invoices_for_lot = plan_df[plan_df["invoice_key"].isin(all_selected_keys)].copy() if all_selected_keys else pd.DataFrame()
+selected_credit_notes_for_lot = credit_notes_df[credit_notes_df["invoice_key"].isin(all_selected_keys)].copy() if all_selected_keys else pd.DataFrame()
+selected_for_lot = pd.concat([selected_invoices_for_lot, selected_credit_notes_for_lot], ignore_index=True, sort=False) if all_selected_keys else pd.DataFrame()
+if not selected_for_lot.empty and "invoice_key" in selected_for_lot.columns:
+    selected_for_lot = selected_for_lot.drop_duplicates(subset=["invoice_key"], keep="first")
 
 if selected_for_lot.empty:
-    st.info("Marca facturas en las pestañas Criticos, Financiero o Neto para construir un lote de pago.")
+    st.info("Marca facturas en las pestañas Criticos, Financiero, Neto o Notas Crédito para construir un lote de pago.")
 else:
-    st.markdown(f"**{len(selected_for_lot):,} facturas seleccionadas** de {selected_for_lot['proveedor'].nunique()} proveedores")
+    selected_positive = selected_for_lot[selected_for_lot["valor_erp"] > 0].copy()
+    selected_negative = selected_for_lot[selected_for_lot["valor_erp"] < 0].copy()
+    st.markdown(f"**{len(selected_for_lot):,} documentos seleccionados** de {selected_for_lot['proveedor'].nunique()} proveedores")
 
     lm1, lm2, lm3, lm4 = st.columns(4)
-    lm1.metric("Facturas en lote", f"{len(selected_for_lot):,}")
-    lm2.metric("Valor original", format_currency(selected_for_lot["valor_erp"].sum()))
-    lm3.metric("Descuento capturado", format_currency(selected_for_lot["valor_descuento"].sum()))
+    lm1.metric("Facturas en lote", f"{len(selected_positive):,}")
+    lm2.metric("Notas crédito aplicadas", f"{len(selected_negative):,}")
+    lm3.metric("Descuento capturado", format_currency(selected_positive["valor_descuento"].sum() if not selected_positive.empty else 0))
     lm4.metric("Valor final a pagar", format_currency(selected_for_lot["valor_a_pagar"].sum()))
+
+    if not selected_negative.empty:
+        st.caption(
+            f"El lote incluye {len(selected_negative):,} notas crédito por {format_currency(abs(selected_negative['valor_erp'].sum()))}. Ese valor se descontará del total a pagar."
+        )
 
     st.dataframe(
         safe_display(selected_for_lot[["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar", "motivo_pago"]], ["proveedor", "num_factura", "valor_erp", "descuento_pct", "valor_descuento", "valor_a_pagar", "motivo_pago"]),
@@ -655,6 +712,8 @@ else:
     lot_providers = sorted(selected_for_lot["proveedor"].unique().tolist())
     target_provider = st.selectbox("Proveedor destino del correo", lot_providers, key="lot_target_provider")
     provider_lot = selected_for_lot[selected_for_lot["proveedor"] == target_provider].copy()
+    provider_lot_positive = provider_lot[provider_lot["valor_erp"] > 0].copy()
+    provider_lot_negative = provider_lot[provider_lot["valor_erp"] < 0].copy()
 
     lc1, lc2, lc3 = st.columns(3)
     payment_date = lc1.date_input("Fecha programada de pago", value=date.today(), key="lot_payment_date")
@@ -664,6 +723,11 @@ else:
     to_email = lc3.text_input("Correo destino", value=to_email_default, key="lot_to_email")
     cc_email = st.text_input("CC", value=cc_default, key="lot_cc")
     email_notes = st.text_area("Mensaje adicional", value="Agradecemos validar cualquier novedad documental o financiera de este lote.", key="lot_notes")
+
+    pv1, pv2, pv3 = st.columns(3)
+    pv1.metric("Facturas proveedor", f"{len(provider_lot_positive):,}")
+    pv2.metric("NC proveedor", f"{len(provider_lot_negative):,}")
+    pv3.metric("Pago neto proveedor", format_currency(provider_lot["valor_a_pagar"].sum()))
 
     html_preview = build_payment_email_html(target_provider, provider_lot, payment_date, email_notes)
     with st.expander("Vista previa del correo profesional", expanded=False):
