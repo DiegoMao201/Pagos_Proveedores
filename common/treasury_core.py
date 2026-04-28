@@ -2021,7 +2021,10 @@ def build_operational_master_df(master_df: pd.DataFrame) -> pd.DataFrame:
     prepared = ensure_master_dataframe_schema(master_df)
     if prepared.empty or "excluir_de_calculos" not in prepared.columns:
         return prepared
-    return prepared[~prepared["excluir_de_calculos"].fillna(False)].copy()
+    prepared = prepared[~prepared["excluir_de_calculos"].fillna(False)].copy()
+    if "invoice_key" in prepared.columns:
+        prepared = prepared.drop_duplicates(subset=["invoice_key"], keep="first")
+    return prepared
 
 
 def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
@@ -2061,6 +2064,9 @@ def ensure_master_dataframe_schema(master_df: pd.DataFrame) -> pd.DataFrame:
     for column in ["manual_resolution_target", "invoice_key_source", "invoice_key_target"]:
         if column in prepared.columns:
             prepared[column] = prepared[column].apply(normalize_invoice_key)
+
+    if "invoice_key" in prepared.columns:
+        prepared = prepared.drop_duplicates(subset=["invoice_key"], keep="first")
 
     if (prepared["valor_a_pagar"] == 0).all() and "valor_erp" in prepared.columns:
         prepared["valor_a_pagar"] = prepared["valor_erp"] - prepared["valor_descuento"]
