@@ -80,7 +80,11 @@ QUARTERLY_REBATE_RATES = {"Escala 1": 0.01, "Escala 2": 0.025, "Sin escala": 0.0
 SEASONALITY_TARGET_FACTOR = 0.90
 SEASONALITY_RATE = 0.01
 CYCLE_RECOMPOSITION_FACTOR = 0.85
-SEASONALITY_CUTOFF_OVERRIDES = {"2026-04": date(2026, 4, 24)}
+SEASONALITY_CUTOFF_OVERRIDES = {
+	"2026-04": date(2026, 4, 24),
+	"2026-05": date(2026, 5, 26),
+	"2026-06": date(2026, 6, 26),
+}
 
 ABRACOL_REBATE_RATE = 0.06
 VAT_RATE = 0.19
@@ -459,6 +463,8 @@ def get_rebate_configuration() -> dict:
 					f"- Estacionalidad: {format_percent(SEASONALITY_TARGET_FACTOR, 0)} de Escala 2 y bono de {format_percent(SEASONALITY_RATE, 1)}",
 					f"- Recomposición 9 meses: {format_percent(CYCLE_RECOMPOSITION_FACTOR, 0)} del saldo elegible",
 					"- Abril 2026: corte especial de estacionalidad extendido al 2026-04-24",
+					"- Mayo 2026: corte especial de estacionalidad extendido al 2026-05-26",
+					"- Junio 2026: corte especial de estacionalidad extendido al 2026-06-26",
 				]
 			)
 		)
