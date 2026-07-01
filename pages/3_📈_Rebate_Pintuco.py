@@ -65,14 +65,14 @@ GOYA_WORKSHEET_NAME = "Rebate_Goya"
 
 MONTHLY_BUDGETS = [
 	{"Mes": "Abril", "Mes_Num": 4, "Trimestre": "Q2", "Escala 1": 1456867389.0, "Escala 2": 1544279432.0},
-	{"Mes": "Mayo", "Mes_Num": 5, "Trimestre": "Q2", "Escala 1": 2094162232.0, "Escala 2": 2219811966.0},
-	{"Mes": "Junio", "Mes_Num": 6, "Trimestre": "Q2", "Escala 1": 2237825409.0, "Escala 2": 2372094934.0},
-	{"Mes": "Julio", "Mes_Num": 7, "Trimestre": "Q3", "Escala 1": 2000572886.0, "Escala 2": 2120607260.0},
+	{"Mes": "Mayo", "Mes_Num": 5, "Trimestre": "Q2", "Escala 1": 1622464119.0, "Escala 2": 1719811966.0},
+	{"Mes": "Junio", "Mes_Num": 6, "Trimestre": "Q2", "Escala 1": 1766127296.0, "Escala 2": 1872094934.0},
+	{"Mes": "Julio", "Mes_Num": 7, "Trimestre": "Q3", "Escala 1": 1462837037.0, "Escala 2": 1550607260.0},
 	{"Mes": "Agosto", "Mes_Num": 8, "Trimestre": "Q3", "Escala 1": 2271787723.0, "Escala 2": 2408094987.0},
 	{"Mes": "Septiembre", "Mes_Num": 9, "Trimestre": "Q3", "Escala 1": 2232381407.0, "Escala 2": 2366324292.0},
-	{"Mes": "Octubre", "Mes_Num": 10, "Trimestre": "Q4", "Escala 1": 1605138135.0, "Escala 2": 1701446423.0},
-	{"Mes": "Noviembre", "Mes_Num": 11, "Trimestre": "Q4", "Escala 1": 1147826895.0, "Escala 2": 1216696508.0},
-	{"Mes": "Diciembre", "Mes_Num": 12, "Trimestre": "Q4", "Escala 1": 1555236709.0, "Escala 2": 1648550912.0},
+	{"Mes": "Octubre", "Mes_Num": 10, "Trimestre": "Q4", "Escala 1": 1954194739.0, "Escala 2": 2071446423.0},
+	{"Mes": "Noviembre", "Mes_Num": 11, "Trimestre": "Q4", "Escala 1": 1902543876.0, "Escala 2": 2016696508.0},
+	{"Mes": "Diciembre", "Mes_Num": 12, "Trimestre": "Q4", "Escala 1": 1932595200.0, "Escala 2": 2048550912.0},
 ]
 
 MONTHLY_REBATE_RATES = {"Escala 1": 0.01, "Escala 2": 0.015, "Sin escala": 0.0}
