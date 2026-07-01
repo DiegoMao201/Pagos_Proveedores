@@ -262,64 +262,80 @@ st.markdown(
 		.pill.navy {{ background: rgba(12, 45, 87, 0.10); color: #0c2d57; }}
 		.period-card-grid {{
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-			gap: 16px;
+			grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+			gap: 14px;
 			margin: 4px 0 22px 0;
+			align-items: stretch;
 		}}
 		.period-card {{
-			border-radius: 22px;
-			padding: 20px 22px;
+			border-radius: 18px;
+			padding: 16px 18px;
 			color: #ffffff;
-			box-shadow: 0 16px 34px rgba(12, 45, 87, 0.18);
+			box-shadow: 0 10px 22px rgba(12, 45, 87, 0.18);
 			position: relative;
 			overflow: hidden;
-			min-height: 196px;
 			display: flex;
 			flex-direction: column;
+			gap: 8px;
 		}}
 		.period-card::after {{
 			content: "";
 			position: absolute;
-			top: -46%;
-			right: -18%;
-			width: 150px;
-			height: 150px;
-			background: rgba(255,255,255,0.14);
+			top: -55%;
+			right: -30%;
+			width: 110px;
+			height: 110px;
+			background: rgba(255,255,255,0.12);
 			border-radius: 50%;
+			pointer-events: none;
 		}}
-		.period-card.green {{ background: linear-gradient(135deg, #0b6b45 0%, #1fbe83 100%); }}
-		.period-card.gold {{ background: linear-gradient(135deg, #a86a08 0%, #f6c04a 100%); }}
-		.period-card.navy {{ background: linear-gradient(135deg, #0b2440 0%, #2166a3 100%); }}
-		.period-card.red {{ background: linear-gradient(135deg, #7a1f1f 0%, #e05c5c 100%); }}
-		.period-card-title {{
-			font-size: 0.74rem;
-			text-transform: uppercase;
-			letter-spacing: 0.12em;
-			font-weight: 800;
-			opacity: 0.9;
+		.period-card.green {{ background: linear-gradient(150deg, #0b7a4f 0%, #22c98d 100%); }}
+		.period-card.gold {{ background: linear-gradient(150deg, #b3760a 0%, #f6c04a 100%); }}
+		.period-card.navy {{ background: linear-gradient(150deg, #0b2440 0%, #2b74b8 100%); }}
+		.period-card.red {{ background: linear-gradient(150deg, #7a1f1f 0%, #e6685f 100%); }}
+		.period-card-top {{
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
 			position: relative;
 		}}
-		.period-card-amount {{
-			font-size: 1.85rem;
+		.period-card-title {{
+			font-size: 0.68rem;
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
 			font-weight: 800;
-			margin: 8px 0 8px 0;
+			opacity: 0.92;
+		}}
+		.period-card-icon {{
+			font-size: 0.95rem;
+			line-height: 1;
+		}}
+		.period-card-amount {{
+			font-size: 1.6rem;
+			font-weight: 800;
 			line-height: 1.1;
 			position: relative;
 		}}
 		.period-card-reason {{
-			font-size: 0.84rem;
+			font-size: 0.78rem;
 			opacity: 0.96;
-			line-height: 1.42;
+			line-height: 1.4;
+			position: relative;
 			flex-grow: 1;
+		}}
+		.period-progress-row {{
+			display: flex;
+			align-items: center;
+			gap: 8px;
 			position: relative;
 		}}
 		.period-progress-track {{
+			flex-grow: 1;
 			background: rgba(255,255,255,0.28);
 			border-radius: 999px;
-			height: 9px;
-			margin-top: 14px;
+			height: 7px;
 			overflow: hidden;
-			position: relative;
 		}}
 		.period-progress-fill {{
 			background: #ffffff;
@@ -327,19 +343,18 @@ st.markdown(
 			border-radius: 999px;
 		}}
 		.period-progress-label {{
-			font-size: 0.72rem;
-			margin-top: 6px;
-			font-weight: 700;
-			opacity: 0.94;
-			position: relative;
+			font-size: 0.68rem;
+			font-weight: 800;
+			min-width: 34px;
+			text-align: right;
+			opacity: 0.96;
 		}}
 		.period-card-status {{
-			display: inline-block;
-			margin-top: 10px;
-			padding: 3px 11px;
+			align-self: flex-start;
+			padding: 3px 10px;
 			border-radius: 999px;
-			background: rgba(255,255,255,0.24);
-			font-size: 0.72rem;
+			background: rgba(255,255,255,0.22);
+			font-size: 0.68rem;
 			font-weight: 700;
 			position: relative;
 		}}
@@ -348,7 +363,7 @@ st.markdown(
 		}}
 		@media (max-width: 680px) {{
 			.kpi-grid {{ grid-template-columns: 1fr; }}
-			.period-card-amount {{ font-size: 1.5rem; }}
+			.period-card-amount {{ font-size: 1.35rem; }}
 		}}
 	</style>
 	""",
@@ -383,11 +398,14 @@ def pill_html(text: str, tone: str = "navy") -> str:
 	return f'<span class="pill {tone}">{text}</span>'
 
 
+PERIOD_STATUS_ICONS = {"green": "✅", "gold": "⏳", "navy": "🕒", "red": "⚠️"}
+
+
 def get_period_status_tone(status: str) -> str:
 	status_upper = str(status).upper()
-	if status_upper.startswith("CUMPL"):
+	if status_upper.startswith("CUMPL") or ("ESCALA 2" in status_upper and "LOGRADA" in status_upper):
 		return "green"
-	if status_upper.startswith("ABIERT") or "EN CURSO" in status_upper or "EN VENTANA" in status_upper:
+	if ("ESCALA 1" in status_upper and "LOGRADA" in status_upper) or status_upper.startswith("ABIERT") or "EN CURSO" in status_upper or "EN VENTANA" in status_upper:
 		return "gold"
 	if status_upper.startswith("FUTURO"):
 		return "navy"
@@ -396,17 +414,20 @@ def get_period_status_tone(status: str) -> str:
 
 def period_card_html(title: str, amount: float, reason: str, progress: float, status_label: str) -> str:
 	tone = get_period_status_tone(status_label)
+	icon = PERIOD_STATUS_ICONS.get(tone, "")
 	progress_pct = max(0.0, min(progress, 1.0)) * 100
-	return f"""
-	<div class="period-card {tone}">
-		<div class="period-card-title">{title}</div>
-		<div class="period-card-amount">{format_currency(amount)}</div>
-		<div class="period-card-reason">{reason}</div>
-		<div class="period-progress-track"><div class="period-progress-fill" style="width:{progress_pct:.0f}%;"></div></div>
-		<div class="period-progress-label">{progress_pct:.0f}% de la meta cubierta</div>
-		<div class="period-card-status">{status_label}</div>
-	</div>
-	"""
+	return (
+		f'<div class="period-card {tone}">'
+		f'<div class="period-card-top"><span class="period-card-title">{title}</span><span class="period-card-icon">{icon}</span></div>'
+		f'<div class="period-card-amount">{format_currency(amount)}</div>'
+		f'<div class="period-card-reason">{reason}</div>'
+		f'<div class="period-progress-row">'
+		f'<div class="period-progress-track"><div class="period-progress-fill" style="width:{progress_pct:.0f}%;"></div></div>'
+		f'<span class="period-progress-label">{progress_pct:.0f}%</span>'
+		f'</div>'
+		f'<div class="period-card-status">{status_label}</div>'
+		f'</div>'
+	)
 
 
 def render_period_card_grid(cards_html: list[str]) -> None:
