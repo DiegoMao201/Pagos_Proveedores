@@ -260,11 +260,44 @@ st.markdown(
 		.pill.gold {{ background: rgba(240, 173, 31, 0.16); color: #8b6509; }}
 		.pill.red {{ background: rgba(217, 74, 74, 0.14); color: #a92f2f; }}
 		.pill.navy {{ background: rgba(12, 45, 87, 0.10); color: #0c2d57; }}
+		.hero-summary {{
+			background: radial-gradient(circle at top left, rgba(255,255,255,0.18), transparent 45%), linear-gradient(135deg, #0b2440 0%, #145374 55%, #0f9d63 100%);
+			border-radius: 28px;
+			padding: 34px 40px;
+			color: #ffffff;
+			margin: 4px 0 20px 0;
+			box-shadow: 0 22px 48px rgba(11, 36, 64, 0.28);
+			text-align: center;
+		}}
+		.hero-summary .hero-eyebrow {{
+			text-transform: uppercase;
+			letter-spacing: 0.14em;
+			font-size: 0.8rem;
+			font-weight: 700;
+			opacity: 0.85;
+		}}
+		.hero-summary .hero-amount {{
+			font-size: 3.1rem;
+			font-weight: 800;
+			margin: 8px 0 6px 0;
+			line-height: 1.1;
+		}}
+		.hero-summary .hero-reason {{
+			font-size: 1.05rem;
+			opacity: 0.96;
+			max-width: 760px;
+			margin: 6px auto 0 auto;
+			line-height: 1.55;
+		}}
+		.hero-summary .hero-badge {{
+			margin-top: 16px;
+		}}
 		@media (max-width: 1100px) {{
 			.kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
 		}}
 		@media (max-width: 680px) {{
 			.kpi-grid {{ grid-template-columns: 1fr; }}
+			.hero-summary .hero-amount {{ font-size: 2.2rem; }}
 		}}
 	</style>
 	""",
@@ -297,6 +330,21 @@ def render_kpi_grid(cards: list[str]) -> None:
 
 def pill_html(text: str, tone: str = "navy") -> str:
 	return f'<span class="pill {tone}">{text}</span>'
+
+
+def render_executive_hero(eyebrow: str, amount: float, reason: str, badge_text: str = "", badge_tone: str = "gold") -> None:
+	badge_html = f'<div class="hero-badge">{pill_html(badge_text, badge_tone)}</div>' if badge_text else ""
+	st.markdown(
+		f"""
+		<div class="hero-summary">
+			<div class="hero-eyebrow">{eyebrow}</div>
+			<div class="hero-amount">{format_currency(amount)}</div>
+			<div class="hero-reason">{reason}</div>
+			{badge_html}
+		</div>
+		""",
+		unsafe_allow_html=True,
+	)
 
 
 def normalize_invoice_number(inv_num: Any) -> str:
@@ -1570,6 +1618,18 @@ def render_abracol_dashboard(provider_config: dict[str, Any]) -> None:
 	rebate_total = float(period_df["Rebate_Actual"].sum())
 	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
 
+	render_executive_hero(
+		eyebrow="Rebate Abracol ganado en el ciclo 2026",
+		amount=rebate_total,
+		reason=(
+			f"Llevamos <strong>{format_percent(safe_divide(ventas_acumuladas, meta_total))}</strong> de la cuota comercial 2026 facturada. "
+			f"El bimestre {current_period['Periodo']} crece <strong>{format_percent(float(current_period['Crecimiento_vs_2025']))}</strong> frente al mismo periodo de 2025, "
+			f"liquidando el 6% de rebate sobre esa venta neta."
+		),
+		badge_text=f"Estado {current_period['Periodo']}: {current_period['Estado_Periodo']}",
+		badge_tone=get_scale_tone(str(current_period["Estado_Periodo"])),
+	)
+
 	render_kpi_grid(
 		[
 			kpi_card_html("Ventas 2026 facturadas", format_currency(ventas_acumuladas), f"Cumplimiento anual: {format_percent(safe_divide(ventas_acumuladas, meta_total))}", "navy"),
@@ -1735,6 +1795,17 @@ def render_goya_dashboard(provider_config: dict[str, Any]) -> None:
 	base_total = float(period_df["Base_2025"].sum())
 	rebate_total = float(period_df["Rebate_Ganado"].sum())
 	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
+
+	render_executive_hero(
+		eyebrow="Rebate Goya ganado en el ciclo 2026",
+		amount=rebate_total,
+		reason=(
+			f"El semestre {current_period['Periodo']} creció <strong>{format_percent(float(current_period['Crecimiento_Actual']))}</strong> frente a la base 2025, "
+			f"alcanzando la escala de crecimiento <strong>{current_period['Escala_Lograda']}</strong> y liquidando <strong>{format_percent(float(current_period['Rebate_Pct']), 1)}</strong> de rebate sobre la venta facturada."
+		),
+		badge_text=f"Escala lograda: {current_period['Escala_Lograda']}",
+		badge_tone=get_scale_tone(str(current_period["Escala_Lograda"])),
+	)
 
 	render_kpi_grid(
 		[
@@ -1916,6 +1987,18 @@ def render_pintuco_dashboard(provider_config: dict[str, Any]) -> None:
 		current_quarter_df = quarterly_df.iloc[[0]]
 	current_quarter_row = current_quarter_df.iloc[0]
 	rebate_total_ganado = float(monthly_df["Rebate_Mensual_Ganado"].sum() + monthly_df["Bono_Estacionalidad"].sum() + quarterly_df["Rebate_Trimestral_Ganado"].sum())
+	meses_con_bono = int((monthly_df["Bono_Estacionalidad"] > 0).sum())
+
+	render_executive_hero(
+		eyebrow="Rebate Pintuco ganado en el ciclo vigente",
+		amount=rebate_total_ganado,
+		reason=(
+			f"Vamos en <strong>{cycle_outlook['Escala_Ciclo']}</strong> acumulada, con un cumplimiento de <strong>{format_percent(cycle_outlook['Cumplimiento_Acumulado_E2'])}</strong> frente a la meta Escala 2. "
+			f"Ganamos el bono de estacionalidad en <strong>{meses_con_bono}</strong> mes(es) del ciclo, sumando rebate mensual, trimestral y estacionalidad sobre la compra aplicable."
+		),
+		badge_text=f"Escala del ciclo: {cycle_outlook['Escala_Ciclo']}",
+		badge_tone=get_scale_tone(cycle_outlook["Escala_Ciclo"]),
+	)
 
 	render_kpi_grid(
 		[
