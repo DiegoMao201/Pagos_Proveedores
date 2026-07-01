@@ -83,7 +83,7 @@ CYCLE_RECOMPOSITION_FACTOR = 0.85
 SEASONALITY_CUTOFF_OVERRIDES = {
 	"2026-04": date(2026, 4, 24),
 	"2026-05": date(2026, 5, 26),
-	"2026-06": date(2026, 6, 26),
+	"2026-06": date(2026, 6, 30),
 }
 
 ABRACOL_REBATE_RATE = 0.06
@@ -260,44 +260,95 @@ st.markdown(
 		.pill.gold {{ background: rgba(240, 173, 31, 0.16); color: #8b6509; }}
 		.pill.red {{ background: rgba(217, 74, 74, 0.14); color: #a92f2f; }}
 		.pill.navy {{ background: rgba(12, 45, 87, 0.10); color: #0c2d57; }}
-		.hero-summary {{
-			background: radial-gradient(circle at top left, rgba(255,255,255,0.18), transparent 45%), linear-gradient(135deg, #0b2440 0%, #145374 55%, #0f9d63 100%);
-			border-radius: 28px;
-			padding: 34px 40px;
+		.period-card-grid {{
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+			gap: 16px;
+			margin: 4px 0 22px 0;
+		}}
+		.period-card {{
+			border-radius: 22px;
+			padding: 20px 22px;
 			color: #ffffff;
-			margin: 4px 0 20px 0;
-			box-shadow: 0 22px 48px rgba(11, 36, 64, 0.28);
-			text-align: center;
+			box-shadow: 0 16px 34px rgba(12, 45, 87, 0.18);
+			position: relative;
+			overflow: hidden;
+			min-height: 196px;
+			display: flex;
+			flex-direction: column;
 		}}
-		.hero-summary .hero-eyebrow {{
+		.period-card::after {{
+			content: "";
+			position: absolute;
+			top: -46%;
+			right: -18%;
+			width: 150px;
+			height: 150px;
+			background: rgba(255,255,255,0.14);
+			border-radius: 50%;
+		}}
+		.period-card.green {{ background: linear-gradient(135deg, #0b6b45 0%, #1fbe83 100%); }}
+		.period-card.gold {{ background: linear-gradient(135deg, #a86a08 0%, #f6c04a 100%); }}
+		.period-card.navy {{ background: linear-gradient(135deg, #0b2440 0%, #2166a3 100%); }}
+		.period-card.red {{ background: linear-gradient(135deg, #7a1f1f 0%, #e05c5c 100%); }}
+		.period-card-title {{
+			font-size: 0.74rem;
 			text-transform: uppercase;
-			letter-spacing: 0.14em;
-			font-size: 0.8rem;
-			font-weight: 700;
-			opacity: 0.85;
-		}}
-		.hero-summary .hero-amount {{
-			font-size: 3.1rem;
+			letter-spacing: 0.12em;
 			font-weight: 800;
-			margin: 8px 0 6px 0;
+			opacity: 0.9;
+			position: relative;
+		}}
+		.period-card-amount {{
+			font-size: 1.85rem;
+			font-weight: 800;
+			margin: 8px 0 8px 0;
 			line-height: 1.1;
+			position: relative;
 		}}
-		.hero-summary .hero-reason {{
-			font-size: 1.05rem;
+		.period-card-reason {{
+			font-size: 0.84rem;
 			opacity: 0.96;
-			max-width: 760px;
-			margin: 6px auto 0 auto;
-			line-height: 1.55;
+			line-height: 1.42;
+			flex-grow: 1;
+			position: relative;
 		}}
-		.hero-summary .hero-badge {{
-			margin-top: 16px;
+		.period-progress-track {{
+			background: rgba(255,255,255,0.28);
+			border-radius: 999px;
+			height: 9px;
+			margin-top: 14px;
+			overflow: hidden;
+			position: relative;
+		}}
+		.period-progress-fill {{
+			background: #ffffff;
+			height: 100%;
+			border-radius: 999px;
+		}}
+		.period-progress-label {{
+			font-size: 0.72rem;
+			margin-top: 6px;
+			font-weight: 700;
+			opacity: 0.94;
+			position: relative;
+		}}
+		.period-card-status {{
+			display: inline-block;
+			margin-top: 10px;
+			padding: 3px 11px;
+			border-radius: 999px;
+			background: rgba(255,255,255,0.24);
+			font-size: 0.72rem;
+			font-weight: 700;
+			position: relative;
 		}}
 		@media (max-width: 1100px) {{
 			.kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
 		}}
 		@media (max-width: 680px) {{
 			.kpi-grid {{ grid-template-columns: 1fr; }}
-			.hero-summary .hero-amount {{ font-size: 2.2rem; }}
+			.period-card-amount {{ font-size: 1.5rem; }}
 		}}
 	</style>
 	""",
@@ -332,19 +383,34 @@ def pill_html(text: str, tone: str = "navy") -> str:
 	return f'<span class="pill {tone}">{text}</span>'
 
 
-def render_executive_hero(eyebrow: str, amount: float, reason: str, badge_text: str = "", badge_tone: str = "gold") -> None:
-	badge_html = f'<div class="hero-badge">{pill_html(badge_text, badge_tone)}</div>' if badge_text else ""
-	st.markdown(
-		f"""
-		<div class="hero-summary">
-			<div class="hero-eyebrow">{eyebrow}</div>
-			<div class="hero-amount">{format_currency(amount)}</div>
-			<div class="hero-reason">{reason}</div>
-			{badge_html}
-		</div>
-		""",
-		unsafe_allow_html=True,
-	)
+def get_period_status_tone(status: str) -> str:
+	status_upper = str(status).upper()
+	if status_upper.startswith("CUMPL"):
+		return "green"
+	if status_upper.startswith("ABIERT") or "EN CURSO" in status_upper or "EN VENTANA" in status_upper:
+		return "gold"
+	if status_upper.startswith("FUTURO"):
+		return "navy"
+	return "red"
+
+
+def period_card_html(title: str, amount: float, reason: str, progress: float, status_label: str) -> str:
+	tone = get_period_status_tone(status_label)
+	progress_pct = max(0.0, min(progress, 1.0)) * 100
+	return f"""
+	<div class="period-card {tone}">
+		<div class="period-card-title">{title}</div>
+		<div class="period-card-amount">{format_currency(amount)}</div>
+		<div class="period-card-reason">{reason}</div>
+		<div class="period-progress-track"><div class="period-progress-fill" style="width:{progress_pct:.0f}%;"></div></div>
+		<div class="period-progress-label">{progress_pct:.0f}% de la meta cubierta</div>
+		<div class="period-card-status">{status_label}</div>
+	</div>
+	"""
+
+
+def render_period_card_grid(cards_html: list[str]) -> None:
+	st.markdown(f'<div class="period-card-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
 
 def normalize_invoice_number(inv_num: Any) -> str:
@@ -512,7 +578,7 @@ def get_rebate_configuration() -> dict:
 					f"- Recomposición 9 meses: {format_percent(CYCLE_RECOMPOSITION_FACTOR, 0)} del saldo elegible",
 					"- Abril 2026: corte especial de estacionalidad extendido al 2026-04-24",
 					"- Mayo 2026: corte especial de estacionalidad extendido al 2026-05-26",
-					"- Junio 2026: corte especial de estacionalidad extendido al 2026-06-26",
+					"- Junio 2026: corte especial de estacionalidad extendido al 2026-06-30",
 				]
 			)
 		)
@@ -1618,17 +1684,18 @@ def render_abracol_dashboard(provider_config: dict[str, Any]) -> None:
 	rebate_total = float(period_df["Rebate_Actual"].sum())
 	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
 
-	render_executive_hero(
-		eyebrow="Rebate Abracol ganado en el ciclo 2026",
-		amount=rebate_total,
-		reason=(
-			f"Llevamos <strong>{format_percent(safe_divide(ventas_acumuladas, meta_total))}</strong> de la cuota comercial 2026 facturada. "
-			f"El bimestre {current_period['Periodo']} crece <strong>{format_percent(float(current_period['Crecimiento_vs_2025']))}</strong> frente al mismo periodo de 2025, "
-			f"liquidando el 6% de rebate sobre esa venta neta."
-		),
-		badge_text=f"Estado {current_period['Periodo']}: {current_period['Estado_Periodo']}",
-		badge_tone=get_scale_tone(str(current_period["Estado_Periodo"])),
-	)
+	st.subheader("Ganado por bimestre")
+	period_cards = []
+	for _, row in period_df.iterrows():
+		title = str(row["Periodo"]).replace("BIMESTRE", "Bimestre")
+		reason = (
+			f"Cumplió <strong>{format_percent(float(row['Cumplimiento_Meta']))}</strong> de la meta "
+			f"({format_currency(float(row['Meta_2026']))}), creciendo <strong>{format_percent(float(row['Crecimiento_vs_2025']))}</strong> vs 2025."
+		)
+		period_cards.append(
+			period_card_html(title, float(row["Rebate_Actual"]), reason, float(row["Cumplimiento_Meta"]), str(row["Estado_Periodo"]))
+		)
+	render_period_card_grid(period_cards)
 
 	render_kpi_grid(
 		[
@@ -1796,16 +1863,17 @@ def render_goya_dashboard(provider_config: dict[str, Any]) -> None:
 	rebate_total = float(period_df["Rebate_Ganado"].sum())
 	rebate_blocked = float(period_df["Rebate_Bloqueado"].sum())
 
-	render_executive_hero(
-		eyebrow="Rebate Goya ganado en el ciclo 2026",
-		amount=rebate_total,
-		reason=(
-			f"El semestre {current_period['Periodo']} creció <strong>{format_percent(float(current_period['Crecimiento_Actual']))}</strong> frente a la base 2025, "
-			f"alcanzando la escala de crecimiento <strong>{current_period['Escala_Lograda']}</strong> y liquidando <strong>{format_percent(float(current_period['Rebate_Pct']), 1)}</strong> de rebate sobre la venta facturada."
-		),
-		badge_text=f"Escala lograda: {current_period['Escala_Lograda']}",
-		badge_tone=get_scale_tone(str(current_period["Escala_Lograda"])),
-	)
+	st.subheader("Ganado por semestre")
+	period_cards = []
+	for _, row in period_df.iterrows():
+		title = str(row["Periodo"]).replace("SEMESTRE", "Semestre")
+		reason = (
+			f"Creció <strong>{format_percent(float(row['Crecimiento_Actual']))}</strong> frente a la base 2025, alcanzando la escala "
+			f"<strong>{row['Escala_Lograda']}</strong> y liquidando <strong>{format_percent(float(row['Rebate_Pct']), 1)}</strong> de rebate."
+		)
+		progress = safe_divide(float(row["Crecimiento_Actual"]), 0.50)
+		period_cards.append(period_card_html(title, float(row["Rebate_Ganado"]), reason, progress, str(row["Estado_Periodo"])))
+	render_period_card_grid(period_cards)
 
 	render_kpi_grid(
 		[
@@ -1987,18 +2055,34 @@ def render_pintuco_dashboard(provider_config: dict[str, Any]) -> None:
 		current_quarter_df = quarterly_df.iloc[[0]]
 	current_quarter_row = current_quarter_df.iloc[0]
 	rebate_total_ganado = float(monthly_df["Rebate_Mensual_Ganado"].sum() + monthly_df["Bono_Estacionalidad"].sum() + quarterly_df["Rebate_Trimestral_Ganado"].sum())
-	meses_con_bono = int((monthly_df["Bono_Estacionalidad"] > 0).sum())
 
-	render_executive_hero(
-		eyebrow="Rebate Pintuco ganado en el ciclo vigente",
-		amount=rebate_total_ganado,
-		reason=(
-			f"Vamos en <strong>{cycle_outlook['Escala_Ciclo']}</strong> acumulada, con un cumplimiento de <strong>{format_percent(cycle_outlook['Cumplimiento_Acumulado_E2'])}</strong> frente a la meta Escala 2. "
-			f"Ganamos el bono de estacionalidad en <strong>{meses_con_bono}</strong> mes(es) del ciclo, sumando rebate mensual, trimestral y estacionalidad sobre la compra aplicable."
-		),
-		badge_text=f"Escala del ciclo: {cycle_outlook['Escala_Ciclo']}",
-		badge_tone=get_scale_tone(cycle_outlook["Escala_Ciclo"]),
-	)
+	quarter_status_group = monthly_df.groupby("Trimestre", sort=False).agg(
+		Rebate_Mensual_Ganado=("Rebate_Mensual_Ganado", "sum"),
+		Bono_Estacionalidad=("Bono_Estacionalidad", "sum"),
+		Todos_Futuro=("Estado_Mes", lambda serie: bool((serie == "Futuro").all())),
+		Todos_Cerrados=("Mes_Cerrado", "all"),
+	).reset_index()
+	quarter_cards_df = quarterly_df.merge(quarter_status_group, on="Trimestre", how="left")
+
+	st.subheader("Ganado por trimestre")
+	period_cards = []
+	for _, row in quarter_cards_df.iterrows():
+		total_ganado = float(row["Rebate_Mensual_Ganado"] + row["Bono_Estacionalidad"] + row["Rebate_Trimestral_Ganado"])
+		escala = str(row["Escala_Lograda"])
+		if row["Todos_Futuro"]:
+			status_label = "Futuro"
+		elif escala != "Sin escala":
+			status_label = f"{escala} lograda"
+		elif row["Todos_Cerrados"]:
+			status_label = "No cumplida"
+		else:
+			status_label = "En curso"
+		reason = (
+			f"Compra aplicable cubrió <strong>{format_percent(float(row['Cumplimiento_E2']))}</strong> de la meta Escala 2 "
+			f"({format_currency(float(row['Presupuesto_Escala_2']))}). Incluye rebate mensual, trimestral y bono de estacionalidad."
+		)
+		period_cards.append(period_card_html(f"{row['Trimestre']} 2026", total_ganado, reason, float(row["Cumplimiento_E2"]), status_label))
+	render_period_card_grid(period_cards)
 
 	render_kpi_grid(
 		[
